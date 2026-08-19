@@ -74,10 +74,21 @@ struct ieee80211_hw *rtlwifi_get_hw(void);
 /* callback registration — CONFIRMED signature, src/compat/rtw88_compat.c:491 */
 void rtlwifi_set_hw_callbacks(struct rtlwifi_hw_callbacks *cbs, void *kext_hw);
 
-/* scan-wait accessor — findings.md Section 53.2/53.5 (body currently
- * gated behind #error in the .c file until the rtl_priv field is
- * identified; declared here so the IOKit-side call site can be written
- * against a stable signature now). */
+/* scan-wait accessor — findings.md Section 53.2/53.5, RESOLVED (Section
+ * 55.2): reads rtl_mac(rtlpriv)->act_scanning directly. No longer
+ * gated behind #error. */
 bool rtlwifi_is_scanning(void);
+
+/*
+ * rtlwifi-side equivalents of rtw88_sw_scan_start/_switch_channel/
+ * _complete() — findings.md Section 59.4/59 (this session). See the
+ * corresponding block comment in rtlwifi_compat.c for the full
+ * source-confirmed rationale, including the open radio_idx/config-
+ * signature-arity question noted there.
+ */
+void rtlwifi_sw_scan_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+                            const u8 *mac_addr);
+void rtlwifi_sw_scan_switch_channel(struct ieee80211_hw *hw);
+void rtlwifi_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
 
 #endif /* RTLWIFI_COMPAT_H */

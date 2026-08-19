@@ -388,6 +388,103 @@ void ieee80211_scan_completed(struct ieee80211_hw *hw,
         g_hw_cbs->scan_done(ctx, info ? info->aborted : false);
 }
 
+/* ------------------------------------------------------------------ */
+/* rtlwifi_sw_scan_start / _switch_channel / _complete()               */
+/* rtlwifi-side equivalents of rtw88_sw_scan_start/_switch_channel/    */
+/* _complete(), which RTW88IEEE80211.cpp's runManualScan() calls       */
+/* (findings.md Section 59.4). CONFIRMED against live core.c read      */
+/* this session, not guessed:                                          */
+/*                                                                      */
+/*   - rtl_ops has real sw_scan_start/sw_scan_complete members         */
+/*     (core.c:1895 table, core.c:1409/1444 bodies) — called via       */
+/*     hw->ops->, same as every other member this port already uses.  */
+/*   - rtl_op_sw_scan_complete() does NOT call                         */
+/*     ieee80211_scan_completed() anywhere (grep against the full      */
+/*     file: zero matches) — it only clears mac->act_scanning and does */
+/*     internal bookkeeping (BT coexist, LED, link-state). This        */
+/*     resolves the TODO on ieee80211_scan_completed() above: that     */
+/*     function is real and correctly wired to the scan_done compat    */
+/*     callback, but rtlwifi's own sw_scan_complete never reaches it.  */
+/*     The actual scan-done signal for this port's manual-scan loop    */
+/*     comes from RTW88IEEE80211.cpp's runManualScan() calling         */
+/*     scanDone() directly at the end of its channel loop — this is    */
+/*     unaffected by rtlwifi_sw_scan_complete() below and needs no     */
+/*     change on the IOKit side.                                       */
+/*   - There is no scan-specific channel-switch member in rtl_ops.     */
+/*     Real per-channel switching happens via rtlpriv->cfg->ops->      */
+/*     switch_channel(hw) (core.c:754), invoked FROM INSIDE             */
+/*     rtl_op_config() when called with                                */
+/*     changed & IEEE80211_CONF_CHANGE_CHANNEL set (core.c:625-756,    */
+/*     confirmed full body read). rtlpriv->cfg->ops is rtl_hal_ops —   */
+/*     the SAME per-chip internal vtable sw.c's set_key belongs to     */
+/*     (Section 59, the earlier rtl_hal_ops/ieee80211_ops distinction) */
+/*     — this compat layer must not reach into it directly, matching   */
+/*     the same abstraction boundary already respected elsewhere in    */
+/*     this file. rtlwifi_sw_scan_switch_channel() below therefore     */
+/*     goes through hw->ops->config(), exactly as real rtlwifi/        */
+/*     mac80211 callers do, never touching rtlpriv->cfg->ops directly. */
+/*                                                                      */
+/*   IMPORTANT — rtl_op_config()'s real signature (confirmed, core.c   */
+/*   line 569) is:                                                     */
+/*       static int rtl_op_config(struct ieee80211_hw *hw,             */
+/*                                 int radio_idx, u32 changed)          */
+/*   THREE parameters, not the two-parameter (hw, changed) shape a     */
+/*   generic mac80211 .config op has in most kernel versions. The      */
+/*   compat mac80211.h struct definition's `config` member signature   */
+/*   has NOT yet been independently checked against this — if it only  */
+/*   declares two parameters, this is a real signature mismatch that   */
+/*   needs resolving (either the compat header's ieee80211_ops.config  */
+/*   member needs a radio_idx parameter added, or rtl_op_config's      */
+/*   extra parameter means it doesn't actually satisfy that member     */
+/*   slot the way assumed here). Flagged, not silently reconciled by   */
+/*   guessing a radio_idx value. radio_idx is passed as 0 below as the */
+/*   single-radio assumption already used elsewhere in this project    */
+/*   (no multi-radio/MLO handling anywhere in this port) — that        */
+/*   default itself is reasonable, but does not resolve the open       */
+/*   signature-arity question above.                                   */
+/* ------------------------------------------------------------------ */
+
+void rtlwifi_sw_scan_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+                            const u8 *mac_addr)
+{
+    if (!hw || !hw->ops || !hw->ops->sw_scan_start)
+        return;
+    hw->ops->sw_scan_start(hw, vif, mac_addr);
+}
+
+void rtlwifi_sw_scan_switch_channel(struct ieee80211_hw *hw)
+{
+    /*
+     * Caller (runManualScan()) is expected to set hw->conf.chandef.chan
+     * (and .width/.center_freq1 if relevant) BEFORE calling this, same
+     * pattern as the rtw88 reference and as rtl_op_config's own body
+     * assumes (it reads hw->conf.chandef.chan directly, does not take
+     * a channel parameter itself).
+     *
+     * TODO (see file-header comment above): radio_idx hardcoded to 0
+     * pending confirmation of the compat ieee80211_ops.config member's
+     * real parameter count.
+     */
+    if (!hw || !hw->ops || !hw->ops->config)
+        return;
+    hw->ops->config(hw, /* radio_idx */ 0, IEEE80211_CONF_CHANGE_CHANNEL);
+}
+
+void rtlwifi_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+{
+    /*
+     * Passthrough only. Per the comment block above, this does NOT
+     * itself signal scan completion to the IOKit layer — it only runs
+     * rtlwifi's real internal scan-complete bookkeeping (clearing
+     * mac->act_scanning, BT coexist/LED/link-state updates). The
+     * caller (runManualScan()) still calls scanDone() itself
+     * separately, unchanged.
+     */
+    if (!hw || !hw->ops || !hw->ops->sw_scan_complete)
+        return;
+    hw->ops->sw_scan_complete(hw, vif);
+}
+
 /*
  * Queue-control no-ops — CONFIRMED, src/compat/rtw88_compat.c:546-548:
  *   void ieee80211_stop_queues(struct ieee80211_hw *hw)  {}

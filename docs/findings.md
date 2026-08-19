@@ -3548,4 +3548,68 @@ reusing `RTW88PCIDevice` — TODO updated accordingly (see 59.6).
 
 ------------------------------------------------------------------------
 
+## 60. RESOLVED: `rtlwifi_sw_scan_start/_switch_channel/_complete()`
+written, closing Section 59.4's gap
+
+Live `sed`/`grep` against real `core.c` this session (not inference):
+
+- `rtl_op_sw_scan_start`/`rtl_op_sw_scan_complete` full bodies read.
+  Both are real `rtl_ops` members, called the same way every other
+  member this port already uses (`hw->ops->sw_scan_start(...)`).
+- **`rtl_op_sw_scan_complete()` never calls `ieee80211_scan_completed()`**
+  — confirmed by grep against the full file, zero matches. This
+  resolves the TODO that was sitting in `rtlwifi_compat.c` since the
+  Section 55 session, but resolves it as "no," not "yes": rtlwifi's
+  own scan-complete op only clears `mac->act_scanning` and does
+  internal bookkeeping (BT coexist, LED, link-state transition). The
+  actual scan-done signal for this port continues to come from
+  `RTW88IEEE80211.cpp`'s `runManualScan()` calling `scanDone()`
+  directly, unaffected by this finding.
+- **No scan-specific channel-switch member exists in `rtl_ops`** —
+  confirmed real per-channel switching happens via
+  `rtlpriv->cfg->ops->switch_channel(hw)` (core.c:754), called FROM
+  INSIDE `rtl_op_config()` when `changed & IEEE80211_CONF_CHANGE_CHANNEL`
+  is set (full ~190-line body of `rtl_op_config` read and confirmed).
+  `rtlpriv->cfg->ops` is `rtl_hal_ops` — the same internal per-chip
+  vtable `sw.c`'s `set_key` belongs to (Section 59's earlier
+  `rtl_hal_ops`/`ieee80211_ops` distinction) — so the new compat
+  helper correctly goes through `hw->ops->config()`, never touching
+  `rtlpriv->cfg->ops` directly, preserving the same abstraction
+  boundary already respected elsewhere in this file.
+- **New open item surfaced, not resolved**: `rtl_op_config`'s real
+  confirmed signature is `(struct ieee80211_hw *hw, int radio_idx, u32
+  changed)` — three parameters. Whether the existing compat
+  `net/mac80211.h`'s `struct ieee80211_ops` declares `config` with two
+  parameters or three has NOT been checked. If two, this is a real
+  signature mismatch, not just an unconfirmed detail — flagged
+  explicitly in both the new function's implementation comment and
+  here rather than silently guessing `radio_idx`'s omission is safe.
+  `radio_idx` passed as `0` in the new helper (single-radio assumption
+  already implicit everywhere else in this port — no MLO/multi-radio
+  handling anywhere) — that default is reasonable on its own, but does
+  NOT resolve the arity question.
+
+`rtlwifi_compat.c`/`.h` updated with the three new functions
+(`rtlwifi_sw_scan_start`, `rtlwifi_sw_scan_switch_channel`,
+`rtlwifi_sw_scan_complete`) plus a stale-comment fix (the header's
+`rtlwifi_is_scanning()` doc comment still said "gated behind #error,"
+contradicting the .c file's already-resolved real implementation from
+Section 55.2 — corrected while in the area).
+
+## 60.1 Updated remaining open items
+
+1. NEW — `rtl_op_config`'s 3-parameter real signature vs. the compat
+   header's `ieee80211_ops.config` member arity: unconfirmed, real risk
+   of a compile-time mismatch.
+2. 7 of 9 matching-name `ieee80211_ops` members (Section 59.3) still
+   have unconfirmed full signatures beyond `tx`/`start`/now the
+   partially-checked `config`.
+3. MacKernelSDK / compat-linux-header reuse-vs-vendor decision — still
+   undecided (Section 57).
+4. Firmware blob (`rtl8188efw.bin`) still not obtained.
+5. Items 3-8 from Section 55.7 otherwise unchanged and carried forward
+   as-is.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

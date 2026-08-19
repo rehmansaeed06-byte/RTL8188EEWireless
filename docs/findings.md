@@ -3654,4 +3654,72 @@ next milestone is attempting an actual local build.
 
 ------------------------------------------------------------------------
 
+## 62. RESOLVED: MacKernelSDK and src/compat/linux|net reuse-vs-vendor
+decision — vendored, project now fully standalone
+
+User decision: vendor both, not reuse from `Feixiao/`. Executed live
+this session, not just discussed:
+
+- **`MacKernelSDK`**: added as its own git submodule directly in
+  `rtl8188ee-macos/` (`git submodule add
+  https://github.com/acidanthera/MacKernelSDK.git MacKernelSDK`),
+  correctly kept as a submodule rather than a raw copy since it's a
+  real upstream repo (confirmed via `Feixiao/.gitmodules`), not a
+  hand-written tree. Pinned to the exact same commit Feixiao's
+  submodule uses (`7af1933c27aefcbdf4809ee44478829aad30f9c1`,
+  "Bump for Xcode 16.2 Beta 16B5100e") via `git checkout` + `git add` +
+  commit — confirmed both projects now build against identical SDK
+  headers rather than silently drifting onto different versions over
+  time. 16MB, ~40 header subdirectories.
+- **`src/compat/linux/` + `src/compat/net/`**: plain recursive copy
+  (`cp -R`) from `Feixiao/src/compat/{linux,net}/` into
+  `rtl8188ee-macos/src/compat/{linux,net}/` — correctly NOT a
+  submodule, since these are hand-written shim headers with no
+  separate upstream repo. File counts confirmed matching on both
+  sides (40 files each) before proceeding. 33 headers + `mmc/`
+  subdirectory in `linux/`, one ~51KB `mac80211.h` in `net/`.
+- **`Makefile.rtl8188ee` updated**: `MKSDK` now
+  `$(PROJ_ROOT)/MacKernelSDK` (was `../Feixiao/MacKernelSDK`);
+  `COMPAT_FLAGS` now includes `-I$(COMPAT_DIR)/linux -I$(COMPAT_DIR)/net`
+  (was a single `-I../Feixiao/src/compat/linux`, and never had a `net`
+  path at all — a real gap the old version had, now fixed). `KEXT_SRCS`
+  deliberately left pointing at `../Feixiao/src/kext/*.cpp` —
+  unrelated to this decision; those `.cpp` files are being reused
+  directly per Section 59, not vendored, and their own
+  `#include "../compat/..."` paths resolve correctly relative to their
+  real location inside `Feixiao/`, confirmed still consistent.
+- **Bug caught and fixed while vendoring**: `rtlwifi_compat.h` had
+  `#include "compat/net/mac80211.h"` — a leading `compat/` path
+  segment that never resolved against either the old Feixiao-relative
+  `-I` path or the new local one, since `COMPAT_DIR` itself already
+  *is* `src/compat` on both sides. This would have been a real
+  compile-time "file not found" error on first build attempt had it
+  gone unnoticed. Corrected to `#include "net/mac80211.h"`.
+
+`rtl8188ee-macos/` no longer depends on `Feixiao/` existing as a
+sibling folder for ANY of its build inputs except the deliberately-
+reused `RTW88PCIDevice.cpp`/`RTW88IEEE80211.cpp`/`RTW88Kext.cpp`/
+`RTW88UserClient.cpp` source files themselves (Section 59) and
+`kmod_info.c` (Section 57/58, still an open low-risk reuse item, not
+addressed this session). This is now a fully standalone project for
+everything except that one deliberate, source-confirmed reuse.
+
+## 62.1 Updated remaining open items
+
+1. `kmod_info.c` reuse from Feixiao — low-risk (Section 57/58), still
+   not independently vendored or re-confirmed; same class of decision
+   as this session's work but not yet revisited.
+2. Firmware blob (`rtl8188efw.bin`) still not obtained — the one
+   remaining item that is a local download, not a source-reading or
+   project-structure task.
+3. Items 3-8 from Section 55.7 otherwise unchanged and carried forward
+   as-is (`linux/sched.h` symbol usage, broader mac80211-stub coverage,
+   boot-test confirmation of static-analysis conclusions).
+
+At this point every open item that blocks a first `make -f
+Makefile.rtl8188ee` attempt is resolved except the firmware blob. A
+real build attempt is now the correct next step, not further reading.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

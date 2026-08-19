@@ -925,35 +925,45 @@ The evidence currently says:
     just structurally promising, every signature this port actually
     calls is verified correct.
 
-**Status: source-reading investigation is essentially complete.**
-Every item that was ever flagged as "the top-priority blocker" —
-build-target conflict, firmware path, PCIDevice/IEEE80211 reuse, the
-scan compat helpers, and now full signature verification — is
-resolved. What's left: (1) the MacKernelSDK/compat-header reuse-vs-
-vendor decision (Section 57), a project-structure choice, not a
-research gap; (2) the firmware blob itself (`rtl8188efw.bin`), a local
-download from linux-firmware, not resolvable via source reading;
-(3) smaller carried-forward items — `linux/sched.h` symbol usage,
-broader mac80211-stub coverage, boot-test confirmation of static-
-analysis conclusions. Essentially everything blocking a first attempt
-at compiling `Makefile.rtl8188ee` end-to-end is resolved except items
-1-2 above. The realistic next milestone is attempting an actual local
-build.
+31. **RESOLVED: MacKernelSDK and src/compat/linux|net vendored,
+    project now fully standalone (findings.md Section 62).** User
+    chose vendoring over Feixiao-relative reuse for both. Executed
+    live: `MacKernelSDK` added as its own git submodule (correctly not
+    a raw copy, since it's a real upstream repo), pinned to the exact
+    same commit Feixiao's copy uses so both stay in sync. `src/compat/
+    linux/` + `src/compat/net/` plain-copied (hand-written files, no
+    upstream repo to submodule). `Makefile.rtl8188ee` updated: `MKSDK`
+    and `COMPAT_FLAGS` now point locally; a real gap in the old
+    version was caught in the process — `COMPAT_FLAGS` never had a
+    `net/` include path at all. A genuine bug was also caught and
+    fixed while vendoring: `rtlwifi_compat.h` had `#include
+    "compat/net/mac80211.h"`, a path that never resolved against
+    either the old or new `-I` paths — would have been a real
+    build-time failure on first compile attempt. `KEXT_SRCS` (the
+    reused `.cpp` files from Section 59) deliberately left pointing at
+    `Feixiao/`, unaffected by this decision.
+
+**Status: source-reading AND project-structure decisions are both
+essentially complete.** Every item that was ever flagged as "the
+top-priority blocker" — build-target conflict, firmware path,
+PCIDevice/IEEE80211 reuse, scan compat helpers, full signature
+verification, and now the vendoring decision — is resolved. What's
+left: (1) `kmod_info.c` reuse from Feixiao, low-risk, not yet
+independently revisited; (2) the firmware blob itself
+(`rtl8188efw.bin`), a local download, not resolvable via source
+reading or project-structure decisions; (3) smaller carried-forward
+items — `linux/sched.h` symbol usage, broader mac80211-stub coverage,
+boot-test confirmation of static-analysis conclusions. Everything
+blocking a first attempt at compiling `Makefile.rtl8188ee` end-to-end
+is resolved except item 2 above. The realistic next milestone is
+attempting an actual local build.
 
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for
 the mac80211-compat-shim session, Section 56 for firmware, Section 57
 for the build-system correction, Section 58 for DRIVER_SRCS
 confirmation, Section 59 for the PCIDevice/IEEE80211 reuse resolution,
-Section 60 for the scan compat helpers, and Section 61 for final
-signature verification.
-and Section 60 for this session's scan compat helpers. This handover
-is the concise context a new Claude should read first.
-
-Use the accompanying findings.md as the detailed technical record —
-see Section 45 there for the full first-correction audit trail,
-Section 55 for the mac80211-compat-shim session, Section 56 for the
-firmware-path work, and Section 57 for this session's build-system
-correction and Makefile.rtl8188ee draft. This handover is the concise
-context a new Claude should read first.
+Section 60 for the scan compat helpers, Section 61 for signature
+verification, and Section 62 for the vendoring resolution. This
+handover is the concise context a new Claude should read first.
 

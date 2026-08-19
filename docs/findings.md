@@ -3576,18 +3576,17 @@ Live `sed`/`grep` against real `core.c` this session (not inference):
   helper correctly goes through `hw->ops->config()`, never touching
   `rtlpriv->cfg->ops` directly, preserving the same abstraction
   boundary already respected elsewhere in this file.
-- **New open item surfaced, not resolved**: `rtl_op_config`'s real
+- **RESOLVED same session, follow-up check**: `rtl_op_config`'s real
   confirmed signature is `(struct ieee80211_hw *hw, int radio_idx, u32
-  changed)` — three parameters. Whether the existing compat
-  `net/mac80211.h`'s `struct ieee80211_ops` declares `config` with two
-  parameters or three has NOT been checked. If two, this is a real
-  signature mismatch, not just an unconfirmed detail — flagged
-  explicitly in both the new function's implementation comment and
-  here rather than silently guessing `radio_idx`'s omission is safe.
-  `radio_idx` passed as `0` in the new helper (single-radio assumption
-  already implicit everywhere else in this port — no MLO/multi-radio
-  handling anywhere) — that default is reasonable on its own, but does
-  NOT resolve the arity question.
+  changed)` — three parameters. Live grep against the actual compat
+  header confirms exact match:
+  `Feixiao/src/compat/net/mac80211.h:831` — `int (*config)(struct
+  ieee80211_hw *hw, int radio_idx, u32 changed);`. No signature
+  mismatch; `radio_idx` is already part of this compat layer's
+  `ieee80211_ops` shape (not rtlwifi-specific), and
+  `rtlwifi_sw_scan_switch_channel()`'s `0` default fits it correctly.
+  No code changes needed — the function as written in this session is
+  correct as-is.
 
 `rtlwifi_compat.c`/`.h` updated with the three new functions
 (`rtlwifi_sw_scan_start`, `rtlwifi_sw_scan_switch_channel`,
@@ -3598,16 +3597,13 @@ Section 55.2 — corrected while in the area).
 
 ## 60.1 Updated remaining open items
 
-1. NEW — `rtl_op_config`'s 3-parameter real signature vs. the compat
-   header's `ieee80211_ops.config` member arity: unconfirmed, real risk
-   of a compile-time mismatch.
-2. 7 of 9 matching-name `ieee80211_ops` members (Section 59.3) still
-   have unconfirmed full signatures beyond `tx`/`start`/now the
-   partially-checked `config`.
-3. MacKernelSDK / compat-linux-header reuse-vs-vendor decision — still
+1. 7 of 9 matching-name `ieee80211_ops` members (Section 59.3) still
+   have unconfirmed full signatures beyond `tx`/`start`/now-confirmed
+   `config`.
+2. MacKernelSDK / compat-linux-header reuse-vs-vendor decision — still
    undecided (Section 57).
-4. Firmware blob (`rtl8188efw.bin`) still not obtained.
-5. Items 3-8 from Section 55.7 otherwise unchanged and carried forward
+3. Firmware blob (`rtl8188efw.bin`) still not obtained.
+4. Items 3-8 from Section 55.7 otherwise unchanged and carried forward
    as-is.
 
 ------------------------------------------------------------------------

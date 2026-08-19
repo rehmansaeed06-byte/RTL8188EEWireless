@@ -424,24 +424,18 @@ void ieee80211_scan_completed(struct ieee80211_hw *hw,
 /*     goes through hw->ops->config(), exactly as real rtlwifi/        */
 /*     mac80211 callers do, never touching rtlpriv->cfg->ops directly. */
 /*                                                                      */
-/*   IMPORTANT — rtl_op_config()'s real signature (confirmed, core.c   */
-/*   line 569) is:                                                     */
+/*   rtl_op_config()'s real signature (confirmed, core.c line 569) is: */
 /*       static int rtl_op_config(struct ieee80211_hw *hw,             */
 /*                                 int radio_idx, u32 changed)          */
-/*   THREE parameters, not the two-parameter (hw, changed) shape a     */
-/*   generic mac80211 .config op has in most kernel versions. The      */
-/*   compat mac80211.h struct definition's `config` member signature   */
-/*   has NOT yet been independently checked against this — if it only  */
-/*   declares two parameters, this is a real signature mismatch that   */
-/*   needs resolving (either the compat header's ieee80211_ops.config  */
-/*   member needs a radio_idx parameter added, or rtl_op_config's      */
-/*   extra parameter means it doesn't actually satisfy that member     */
-/*   slot the way assumed here). Flagged, not silently reconciled by   */
-/*   guessing a radio_idx value. radio_idx is passed as 0 below as the */
-/*   single-radio assumption already used elsewhere in this project    */
-/*   (no multi-radio/MLO handling anywhere in this port) — that        */
-/*   default itself is reasonable, but does not resolve the open       */
-/*   signature-arity question above.                                   */
+/*   THREE parameters — CONFIRMED to exactly match the compat          */
+/*   mac80211.h struct's config member (grepped directly:              */
+/*   compat/net/mac80211.h:831 — "int (*config)(struct ieee80211_hw    */
+/*   *hw, int radio_idx, u32 changed);"). No signature mismatch.       */
+/*   radio_idx passed as 0 below, the same single-radio assumption     */
+/*   already used elsewhere in this port (no multi-radio/MLO handling  */
+/*   anywhere) — radio_idx is part of this compat layer's existing     */
+/*   ieee80211_ops shape generally, not rtlwifi-specific, so 0 is the  */
+/*   correct default here.                                             */
 /* ------------------------------------------------------------------ */
 
 void rtlwifi_sw_scan_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
@@ -459,11 +453,9 @@ void rtlwifi_sw_scan_switch_channel(struct ieee80211_hw *hw)
      * (and .width/.center_freq1 if relevant) BEFORE calling this, same
      * pattern as the rtw88 reference and as rtl_op_config's own body
      * assumes (it reads hw->conf.chandef.chan directly, does not take
-     * a channel parameter itself).
-     *
-     * TODO (see file-header comment above): radio_idx hardcoded to 0
-     * pending confirmation of the compat ieee80211_ops.config member's
-     * real parameter count.
+     * a channel parameter itself). radio_idx=0: confirmed correct per
+     * file-header comment above (single-radio default, compat header's
+     * config member signature verified to match rtl_op_config exactly).
      */
     if (!hw || !hw->ops || !hw->ops->config)
         return;

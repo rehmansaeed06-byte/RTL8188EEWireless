@@ -898,7 +898,7 @@ The evidence currently says:
     distinctly-named subclass per the separation goal), not decided
     here.
 
-29. **NEW — RESOLVED: `rtlwifi_sw_scan_start/_switch_channel/_complete()`
+29. **RESOLVED: `rtlwifi_sw_scan_start/_switch_channel/_complete()`
     written (findings.md Section 60), closing item 28's identified
     gap.** Confirmed via live `core.c` read: `rtl_op_sw_scan_complete()`
     never calls `ieee80211_scan_completed()` (the IOKit layer's own
@@ -907,26 +907,24 @@ The evidence currently says:
     `hw->ops->config()` with `IEEE80211_CONF_CHANGE_CHANNEL`, since the
     real per-channel switch lives in `rtl_hal_ops` (`rtlpriv->cfg->
     ops->switch_channel`), an internal vtable this compat layer
-    correctly does not reach into directly. NEW open item: `rtl_op_
-    config`'s confirmed real signature takes 3 parameters (`hw,
-    radio_idx, changed`) — whether the compat header's `ieee80211_ops.
-    config` member matches this arity is unconfirmed, a real
-    compile-risk flagged in both the new code's comments and
-    findings.md, not silently assumed away.
+    correctly does not reach into directly. Follow-up check same
+    session: `rtl_op_config`'s confirmed 3-parameter real signature
+    (`hw, radio_idx, changed`) was grepped directly against the compat
+    header (`compat/net/mac80211.h:831`) and matches exactly — no
+    signature mismatch, `radio_idx=0` is the correct single-radio
+    default. This item is now fully closed, not just code-complete.
 
 **Status: source-reading investigation is very close to exhausted.
 Every item that was ever flagged as "the top-priority blocker" —
 build-target conflict, firmware path, PCIDevice/IEEE80211 reuse, and
-now the scan compat helpers — is resolved.** What's left is real but
-narrow: (1) NEW — `rtl_op_config`'s 3-parameter signature vs. the
-compat header's `config` member arity, unconfirmed, genuine compile
-risk; (2) 7 of 9 matching-name `ieee80211_ops` members still have
-unconfirmed full signatures beyond `tx`/`start`/partially-checked
-`config`; (3) the MacKernelSDK/compat-header reuse-vs-vendor decision
-(Section 57); (4) the firmware blob itself (`rtl8188efw.bin`) still
-not obtained; (5) smaller carried-forward items — `linux/sched.h`
-symbol usage, broader mac80211-stub coverage, boot-test confirmation
-of static-analysis conclusions.
+the scan compat helpers (including the config-signature follow-up) —
+is resolved.** What's left is real but narrow: (1) 7 of 9 matching-name
+`ieee80211_ops` members still have unconfirmed full signatures beyond
+`tx`/`start`/now-confirmed `config`; (2) the MacKernelSDK/compat-header
+reuse-vs-vendor decision (Section 57); (3) the firmware blob itself
+(`rtl8188efw.bin`) still not obtained; (4) smaller carried-forward
+items — `linux/sched.h` symbol usage, broader mac80211-stub coverage,
+boot-test confirmation of static-analysis conclusions.
 
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for

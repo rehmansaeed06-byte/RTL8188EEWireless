@@ -42,6 +42,24 @@
 #ifndef RTLWIFI_COMPAT_H
 #define RTLWIFI_COMPAT_H
 
+/*
+ * rtlwifi's core.c/pci.c reference tasklet_struct, request_irq(), and
+ * friends. The existing compat/linux/interrupt.h shim already provides
+ * these (built for the rtw88 port), but wifi.h — rtlwifi's own vendored
+ * upstream master header — is left unmodified on purpose, to keep this
+ * port diffable against upstream. Since this file is force-included
+ * ahead of every rtlwifi driver translation unit (-include in
+ * Makefile.rtl8188ee), pulling linux/interrupt.h in here has the same
+ * effect as if wifi.h had included it, without touching vendored source.
+ */
+#include <linux/time.h>      /* time64_t — needed by wifi.h before interrupt.h/mac80211.h
+                                 pull in anything transitively; Section 63.3 wired in
+                                 interrupt.h but missed this one, causing wifi.h:1664
+                                 "unknown type name 'time64_t'" (build-log confirmed). */
+#include <linux/atomic.h>    /* atomic_t — same gap, wifi.h:1945 "unknown type name
+                                 'atomic_t'" (build-log confirmed). */
+#include <linux/interrupt.h>
+
 #include "net/mac80211.h"   /* existing rtw88-built shim; provides
                                 struct ieee80211_hw, struct wiphy,
                                 struct ieee80211_ops, etc. Corrected

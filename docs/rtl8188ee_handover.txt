@@ -958,12 +958,28 @@ blocking a first attempt at compiling `Makefile.rtl8188ee` end-to-end
 is resolved except item 2 above. The realistic next milestone is
 attempting an actual local build.
 
+## THIRD UPDATE — first real build attempt, 4 errors found and fixed
+(findings.md Section 65)
+User ran `make -f Makefile.rtl8188ee` for real on the Mac (first time
+a compiler was actually available — all prior "build-ready" claims in
+this doc were static-analysis-only). Got 4 real errors:
+`time64_t`/`atomic_t` unknown in wifi.h (compat/linux/time.h and
+atomic.h existed correctly but weren't force-included — one-line fix
+in rtlwifi_compat.h), and `linux/ip.h`/`net/cfg80211.h` genuinely
+missing (both new files now written, against real grepped usage from
+base.c/core.c, not guessed — see Section 65.2/65.3 for what's real
+vs. simplified-but-justified in each). **Not yet re-verified by a
+second build attempt** — that's the immediate next step. Expect
+further errors on the next attempt; this is a normal fix-and-rebuild
+loop, not a sign the architecture above is wrong.
+
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for
 the mac80211-compat-shim session, Section 56 for firmware, Section 57
 for the build-system correction, Section 58 for DRIVER_SRCS
 confirmation, Section 59 for the PCIDevice/IEEE80211 reuse resolution,
 Section 60 for the scan compat helpers, Section 61 for signature
-verification, and Section 62 for the vendoring resolution. This
-handover is the concise context a new Claude should read first.
+verification, Section 62 for the vendoring resolution, and Section 65
+for the first real build attempt and its fixes. This handover is the
+concise context a new Claude should read first.
 

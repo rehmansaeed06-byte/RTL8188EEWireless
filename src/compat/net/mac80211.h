@@ -913,6 +913,34 @@ struct ieee80211_ops {
     void (*unassign_vif_chanctx)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
                                   struct ieee80211_bss_conf *link_conf,
                                   struct ieee80211_chanctx_conf *ctx);
+    /* Five members below CONFIRMED via real rtl_ops struct literal
+     * (core.c:1879-1911, live-grepped this session) — that literal
+     * assigns .get_tsf/.set_tsf/.reset_tsf/.sta_notify/.rfkill_poll,
+     * none of which previously existed on this struct. Note this is a
+     * genuinely different check than findings.md Section 61's "9 of 9
+     * signatures confirmed": that check only covered the 9 members
+     * RTW88IEEE80211.cpp *calls*, not the full set core.c's rtl_ops
+     * *defines* — the two are different subsets of ieee80211_ops, and
+     * this gap is why. Signatures taken from the real rtl_op_get_tsf/
+     * rtl_op_set_tsf/rtl_op_reset_tsf/rtl_op_sta_notify function
+     * definitions in core.c, not guessed. */
+    u64  (*get_tsf)(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
+    void (*set_tsf)(struct ieee80211_hw *hw, struct ieee80211_vif *vif, u64 tsf);
+    void (*reset_tsf)(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
+    void (*sta_notify)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+                        enum sta_notify_cmd cmd, struct ieee80211_sta *sta);
+    void (*rfkill_poll)(struct ieee80211_hw *hw);
+};
+
+/* sta_notify_cmd — CONFIRMED against real rtl_op_sta_notify's switch
+ * (core.c:1354-1361): only these two cases used, matching real
+ * upstream mac80211's enum (a third value, STA_NOTIFY_SLEEP/AWAKE are
+ * the only two rtlwifi ever references, so only those two are added
+ * here rather than the full upstream set, consistent with this compat
+ * layer's existing minimal-superset approach elsewhere in the file). */
+enum sta_notify_cmd {
+    STA_NOTIFY_SLEEP,
+    STA_NOTIFY_AWAKE,
 };
 
 /* ieee80211_link_sta — per-link station (deflink is the only link for non-MLO) */
@@ -950,13 +978,26 @@ static inline int ieee80211_emulate_switch_vif_chanctx(struct ieee80211_hw *hw,
         struct ieee80211_vif_chanctx_switch *vifs, int n_vifs,
         enum ieee80211_chanctx_switch_mode mode) { return 0; }
 
-/* Ampdu params */
+/* Ampdu params.
+ * NOTE: named (not anonymous) per rtlwifi/core.c:1373-1375 real usage:
+ *   enum ieee80211_ampdu_mlme_action action = params->action;
+ * — a local variable of this named enum type, which an anonymous enum
+ * cannot satisfy (build-log confirmed: "variable has incomplete type
+ * 'enum ieee80211_ampdu_mlme_action'"). Values unchanged, still the
+ * same 8 confirmed against core.c's real switch (grep-confirmed:
+ * TX_START, TX_STOP_CONT/FLUSH/FLUSH_CONT, TX_OPERATIONAL, RX_START,
+ * RX_STOP handled; TX_START_IMMEDIATE not referenced by rtl8188ee's
+ * ampdu_action but kept since it's part of the real upstream enum). */
+enum ieee80211_ampdu_mlme_action {
+    IEEE80211_AMPDU_RX_START, IEEE80211_AMPDU_RX_STOP,
+    IEEE80211_AMPDU_TX_START, IEEE80211_AMPDU_TX_START_IMMEDIATE,
+    IEEE80211_AMPDU_TX_STOP_CONT,
+    IEEE80211_AMPDU_TX_STOP_FLUSH, IEEE80211_AMPDU_TX_STOP_FLUSH_CONT,
+    IEEE80211_AMPDU_TX_OPERATIONAL,
+};
+
 struct ieee80211_ampdu_params {
-    enum { IEEE80211_AMPDU_RX_START, IEEE80211_AMPDU_RX_STOP,
-           IEEE80211_AMPDU_TX_START, IEEE80211_AMPDU_TX_START_IMMEDIATE,
-           IEEE80211_AMPDU_TX_STOP_CONT,
-           IEEE80211_AMPDU_TX_STOP_FLUSH, IEEE80211_AMPDU_TX_STOP_FLUSH_CONT,
-           IEEE80211_AMPDU_TX_OPERATIONAL } action;
+    enum ieee80211_ampdu_mlme_action action;
     struct ieee80211_sta *sta;
     u16 tid;
     u16 *ssn;

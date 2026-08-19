@@ -3722,4 +3722,178 @@ real build attempt is now the correct next step, not further reading.
 
 ------------------------------------------------------------------------
 
+# 63. Four Compat-Header Stub Fixes Landed: `moduleparam.h`, `export.h`,
+     `linux/interrupt.h` Force-Include, `time64_t`
+
+These four were pure build-plumbing gaps — none has runtime behavior
+of its own, each just satisfies the compiler for a symbol the real
+`wifi.h`/rtlwifi driver files reference. `ip.h` was deliberately held
+out of this batch (see Section 64) since `rtl_is_special_data()`
+reads real IP-header fields and needs an accurate struct layout, not
+a stub.
+
+## 63.1 `src/compat/linux/export.h` (new file)
+
+Real rtlwifi source files sometimes `#include <linux/export.h>`
+directly rather than pulling `EXPORT_SYMBOL` in transitively via
+`<linux/module.h>`. `module.h` already defines `EXPORT_SYMBOL` /
+`EXPORT_SYMBOL_GPL` as no-ops (no separate kernel module symbol table
+exists in this single-binary kext build). Rather than redefine them
+here and risk a duplicate-macro error if a file includes both headers
+in the same translation unit, `export.h` just `#include "module.h"`
+and relies on its existing header guard (`_RTW88_COMPAT_MODULE_H`).
+
+## 63.2 `src/compat/linux/moduleparam.h` (new file)
+
+Same pattern as 63.1, for `module_param()` / `module_param_named()` /
+etc. — already no-ops in `module.h`, redirected rather than
+redefined.
+
+## 63.3 `linux/interrupt.h` pulled in via `rtlwifi_compat.h`, not `wifi.h`
+
+`compat/linux/interrupt.h` already existed (built for the rtw88 port —
+tasklet_struct, request_irq/free_irq, NAPI stubs, etc.) and needed no
+changes. The open question was only *how* it reaches rtlwifi's driver
+files without hand-editing the vendored `wifi.h`. Resolved by adding
+`#include <linux/interrupt.h>` to the top of `rtlwifi_compat.h`
+(before `net/mac80211.h`), since that file is already force-included
+ahead of every rtlwifi `.c` file via `-include $(COMPAT_DIR)/rtlwifi_compat.h`
+in `Makefile.rtl8188ee` (line ~125). Every translation unit gets the
+interrupt shims for free; `wifi.h` stays byte-identical to upstream,
+keeping future `git` diffs against real rtlwifi clean.
+
+## 63.4 `src/compat/linux/time.h` (new file) — `time64_t`
+
+No `time.h` existed in the compat layer previously (only `jiffies.h`
+and `timer.h`). Added a small `linux/time.h` defining `time64_t` as
+`int64_t`, plus `ktime_get_real_seconds()` / `ktime_get_boottime_seconds()`
+built on the same `mach_absolute_time()` approach `jiffies.h` already
+uses for its millisecond `jiffies` counter. Kept as its own file
+(not folded into `jiffies.h`) because real rtlwifi source references
+`<linux/time.h>` / `<linux/time64.h>` by name. No epoch-relative
+semantics were needed — nothing in rtlwifi's actual TX/RX/hw-control
+paths does wall-clock-relative logic; this is coarse elapsed-time
+bookkeeping only, same class of use as `jiffies`.
+
+## 63.5 Status
+
+All four are file-local, additive-only changes under `src/compat/`.
+Nothing in vendored/upstream source (`wifi.h`, `rtl8188ee/*`) was
+touched. No compiler was available in this session's sandbox to
+confirm a clean build (these headers pull in real macOS kernel headers
+like `<kern/clock.h>`, so they can only be fully verified by
+`make -f Makefile.rtl8188ee` on actual macOS) — brace/paren/guard
+balance was checked manually only. **A real build attempt is still
+the next step to fully confirm these**, same open item noted at the
+end of Section 62.
+
+------------------------------------------------------------------------
+
+# 64. Next: `ip.h` (Held Out of Section 63 On Purpose)
+
+Not yet started. Unlike the four fixes above, `rtl_is_special_data()`
+reads real IP-header fields (protocol/ports) to detect DHCP/ARP/EAPOL-
+type frames for TX prioritization — a wrong or oversimplified stub
+here is a runtime correctness bug (silent traffic misclassification),
+not a build nuisance. Needs an accurate struct layout, done as its
+own careful pass rather than folded into the stub batch.
+
+------------------------------------------------------------------------
+
+# 65. First Real `make -f Makefile.rtl8188ee` Attempt — 4 Errors, All Fixed
+
+User ran the actual build on the Mac for the first time (prior sessions
+never had a compiler available). `grep -inE "error:|undefined
+symbol|fatal error"` against the log gave 4 distinct, real errors —
+not flukes, not garbled parallel-`make` noise once isolated:
+
+1. `wifi.h:1664: unknown type name 'time64_t'` — `src/compat/linux/
+   time.h` (Section 63.4) was correct in isolation but never actually
+   `#include`d before `wifi.h` needs it; Section 63.3 wired in
+   `interrupt.h` via `rtlwifi_compat.h` but missed `time.h`.
+2. `wifi.h:1945: unknown type name 'atomic_t'` — same pattern,
+   `src/compat/linux/atomic.h` existed and was correct, never
+   force-included.
+3. `base.c:12: fatal error: 'linux/ip.h' file not found` — genuinely
+   never written (Section 64 predicted this, deliberately deferred
+   pending real usage confirmation).
+4. `core.c:14: fatal error: 'net/cfg80211.h' file not found` —
+   genuinely never written, no prior section claims otherwise.
+
+## 65.1 Fixes 1-2: one-line `rtlwifi_compat.h` addition
+
+Added `#include <linux/time.h>` and `#include <linux/atomic.h>` ahead
+of the existing `#include <linux/interrupt.h>` in `rtlwifi_compat.h`.
+Both headers' own content was untouched — confirmed correct already,
+just not reachable.
+
+## 65.2 Fix 3: `src/compat/linux/ip.h` (new file)
+
+Grepped real usage first rather than guessing (user ran the greps on
+the Mac, since the `linux-kernel`/`rtw88-stable` siblings aren't
+present in whatever sandbox drafts this): `base.c` only uses `struct
+iphdr *ip` cast from a raw byte pointer, inside `rtl_is_special_data()`
+for DHCP/ARP/EAPOL TX-priority classification (Section 64's predicted
+use). Wrote the real on-wire IPv4 header layout byte-for-byte
+(ihl/version bitfield, tos, tot_len, id, frag_off, ttl, protocol,
+check, saddr, daddr) — matching upstream `<uapi/linux/ip.h>` field
+names/order exactly, not a simplified placeholder, since Section 64
+flagged a wrong layout here as a silent runtime correctness bug. Only
+the little-endian bitfield variant was written (rtlwifi/RTL8188EE is
+x86-only in practice); the real header's big-endian branch was
+omitted rather than carried as dead code.
+
+## 65.3 Fix 4: `src/compat/net/cfg80211.h` (new file)
+
+Grepped `core.c`'s actual symbol references first (same session, same
+method). Key finding: most of what `<net/cfg80211.h>` would normally
+provide — `struct wiphy`, `struct ieee80211_channel`, `struct
+cfg80211_chan_def`, `cfg80211_wowlan`, `cfg80211_pkt_pattern`, `enum
+nl80211_chan_width` — **already exists** in the vendored
+`src/compat/net/mac80211.h` (confirmed by grep before writing
+anything, to avoid duplicate-definition errors). The real gap was
+narrower: `struct cfg80211_bss` plus six free functions
+(`cfg80211_get_bss`, `cfg80211_put_bss`, `cfg80211_unlink_bss`,
+`wiphy_rfkill_set_hw_state`, `wiphy_dev`, `cfg80211_get_chandef_type`)
+and two enums used only as that group's arguments
+(`ieee80211_bss_type`, `ieee80211_privacy`).
+
+Implementation choices, each tied to what's actually reachable in this
+compat layer rather than invented:
+- `cfg80211_get_bss`/`put_bss`/`unlink_bss`: no-ops returning
+  NULL/void — there is no cfg80211 BSS scan-result database in this
+  port (no userspace wpa_supplicant/cfg80211 stack on macOS; scan
+  state lives in the IOKit layer's own `runManualScan()`/`scanDone()`
+  path, confirmed already wired per Section 60). Real cfg80211_get_bss
+  callers already null-check (a real "not found" is a normal outcome
+  upstream too), so this doesn't change caller-side control flow.
+- `wiphy_dev`: `struct wiphy` in this compat layer stores its backing
+  pointer as `void *_dev` (confirmed by grep against
+  `src/compat/net/mac80211.h:273`), not a real `struct device *` —
+  returned as-is rather than modeling a `struct device`.
+- `wiphy_rfkill_set_hw_state`: left as an explicit no-op/TODO — the
+  IOKit layer doesn't currently expose an rfkill notification path;
+  flagged as a real gap rather than silently doing nothing
+  unlabeled.
+- `cfg80211_get_chandef_type`: reuses `mac80211.h`'s existing real
+  `enum nl80211_chan_width` (not a parallel invented type), and just
+  returns `chandef->width` directly rather than real cfg80211's fuller
+  derivation logic — justified because RTL8188EE is 20MHz-only
+  802.11n hardware, so 40/80/160MHz derivation branches are physically
+  unreachable for this chip, not a generic shortcut applied blindly.
+
+## 65.4 Status
+
+All four errors from this build attempt have source fixes. None of
+the four required touching vendored/upstream `wifi.h`/`base.c`/
+`core.c` — additive-only under `src/compat/`, consistent with the
+project's stated goal of keeping diffs against real rtlwifi clean.
+**Not yet re-verified by an actual second build attempt** — that's
+the immediate next step, same "next real milestone" framing as
+Sections 62/63. Given the fix-one-round/rebuild-and-see-next-errors
+pattern established this session, further errors past these four
+should be expected and are not a sign anything above is wrong.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

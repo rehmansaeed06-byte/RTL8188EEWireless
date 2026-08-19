@@ -1,0 +1,928 @@
+# RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
+
+## SECOND MAJOR CORRECTION (read this first, after the one below)
+The "build-target duplicate-symbol conflict" described throughout this
+document as the top-priority open item (item 25) was ITSELF misdiagnosed
+as an Xcode target-membership problem. Direct read of `rtw88.xcodeproj`
+(findings.md Section 57) found the Xcode project only tracks the 8
+hand-written compat/kext files — zero references to `rtw88-stable`
+anywhere in it. The actual compiled-in upstream driver source (18
+DRIVER_SRCS + 22 CHIP_SRCS files) is pulled in entirely by
+`Feixiao/Makefile`, not Xcode; multi-chip-family support happens via
+compile-time `-DCONFIG_RTW88_*` defines, not Xcode build phases. There
+is no single Xcode "target" in the sense this document assumed to add a
+second one to.
+
+Resolution: a second, fully parallel Makefile (`Makefile.rtl8188ee`,
+drafted this session, findings.md Section 57) — not a second Xcode
+target. This resolves the duplicate-symbol conflict by construction:
+two separate `make` invocations produce two separate object trees and
+two separately linked kext binaries, never combined into one linker
+call. The earlier `rtlwifi_`/`rtl8188ee_` symbol-prefix workaround
+(items 24/26 below) turns out NOT to have been load-bearing for this —
+it was defensive naming chosen before this Makefile existed, and can
+stay as extra margin without being the actual fix. Read items 25-26
+below with that reframing in mind, same as the first correction asks
+for items 1-21.
+
+## MAJOR CORRECTION (read this first)
+Direct audit of Feixiao's actual source tree (Makefile + rtw88_compat.c)
+found that Feixiao does NOT hand-translate rtw88's driver logic into
+macOS-native code. It compiles the REAL, UNMODIFIED upstream rtw88 Linux
+driver source files directly (main.c, mac.c, phy.c, fw.c, tx.c, rx.c,
+pci.c, all chip-specific files, etc., from a sibling `rtw88-stable`
+checkout) against a LinuxKPI-style compat layer (`src/compat/linux/*`)
+that emulates enough of the Linux kernel API for those files to compile
+under the macOS kernel toolchain. A small compat.c (`rtw88_compat.c`,
+1274 lines) implements the shim primitives plus a handful of genuinely
+OS-specific bridge functions that cast `hw->priv` directly to
+`struct rtw_dev *`.
+
+This means the RTL8188EE port is NOT "hand-translate rtlwifi's C into
+new IOKit-native code, function by function." It is much closer to:
+compile real, unmodified `linux-kernel/.../rtlwifi/*.c` and
+`rtlwifi/rtl8188ee/*.c` files directly against an EXTENDED version of
+the same compat layer, write a small new `rtlwifi_compat.c` (the
+rtlwifi-equivalent of `rtw88_compat.c`, casting `hw->priv` to
+`struct rtl_priv *`), and add a new/generalized IOKit driving layer.
+See findings.md Section 45 for full detail. Everything below this point
+describes the PRIOR (function-by-function hand-translation) model of the
+task, which is now understood to be the wrong mechanism — but the
+behavioral/hazard findings it produced (LPS, IQK triggers, TX path
+shape, MSI setup, etc.) remain accurate and useful for writing the new
+compat bridge layer correctly. Read with that reframing in mind.
+
+
+## Goal
+Build a native RTL8188EE PCIe Wi-Fi kext for macOS Monterey on the HP Pavilion 15-n297ea.
+Target: Realtek RTL8188EE, PCI ID 10EC:8179. This is a real rtlwifi-to-macOS port, not a USB workaround.
+Development/testing should use the USB EFI; do not modify the stable internal EFI. Work one command at a time and verify before proceeding.
+## Project organization / future repository
+
+The eventual goal is to make this project a separate, standalone Git repository for the RTL8188EE macOS port.
+
+This requirement should influence development from the beginning:
+
+- Keep RTL8188EE-specific code separate from Feixiao/rtw88 code wherever practical.
+- Treat Feixiao as a scaffold/reference, not as the identity of the final project.
+- Avoid unnecessarily modifying the original rtw88 implementation.
+- Keep macOS/IOKit code, compatibility code, rtlwifi-derived code, RTL8188EE-specific code, firmware, build files, and documentation logically separated.
+- Track whether reused code is derived from Linux rtlwifi, Feixiao/rtw88, or newly written.
+- Preserve applicable copyright notices, attribution, and licenses.
+- Do not reorganize everything prematurely; first understand the dependencies and architecture.
+- The final project should be maintainable independently of Feixiao where practical.
+- `findings.md` is the detailed technical research record.
+- `rtl8188ee_handover.txt` is the concise AI-to-AI handover and should be updated when major conclusions change.
+
+The eventual repository may look approximately like:
+
+rtl8188ee-macos/
+├── README.md
+├── LICENSE
+├── docs/
+│   ├── findings.md
+│   └── architecture.md
+├── src/
+│   ├── macos/
+│   ├── compat/
+│   └── rtlwifi/
+├── firmware/
+├── build/
+└── tools/
+
+This structure is a future target, not something that must be created immediately.
+
+## Workspace
+`rtl8188ee-port/` (confirmed live path this session, not necessarily
+`~/Developer/...` — verify locally if unsure)
+- Feixiao/ — macOS kext scaffold originally based on rtw88
+- rtw88-stable/ — Linux rtw88 source
+- linux-kernel/ — sparse Linux kernel checkout containing rtlwifi
+  (confirmed present and used directly this session, findings.md
+  Section 55.1 — not just referenced from the handover, actually read)
+- findings.md — detailed research record
+- rtlwifi_compat.c / rtlwifi_compat.h — NEW this session, not yet part
+  of Feixiao's build (see item 25 / open item 11: build-target conflict
+  not yet resolved)
+
+## Core architectural conclusion
+RTL8188EE belongs to Linux's older `rtlwifi` family, not `rtw88`.
+The port therefore needs rtlwifi's shared core plus RTL8188EE-specific code, wrapped by Feixiao's macOS/IOKit layer.
+
+The architecture, CONFIRMED by direct source/Makefile audit (findings.md
+Section 45), is:
+
+Feixiao macOS/IOKit wrapper (RTW88PCIDevice.cpp, RTW88IEEE80211.cpp —
+    drives the compiled-in rtw88 core via its real entry points)
+  -> src/compat/rtw88_compat.c (Linux-primitive shim implementations,
+       PLUS a small number of genuinely OS-specific bridge functions
+       that cast hw->priv directly to struct rtw_dev *)
+  -> src/compat/linux/*.h, src/compat/net/mac80211.h (LinuxKPI-style
+       header shims — intercept every linux/*.h and net/*.h #include)
+  -> REAL, UNMODIFIED rtw88-stable/.../rtw88/*.c (main.c, mac.c, phy.c,
+       fw.c, tx.c, rx.c, pci.c, all chip-specific *.c — compiled AS-IS,
+       not hand-translated, per Makefile DRIVER_SRCS/CHIP_SRCS)
+  -> firmware (embedded as compiled-in blobs, NOT loaded via any
+       macOS equivalent of request_firmware_nowait — see below)
+  -> hardware
+
+The equivalent architecture for RTL8188EE is expected to be: a new/
+extended compat layer + real unmodified rtlwifi/rtl8188ee source files
++ a new small rtlwifi_compat.c + a new/generalized IOKit driving layer
++ embedded rtl8188efw.bin blob. NOT a rewrite of rtlwifi's own C files.
+
+## Confirmed rtlwifi structure
+Shared:
+- base.c/h
+- core.c/h
+- pci.c/h
+- efuse.c/h
+- ps.c/h
+- regd.c/h
+- stats.c/h
+- wifi.h
+- etc.
+
+RTL8188EE:
+- def.h
+- dm.c/h
+- fw.c/h
+- hw.c/h
+- led.c/h
+- phy.c/h
+- pwrseq.c/h
+- reg.h
+- rf.c/h
+- sw.c
+- table.c/h
+- trx.c/h
+
+The main chip-specific work is concentrated in hw.c, phy.c, trx.c, fw.c, dm.c and rf.c. `reg.h` is mostly register definitions.
+
+## Confirmed PCI architecture
+rtlwifi has shared `rtl_pci_probe()`.
+RTL8188EE's `sw.c` uses `.probe = rtl_pci_probe`.
+
+This mirrors the broad rtw88 design:
+PCI driver -> shared PCI probe -> chip-specific configuration/operations.
+
+But the structures differ:
+- rtw88: `rtw_chip_info`, `rtw_dev`
+- rtlwifi: `rtl_hal_cfg`, `rtl_hal_ops`, `rtl_priv`, `rtl_hal`
+
+## Confirmed private-data model
+`rtl_pci_probe()` allocates `ieee80211_hw` with space for `rtl_pci_priv + rtl_priv`.
+`hw->priv` is a `struct rtl_priv *` accessed through rtlwifi's `rtl_priv(hw)` mechanism.
+The rtl_priv object has a flexible private tail associated with PCI state.
+
+Therefore the Feixiao cast from rtw88's `hw->priv` to `struct rtw_dev *` must become the rtlwifi equivalent.
+
+## Feixiao wrapper analysis
+`Feixiao/src/kext/RTW88IEEE80211.cpp` has a relatively small direct rtw88 footprint.
+
+Current rtw88 PCI table contains:
+- 0xB822 RTL8822BE
+- 0xC822 RTL8822CE
+- 0xC82F RTL8822CE variant
+- 0xC821 RTL8821CE
+- 0xB821 RTL8821CE variant
+- 0x8821 RTL8821AE
+- 0x8812 RTL8812AE
+- 0x8813 RTL8814AE
+
+RTL8188EE 0x8179 is absent.
+
+Important finding: for a single RTL8188EE target, a multi-chip rtw88-style lookup table is probably unnecessary. The rtlwifi `rtl88ee_hal_cfg` can be used directly.
+
+The expected mechanical conversion is roughly:
+- `struct rtw_chip_info *` -> `struct rtl_hal_cfg *`
+- `rtw_pci_probe()` -> `rtl_pci_probe()`
+- `struct rtw_dev *` -> `struct rtl_priv *`
+
+Generic macOS/802.11 wrapper logic is much more reusable.
+
+## Bridge layer
+NOTE: `rtw88_compat.c` (1274 lines total) is not exclusively bridge
+functions — roughly its middle third (lines ~502-881) is a generic
+mac80211 API stub implementation (ieee80211_rx_irqsafe,
+ieee80211_tx_status, ieee80211_iterate_active_interfaces,
+ieee80211_beacon_get_tim, etc.), chip-family-agnostic and likely
+directly reusable for rtlwifi. The genuinely rtw88-specific portion is
+smaller than the file's total size suggests.
+
+The important rtw88-specific bridge functions in `Feixiao/src/compat/rtw88_compat.c` are:
+- rtw88_register_vif
+- rtw88_unregister_vif
+- rtw88_set_hw_callbacks
+- rtw88_get_hw
+- rtw88_sw_scan_start
+- rtw88_sw_scan_switch_channel
+- rtw88_sw_scan_complete
+- rtw88_connect_hw_setup
+- rtw88_restore_connected_hw
+
+All nine have now been fully read (see findings.md Sections 40 and
+40.6). None appear to require a rtlwifi-specific rewrite — every one
+either was already trivial, or had its rtw88-specific hazard
+(LPS-poll, forced calibration) traced to a rtlwifi equivalent that
+was source-confirmed safe. The working conclusion is that the stock
+rtlwifi mac80211 ops path can be used directly across the board,
+which is a substantial simplification of the bridge layer versus the
+original assumption that most of these would need rewriting.
+
+## Important channel-switch / LPS finding
+RTL8188EE channel switching was inspected in:
+`linux-kernel/drivers/net/wireless/realtek/rtlwifi/rtl8188ee/phy.c`
+
+Functions inspected:
+- `rtl88e_phy_sw_chnl_callback()`
+- `rtl88e_phy_sw_chnl()`
+- `_rtl88e_phy_sw_chnl_step_by_step()`
+
+There is a `do { ... } while (true)` loop, but it is a scripted step-by-step state machine, not an indefinite register-polling loop.
+
+The inspected path uses bounded `mdelay(delay)` calls and predefined channel-switch commands. No pattern like `while (read_reg(...) & BIT_X)` waiting indefinitely for hardware/firmware was found.
+
+### Consequence
+The specific rtw88 LPS hazard that motivated a custom connection/channel bridge was NOT found in the inspected RTL8188EE rtlwifi channel-switch path.
+
+Therefore the current preferred design is to use normal rtlwifi/mac80211 channel operations rather than inventing an RTL8188EE-specific channel-switch bypass.
+
+This is a strong static-analysis conclusion, not runtime proof.
+
+Still open: verify whether RF calibration/IQK is automatically handled appropriately after channel changes.
+
+## What appears reusable
+Likely reusable from Feixiao:
+- IOKit object lifecycle
+- locks and thread_call setup
+- macOS-facing wrapper
+- generic `ieee80211_hw` interaction
+- `ieee80211_vif` creation
+- generic `ieee80211_ops` calls
+- key installation through `_hw->ops`
+- MAC retrieval through `wiphy->perm_addr`
+- generic RX/TX/status callback concepts
+- generic scan/join logic where it does not depend on rtw88 internals
+
+Both rtw88 and rtlwifi sit under mac80211, so the common abstraction is valuable.
+
+## What is NOT drop-in compatible
+Do not copy these directly:
+- rtw_chip_info
+- rtw_dev
+- rtw_pci_probe
+- rtw88 core functions
+- rtw88 private structures
+- rtw88 firmware/LPS logic
+
+They must be replaced with rtlwifi equivalents.
+
+## Biggest remaining technical risk (REVISED AGAIN — coverage diff done,
+   findings.md Section 47)
+
+The Linux-API coverage-diff has now actually been done (not just
+planned). Result: the gap between the existing rtw88-built compat
+layer and what real rtlwifi source needs is SMALL and LOW-RISK —
+narrower than this section previously implied. Confirmed already
+covered directly: bitfield.h, completion.h, etherdevice.h,
+firmware.h, interrupt.h, pci.h, usb.h, vmalloc.h, module.h,
+net/mac80211.h (substantial, not a stub — 252 cfg80211/wiphy/
+ieee80211 references). Missing but low-risk: linux/export.h,
+linux/moduleparam.h (macro-only, no real behavior), linux/sched.h
+(single generic include site in wifi.h, exact symbol usage not yet
+traced — minor loose end), linux/ip.h + linux/udp.h (isolated to one
+read-only DHCP/ARP/EAPOL classification function in base.c —
+`rtl_is_special_data()` — needs only two fixed-layout struct
+definitions, no real networking-stack behavior).
+
+Remaining Tier 2/3 work (bridge-function authoring, IOKit driving
+layer) is now well-templated by findings.md Sections 46-47 — see
+below.
+
+## Confirmed TX path
+Full chain traced source-to-source (findings.md Section 40.7):
+
+```
+mac80211 -> rtl_op_tx (core.c) [gate checks: RF power on, interface started]
+  -> intf_ops->waitq_insert (rtl_pci_tx_chk_waitq_insert)
+  -> intf_ops->adapter_tx = rtl_pci_tx (pci.c)
+       [lock, select ring/desc by hw_queue, ring-full check via
+        cfg->ops->get_desc(HW_DESC_OWN)]
+       -> cfg->ops->fill_tx_desc = rtl88ee_tx_fill_desc (trx.c)
+       -> cfg->ops->set_desc(HW_DESC_OWN) [hand off to hw]
+       [unlock, backpressure if <2 free descriptors]
+       -> cfg->ops->tx_polling = rtl88ee_tx_polling (trx.c) [hw kick]
+```
+
+Two separate ops tables involved: `intf_ops` (bus/transport,
+PCI-specific — this is the layer needing a full IOKit/PCIe rewrite)
+vs `cfg->ops` (chip behavior — same dispatch pattern as hw_init,
+dm_watchdog, switch_channel, etc.). Chip-specific fill/polling
+functions are comparatively narrow and self-contained.
+
+Open sub-item: which `use_new_trx_flow` branch RTL8188EE uses —
+**RESOLVED (findings.md Section 40.9.2): `use_new_trx_flow = false`**
+for RTL8188EE (only RTL8192EE/RTL8822BE use the newer flow) — older
+`ring->idx`-based indexing applies.
+
+## Confirmed PCI BAR mapping / MMIO register access
+Full chain traced (findings.md Section 40.8):
+
+- `_rtl_pci_io_handler_init` (pci.c:344) — trivial, just wires
+  `rtlpriv->io.read*/write*` function pointers to `pci_*_sync/async`
+  primitives (pci.h:243-273).
+- Those primitives are plain `readb/readw/readl` /
+  `writeb/writew/writel` over `rtlpriv->io.pci_mem_start + addr`.
+  "sync"/"async" is standard Linux MMIO terminology (posted write vs
+  blocking read), not threading/queuing — no locking involved.
+- `pci_mem_start` is set inside `rtl_pci_probe` itself:
+  `pci_request_regions` → `pci_resource_start/len/flags(pdev,
+  rtlpriv->cfg->bar_id)` [bar_id is chip-specific, from rtlpriv->cfg]
+  → `pci_iomap(pdev, bar_id, pmem_len)` → `pci_mem_start`. Plus two
+  PCI config-space writes (not MMIO): disable Clock Request (0x81),
+  leave D3 (0x44).
+- Teardown: `pci_iounmap`.
+
+Low-risk macOS translation target: maps cleanly onto
+`IOPCIDevice::open()` + `mapDeviceMemoryWithIndex` (BAR mapping) and
+`IOMemoryMap`'s `readRegister*`/`writeRegister*` (register access).
+The two config-space writes go through a different macOS API
+(`configWrite8`), not the BAR-mapped accessors — worth keeping
+separate in the eventual port.
+
+Still unread: `rtl_pci_parse_configuration` (called at the end of
+`_rtl_pci_find_adapter`, presumed ASPM/link-control parsing) and
+`rtl_pci_intr_mode_msi`/`_rtl_pci_interrupt` (MSI IRQ registration,
+directly Tier-1 relevant — new lead, not yet read).
+
+`_rtl_pci_find_adapter` (pci.c:1798) is now fully read (findings.md
+Section 40.9): PCI device-ID → `rtlhal->hw_type` dispatch table
+(confirms `RTL_PCI_8188EE_DID` → `HARDWARE_TYPE_RTL8188EE`), sets
+`use_new_trx_flow` (see TX path section above), and does PCI-bridge
+vendor/ASPM-quirk detection. No hazards found. **Both originally-
+flagged pci.c static helpers are now fully read — this closes out
+the last item from the original Tier-1 pci.c investigation.**
+
+## Confirmed rtl8188ee/sw.c — FULLY READ (findings.md Sections 40.10, 40.11)
+
+- **Firmware:** filename `"rtlwifi/rtl8188efw.bin"`, buffer
+  `vzalloc(0x8000)` (32KB), loaded via `request_firmware_nowait(...,
+  rtl_fw_cb)`. `rtl_fw_cb` itself not yet read. Core gap: Linux's
+  firmware-loader subsystem has no macOS equivalent — port needs an
+  explicit load-and-hand-off mechanism.
+- **`bar_id = 2`** — RTL8188EE maps PCI BAR index 2 (ties to Section
+  40.8.3's `pci_iomap` call).
+- **PCI ID table confirmed:** `0x8179` → `rtl88ee_hal_cfg` via
+  `RTL_PCI_DEVICE(PCI_VENDOR_ID_REALTEK, 0x8179, rtl88ee_hal_cfg)`.
+  Driver struct confirms `.probe = rtl_pci_probe` (shared) and PM
+  ops via `rtl_pci_suspend`/`rtl_pci_resume`.
+- **Module param defaults:** `msi_support = true` (MSI is the
+  default-exercised path — relevant once `rtl_pci_intr_mode_msi` is
+  read), `swctrl_lps = false`, `fwctrl_lps = false` (LPS mechanism
+  may not engage on a first bring-up unless explicitly enabled —
+  doesn't change safety conclusions already reached, just affects
+  what a boot test exercises). Flagged discrepancy: the `fwlps`
+  MODULE_PARM_DESC comment claims "default 1" but the struct literal
+  says `false` — actual default is `false` (struct wins); comment
+  appears stale in upstream source.
+- **IRQ:** `irq_mask[0]/[1]`, `sys_irq_mask` hardcoded bitmask
+  constants — the interrupt sources RTL8188EE enables.
+- **Band/PHY:** single-band (2.4GHz only), single-MAC/single-PHY.
+- **BT-coexist lead:** `rtl88e_get_btc_status()` hardcoded `false` —
+  real signal toward "btcoexist can be stubbed," not conclusive;
+  `rtl8188ee_bt_reg_init` body still unread.
+
+## Still open (REVISED again — rtw_register_hw body read + g_rtw88_hw
+   call-site CORRECTED, findings.md Section 50)
+
+Both Section 48.5 loose ends are now RESOLVED (findings.md Section 49,
+`rtl_pci_probe()` full body read directly, lines 2071-2258):
+- **Chip-conditional quirk branches: none found.** The only
+  quirk-adjacent code in `rtl_pci_probe` (Clk-Request disable, D3-exit
+  byte writes, `rtl_pci_init_aspm(hw)` call) is generic and runs
+  unconditionally for every rtlwifi chip — no `hw_type ==`-style
+  branch anywhere in the function, unlike rtw88's inline 8821C
+  ASPM-L1 quirk. ASPM is handled via a dispatched function call, not
+  inline logic.
+- **IRQ vs. hw-registration ordering: same as rtw88.**
+  `ieee80211_register_hw(hw)` runs, then `rtl_debug_add_one`/
+  `rtl_init_rfkill`, then `rtl_pci_intr_mode_decide(hw)` (IRQ setup)
+  last. hw registration before IRQ wiring, matching rtw88's
+  `rtw_register_hw()` → `rtw_pci_request_irq()` order. No ordering
+  asymmetry between the two driver families for the IOKit port to
+  reconcile.
+- **New implementation note surfaced (not a question, a requirement):**
+  the `fail3:` error-unwind label calls
+  `wait_for_completion(&rtlpriv->firmware_loading_complete)` before
+  `deinit_sw_vars(hw)` — confirms teardown genuinely blocks on
+  firmware-load completion if core/PCI-init fails after firmware load
+  was already kicked off. The IOKit teardown/detach path must
+  replicate this specific blocking behavior in the equivalent unwind
+  branch, not just at final detach.
+
+**CORRECTION (findings.md Section 50):** Item 1 below ("`rtw_register_hw`'s
+own body... confirmed as the actual call site for
+`rtw88_register_hw()`") was WRONG. Both `rtw_register_hw()`'s full body
+was read AND the real `rtw88_register_hw()` call site was found by
+grepping the whole Feixiao tree. `rtw_register_hw()` (real, unmodified
+upstream rtw88 — mac80211 capability flags, wiphy setup, regd/led
+init, `ieee80211_register_hw()`, plus its own unrelated inline
+`RTW_CHIP_TYPE_8822C` quirk branch) contains **no call to
+`rtw88_register_hw()` and no reference to `g_rtw88_hw`** anywhere.
+
+The real call site is inside the **compat shim's own
+`ieee80211_alloc_hw()`** implementation
+(`src/compat/net/mac80211.h`, right before `return hw;`), tagged
+`/* belt: global fallback */`. This means `g_rtw88_hw` is populated at
+the very first Linux-API call inside `rtw_pci_probe()` — before
+`rtw_core_init`, before chip setup, before real mac80211 registration,
+before IRQs — not as a side effect of registration. This actually
+vindicates Section 46.5's *original* guess (inside
+`ieee80211_alloc_hw`) over Section 48.3's revision (inside
+`rtw_register_hw`), which turned out to be the wrong correction.
+
+Remaining open items:
+1. **RESOLVED this session (findings.md Section 55.5)** — whether
+   RTL8188EE hardware physically leaves the CCMP IV bytes in the skb
+   after hardware decryption. `base.c`'s `rtl_skb_ether_type_ptr()`
+   confirms rtlwifi's own driver code uses the identical 8-byte
+   CCMP-header-skip convention as rtw88's compensation. Not a
+   byte-for-byte post-hw-decrypt trace the way Section 54.2's read was,
+   so `rtlwifi_compat.c` ships the 8-byte-skip decision provisionally,
+   pending boot-test confirmation (see item 9 below) — but this is no
+   longer a coin-flip open question, it's an evidenced decision.
+2. **RESOLVED this session (findings.md Section 55.2)** — the specific
+   rtlwifi `rtl_priv`-side scan-in-progress field. It's
+   `rtlpriv->mac80211.act_scanning` (a plain `bool`, accessed via the
+   `rtl_mac(rtlpriv)` macro), set/cleared in `rtl_op_sw_scan_start()`/
+   `rtl_op_sw_scan_complete()` (core.c). `rtlwifi_is_scanning()` is
+   written and confirmed in `rtlwifi_compat.c`.
+3. `linux/sched.h` exact symbol usage — still open, minor, unchanged.
+4. `rtw88_compat.c`'s generic mac80211-stub portion — narrowed this
+   session (findings.md Section 55.4): the RX/tx-status/scan-done
+   callback cluster (9 functions) is now fully read and mirrored in
+   `rtlwifi_compat.c`. Still open beyond that cluster — whether
+   rtlwifi's *broader* mac80211 API usage exceeds what's implemented.
+5. IOKit teardown path must account for the Section 49.5
+   block-on-firmware-completion behavior in the `fail3:`-equivalent
+   unwind branch — implementation note, not yet written into any file.
+6. **DONE this session** — `rtlwifi_compat.c` replicates the offset-0
+   struct-layout trick (findings.md Section 51.3-51.4) for its own
+   `wiphy_to_ieee80211_hw()`/`rtlwifi_get_hw()` hw-lookup pair.
+7. **DONE this session** — `rtlwifi_compat.c`'s TX/RX wiring mirrors
+   the direct-dispatch/intercept pattern: `ieee80211_alloc_hw()`,
+   `ieee80211_rx_irqsafe()`/`ieee80211_rx_napi()`,
+   `ieee80211_tx_status_irqsafe()`/`ieee80211_tx_status()`,
+   `ieee80211_scan_completed()`, and the queue no-ops are all written,
+   confirmed against the real `rtw88_compat.c` source (not inferred).
+   The IOKit-layer callers of these (rtlwifi's own equivalent of
+   `outputPacket()`/`rxFrame()`) are still not written — this item
+   covered the compat-shim half only, not the IOKit-driving half.
+8. `rtlwifi_compat.c`'s RX handling implements the item-1 decision
+   (skip header + 8 bytes CCMP) — done, pending boot-test confirmation.
+9. Runtime boot-test verification of the LPS-hazard (findings.md
+   Section 40.4), RF-calibration (Section 40.5), and now also the
+   CCMP-IV-skip (Section 55.5) conclusions — all static-analysis
+   results, not yet runtime-confirmed. Not answerable by source
+   reading.
+10. General macOS Monterey runtime stability — unknown until something
+    is bootable.
+11. **NEW this session (findings.md Section 55.6) — build-target
+    duplicate-symbol conflict, highest-priority open item.** Feixiao is
+    a single-target build (`rtw88.xcodeproj`, no chip-family `#ifdef`
+    guards anywhere in `rtw88_compat.c`). `rtlwifi_compat.c` defines the
+    same 9 real mac80211-API function names `rtw88_compat.c` already
+    defines (`ieee80211_rx_irqsafe`, `ieee80211_tx_status_irqsafe`,
+    `ieee80211_scan_completed`, etc.) — compiling both into the same
+    target is a guaranteed link error, not a possibility. This is a
+    project-structure decision (separate Xcode target excluding
+    `rtw88_compat.c`; a renamed-symbol scheme; or another explicit
+    mutual-exclusion mechanism), not a source-reading question, and it
+    blocks ever actually compiling `rtlwifi_compat.c` into the project
+    as it stands. Not resolved this session — flagged directly in
+    `rtlwifi_compat.h`'s header comment.
+
+**RESOLVED this session (findings.md Section 53):** the long-standing
+`rtw88_is_scanning()` open item (open since Section 45.6) is now
+closed. Full body read: a plain accessor —
+`test_bit(RTW_FLAG_SCANNING, rtwdev->flags)` via `g_rtw88_hw`, no
+polling, no MMIO access. Its one call site (`doAuthenticate()`) uses it
+in a bounded sleep-loop (up to 100 × 50ms `IOSleep` = 5s ceiling) to
+let an in-progress scan finish — specifically to avoid a
+mutex-contention race with `rtw_core_scan_complete()`, which clears the
+flag under `rtwdev->mutex` in the c2h_work thread — not an MMIO hazard
+like Section 40's LPS-leave issue. Same safe "bounded wait, not a
+register poll" category as rtlwifi's own already-confirmed channel-
+switch delays (Section 40.3). No hazard; nothing to bypass or rewrite.
+Port implication: `rtlwifi_compat.c` needs its own small accessor for
+whatever scan-flag rtlwifi's `rtl_priv`/mac80211 layer uses, with the
+same bounded-sleep-loop call-site pattern — the specific field is not
+yet located (new open item above), but this is a small, well-scoped
+porting task now that the rtw88-side shape is fully confirmed.
+
+**RESOLVED this session (findings.md Section 52):** the long-standing
+"RX/TX data-path wiring — still unread" item is now fully closed. Full
+TX chain read: `RTW88PCIDevice::outputPacket()` →
+`RTW88IEEE80211::outputPacket()` → `txDataFrame()` (hand-builds the
+complete 802.11 data frame — header, QoS control, CCMP, LLC/SNAP —
+from the raw Ethernet mbuf) → `_hw->ops->tx(_hw, &ctrl, skb)`, a direct
+function-pointer call into real rtw88's own `tx` mac80211 op,
+bypassing mac80211's TX queueing entirely (same "bypass mac80211 ops,
+call driver entry points directly" pattern as the Section 40
+connect/reconnect bridge functions). Full RX chain read: real rtw88
+driver code calls `ieee80211_rx_irqsafe()`, intercepted by the compat
+shim, dispatched through a registered callback to
+`RTW88IEEE80211::rxFrame()` → type dispatch → for data frames,
+optional per-TID BlockAck reorder buffer → `deliverDataFrame()`
+(header stripping, CCMP-IV compensation, A-MSDU de-aggregation, LLC/SNAP
+parsing, EAPOL special-case) → `deliverEthernet()` → hands off via
+`_parent->allocateInputPacket()` (NOT the TX-side
+`rtw88_make_packet_mbuf()`/`mbuf_allocpacket` helper — a deliberate
+distinction, per an explicit comment about dlil input-validator
+requirements) into the macOS networking stack.
+
+**RESOLVED this session (findings.md Section 51):** both loose ends
+from the block above are now closed. (1) The two `g_rtw88_hw`
+declarations are not a bug — line 372 is a standard C tentative
+(forward) definition, explicitly commented as such, later defined with
+an initializer at line 805; same single variable, correct C. (2) The
+"belt: global fallback" primary lookup is `wiphy_to_ieee80211_hw()` —
+not a real lookup table, but a pointer-reinterpretation trick: the
+compat `ieee80211_alloc_hw()` sets `hw->wiphy->_dev = hw->priv`
+(offset 0), and since `ieee80211_hw::priv` is also offset 0, casting
+`wiphy*` straight to `ieee80211_hw*` recovers `rtwdev` by struct-layout
+construction, not search. Fragile in general, low-risk here (single
+chip/wiphy/hw instance). `rtlwifi_compat.c` should replicate this same
+pattern rather than invent a different mechanism.
+
+## rtlwifi source mapping: COMPLETE (see findings.md Sections 40.5–40.17)
+
+Every question from the original investigation plan has been traced
+to a source-verified answer. Summary of what's confirmed clean (no
+hazards, no rtlwifi-specific rewrite needed) across the whole
+investigation:
+
+- **LPS/channel-switch hazard**: does not exist in rtlwifi's
+  equivalent path. Both `rtw88_connect_hw_setup`/
+  `rtw88_restore_connected_hw` bridge functions have no rtlwifi-side
+  reason to exist as custom bypasses.
+- **RF calibration (IQK)**: driven by `rtl88ee_hw_init` (once) and
+  `rtl88e_dm_watchdog` (periodic, thermal-drift-gated) — never by
+  channel switch.
+- **All nine Category B bridge functions**: read in full, none need
+  rewriting — bridge layer collapses to "use stock rtlwifi mac80211
+  ops directly."
+- **Full TX path**: `rtl_op_tx` → `intf_ops->adapter_tx` (PCI, needs
+  IOKit rewrite) → `cfg->ops->fill_tx_desc`/`tx_polling`
+  (RTL8188EE-specific, narrow/self-contained). `use_new_trx_flow =
+  false` confirmed.
+- **pci.c fully closed**: BAR/MMIO mapping, device-ID dispatch,
+  MSI interrupt registration (`rtl_pci_intr_mode_msi` +
+  `_rtl_pci_interrupt`), and config-space parsing
+  (`rtl_pci_parse_configuration`) all read. MSI preferred with clean
+  fallback to legacy pin-based IRQ; handler does single-ISR-read +
+  bitmask-dispatch, no polling.
+- **`rtl8188ee/sw.c` fully closed**: `bar_id = 2`, PCI ID table entry
+  (`0x8179` → `rtl88ee_hal_cfg`), module-param defaults
+  (`msi_support = true`, `swctrl_lps`/`fwctrl_lps = false` — flagged
+  stale `fwlps` doc-comment vs. struct-literal discrepancy, struct
+  wins), IRQ bitmask constants, single-band/single-MAC/single-PHY.
+- **Scan-complete op**: `rtl_op_sw_scan_complete` — cleanup only, one
+  dispatched call, no hazard.
+- **Btcoexist**: `rtl8188ee_bt_reg_init` is trivial struct init;
+  `rtl8188ee_bt_hw_init`'s register-touching path is gated on
+  `bt_coexistence`, already dead code for this chip upstream.
+  **Btcoexist confirmed safe to stub entirely.**
+- **Firmware load/hand-off, fully traced end-to-end**: filename
+  `rtlwifi/rtl8188efw.bin`, 32KB buffer, `request_firmware_nowait(...,
+  rtl_fw_cb)`. `rtl_fw_cb`/`rtl_fw_do_work` (shared across all
+  rtlwifi chips): null-firmware fallback via synchronous
+  `alt_fw_name` request, size-checked, memcpy into `pfirmware`,
+  always releases + always signals completion. **Correction**: the
+  completion object is teardown-safety only (both
+  `wait_for_completion` call sites are in error-cleanup/device-removal
+  paths) — `rtl_pci_probe()` does NOT block on firmware load.
+  **Readiness at consumption point** (`rtl88ee_hw_init` →
+  `rtl88e_download_fw`): simple synchronous
+  `if (!rtlhal->pfirmware) return 1;` — null-check-and-fail-fast, no
+  polling, no wait. `hw_init` fails cleanly and explicitly if
+  firmware isn't ready; relies on `hw_init` being called later (from
+  `rtl_op_start`, on interface bring-up) rather than during probe,
+  giving the async load practical time to complete. **Port
+  implication:** macOS probe/attach can succeed without waiting for
+  firmware; the later hw-init equivalent needs the same fail-fast
+  readiness check, not a blocking wait.
+
+## Do not do yet
+- Do not simply add 0x8179 to Feixiao's rtw88 table.
+- Do not copy the entire rtlwifi tree blindly.
+- Do not rewrite large sections before dependencies are understood.
+- Do not modify the internal EFI.
+- Do not test an unverified kext on the internal boot configuration.
+- Do not assume `rtw88_connect_hw_setup`/`rtw88_restore_connected_hw`
+  can simply be deleted — source-verified but not yet
+  runtime-verified; comment out/bypass first, don't delete outright.
+
+## Bottom line
+The project is NOT simply "port the whole Linux driver" — and, per the
+Section 45 correction above, it is also NOT "hand-translate rtlwifi's C
+into new IOKit-native code." It is: compile real, unmodified rtlwifi
+source against an extended Linux-compat shim layer, the same strategy
+Feixiao already uses for rtw88.
+
+The evidence currently says:
+1. RTL8188EE uses rtlwifi, not rtw88.
+2. rtlwifi has a shared PCI probe analogous to rtw88.
+3. RTL8188EE has `rtl_hal_cfg` + `rtl_hal_ops` for chip-specific behavior.
+4. `hw->priv` is `rtl_priv`.
+5. **CONFIRMED (was previously an estimate): Feixiao's macOS wrapper
+   does not reimplement rtw88's driver logic at all — it compiles real
+   upstream rtw88 source directly and has only a thin, genuinely
+   OS-specific bridge/compat layer.** This is a stronger and different
+   claim than "relatively small direct rtw88 dependency."
+6. A dedicated rtw88-style PCI-ID table is unnecessary for the single RTL8188EE target.
+7. The suspected rtw88 LPS/channel-switch hazard was not found in the inspected RTL8188EE channel-switch path.
+8. Normal rtlwifi/mac80211 channel operations are therefore preferred unless later source/runtime evidence shows otherwise.
+9. RF calibration (IQK) on RTL8188EE is driven by hw_init (once) and a periodic thermal-drift watchdog — never by channel switch — so rtw88_connect_hw_setup's forced-calibration step also has no needed rtlwifi equivalent. Both reasons for that bridge function's existence are now accounted for by rtlwifi's normal paths (static analysis; runtime boot test still pending).
+10. The main remaining challenge is now **compat-layer Linux-API coverage** (does the existing rtw88-targeted shim cover what real rtlwifi source needs, and where must it be extended) rather than hand-translating PCI/DMA/IRQ/MMIO logic into IOKit.
+11. **rtlwifi BEHAVIORAL source mapping is complete** (Sections 40.5–40.17): all bridge-function-relevant hazards, IQK triggers, TX path shape, pci.c internals, MSI setup, btcoexist, and firmware hand-off timing are understood. This knowledge is what's needed to write a correct, minimal `rtlwifi_compat.c` — it does not mean rtlwifi's C files need hand-porting; they don't, per Section 45.
+12. **Firmware loading should be embedded-blob-based** (mirroring `rtw88_firmware.c`/`fw_blobs.c`), bypassing `request_firmware_nowait`/`rtl_fw_cb` entirely rather than porting them — confirmed as Feixiao's actual, working pattern for rtw88, not a hypothetical.
+13. **The gating items before writing port code are now resolved or
+    substantially de-risked:** the IOKit driving sequence is traced
+    end-to-end (item 14) and the compat-layer coverage diff is done
+    (item 15). What remains is smaller-scoped: reading
+    `rtw_pci_probe`'s body and the RX/TX data-path wiring, resolving
+    the `rtw88_is_scanning()`/mac80211-stub-coverage loose ends, and
+    then actually writing the new `rtlwifi_compat.c` + IOKit driving
+    layer + extended compat headers.
+14. **NEW — full IOKit driving sequence traced end-to-end and
+    confirmed (findings.md Section 46):** `RTW88PCIDevice::start()`
+    (BAR2 map, hand-built `pci_dev`, IRQ setup) →
+    `RTW88IEEE80211::create()`/`init()` (callback registration) →
+    `RTW88IEEE80211::start()` (chip-ID lookup, synthetic
+    `pci_device_id`, direct call to `rtw_pci_probe()`, `hw->priv` cast,
+    manual `ieee80211_vif` construction, `hw->ops->start()`). Key
+    findings: (a) `rtw_pci_probe()` is called as a plain, direct C
+    function — no Linux PCI driver-registration/module-loading
+    machinery is emulated at all; (b) the PCI BAR index (2) is
+    hardcoded in the IOKit C++ layer, not read from any chip-info
+    struct — correct for RTL8188EE by independently-confirmed
+    coincidence (bar_id=2, Section 40.11.1), but not a general
+    mechanism; (c) chip selection for a single-chip RTL8188EE port
+    needs no PCI-ID table at all — even simpler than Feixiao's own
+    multi-chip lookup table; (d) `hw->ops->start(_hw)` is confirmed as
+    the real call site corresponding to `rtl_op_start`/
+    `rtl88ee_hw_init` in the rtlwifi behavioral model from Sections
+    1-44 — strong cross-validation between the two halves of this
+    investigation.
+16. **NEW — `rtw_pci_probe`'s real body read in full (findings.md
+    Section 48):** confirms the exact two-layer private-data
+    allocation pattern (`sizeof(struct rtw_dev) + sizeof(struct
+    rtw_pci)`, single `ieee80211_alloc_hw` call, `hw->priv` = primary
+    struct, tail `->priv` = bus struct) — strong cross-family
+    validation of the same pattern the original handover documented
+    for rtlwifi from source reading alone. Corrects the
+    `rtw88_register_hw()` call-site inference: it fires via
+    `rtw_register_hw(rtwdev, hw)`, a distinct step in `rtw_pci_probe`
+    itself, not inside `ieee80211_alloc_hw`. Surfaces two new
+    rtlwifi-side open questions not covered by the earlier Sections
+    1-44 investigation: whether `rtl_pci_probe` has inline
+    chip-conditional quirk branches beyond ID-matching (rtw88's does,
+    for one chip/bridge combo), and whether IRQ registration is
+    ordered before or after hw registration in rtlwifi (rtw88 does hw
+    registration first, then IRQs).
+17. **NEW — `rtl_pci_probe`'s real body read in full (findings.md
+    Section 49), resolving both Section 48.5 open questions:**
+    confirmed no inline chip-conditional quirk branches exist in
+    rtlwifi's shared probe (ASPM handled via dispatched function call,
+    not inline logic — architecturally cleaner than rtw88's inline
+    8821C quirk); confirmed IRQ registration is ordered after hw
+    registration, same relative order as rtw88. Also surfaced a new
+    implementation requirement (not previously tracked): the
+    `fail3:` error-unwind path genuinely blocks on
+    `firmware_loading_complete` before calling `deinit_sw_vars`, which
+    the IOKit teardown/detach path must replicate in its equivalent
+    unwind branch.
+18. **NEW/CORRECTED — `rtw_register_hw()`'s real body read in full,
+    and the true `rtw88_register_hw()`/`g_rtw88_hw` call site found
+    and confirmed (findings.md Section 50):** `rtw_register_hw()` is
+    plain unmodified upstream rtw88 (capability flags, wiphy setup,
+    regd/led init, `ieee80211_register_hw()`, its own unrelated
+    8822C quirk branch) and contains NO call to `rtw88_register_hw()`.
+    **This corrects Section 48.3's inference, which was wrong.** The
+    real call site is inside the compat shim's own
+    `ieee80211_alloc_hw()` (`src/compat/net/mac80211.h`), meaning
+    `g_rtw88_hw` is populated at the very first Linux-API call in
+    `rtw_pci_probe()` — before core init, chip setup, real mac80211
+    registration, or IRQs — not as a registration side effect. This
+    vindicates Section 46.5's original guess over 48.3's later
+    "correction." Net effect: no behavior changed, but the documented
+    call site and timing were wrong for two sessions and are now
+    fixed. Surfaces two new minor open items: a possible duplicate
+    `static g_rtw88_hw` declaration in `rtw88_compat.c`, and an
+    unread "primary" wiphy-keyed lookup function implied by a
+    "belt: global fallback" code comment.
+19. **NEW — both Section 50.7 loose ends resolved (findings.md
+    Section 51):** the "duplicate" `g_rtw88_hw` declaration is a
+    standard C tentative (forward) definition, explicitly commented as
+    intentional — not a bug. The "belt: global fallback" primary
+    lookup is `wiphy_to_ieee80211_hw()`: not a real lookup table but a
+    pointer-reinterpretation trick exploiting that `hw->wiphy->_dev`
+    and `ieee80211_hw::priv` are both offset 0 in their structs, so
+    casting `wiphy*` to `ieee80211_hw*` recovers `rtwdev` directly.
+    Fragile in general but low-risk for this single-chip port.
+    `rtlwifi_compat.c` should replicate the same offset-0 pattern for
+    its own hw-lookup mechanism.
+20. **NEW — full RX/TX data-path wiring read end to end (findings.md
+    Section 52), closing the item open since Section 46.7:** TX is
+    `outputPacket()` → `txDataFrame()` (hand-builds the complete
+    802.11 frame: header, QoS control, CCMP, LLC/SNAP — from the raw
+    Ethernet mbuf) → `_hw->ops->tx()`, a direct function-pointer call
+    into real rtw88's own tx op, bypassing mac80211's TX queueing —
+    same direct-dispatch pattern as the Section 40 connect/reconnect
+    bridge functions. RX is real rtw88 code calling
+    `ieee80211_rx_irqsafe()` (intercepted by the compat shim) →
+    registered callback → `rxFrame()` → type dispatch → optional
+    per-TID BlockAck reorder buffer for QoS data → `deliverDataFrame()`
+    (header stripping, CCMP-IV compensation, A-MSDU de-aggregation) →
+    `deliverEthernet()` → `allocateInputPacket()` (deliberately NOT the
+    TX-side mbuf helper, for dlil-validator correctness) into the
+    macOS networking stack. Port implication: rtlwifi's TX/RX wiring
+    should mirror this same direct-dispatch/compat-intercept shape;
+    whether rtlwifi's decrypted RX frames leave the CCMP IV in place
+    the same way is a new, not-yet-checked question.
+21. **NEW — `rtw88_is_scanning()` fully read, closing the item open
+    since Section 45.6 (findings.md Section 53):** a plain accessor
+    (`test_bit(RTW_FLAG_SCANNING, rtwdev->flags)`), no polling, no
+    MMIO. Its one call site (`doAuthenticate()`) uses a bounded
+    sleep-loop (5s ceiling, `IOSleep`-based) to avoid a
+    mutex-contention race with scan completion — not an MMIO hazard,
+    same safe category as rtlwifi's own bounded channel-switch delays
+    (Section 40.3). No rewrite needed. Port implication: a small
+    `rtlwifi_compat.c` accessor for rtlwifi's own scan-flag is needed;
+    the specific `rtl_priv`-side field is not yet located (new, minor,
+    well-scoped open item).
+22. **NEW — rtlwifi/RTL8188EE's RX decryption-status mechanism read in
+    full; the CCMP-IV question REFRAMED, not cleanly resolved
+    (findings.md Section 54):** `rtl8188ee/trx.c` (lines 380-450) sets
+    `RX_FLAG_DECRYPTED` from a hardware descriptor bit
+    (`get_rx_desc_swdec`), with an explicit carve-out that forces the
+    flag back off for robust-management-frames (802.11w/PMF) so
+    mac80211's own decryption handles those specifically. This is a
+    real mac80211-facing flag meant for mac80211's own RX pipeline —
+    structurally different from rtw88's approach (bypass mac80211 RX
+    entirely, manually strip headers, with a source comment noting the
+    CCMP IV is deliberately left in place to compensate). Since this
+    port also bypasses mac80211's RX processing, the actual physical
+    IV-byte presence/absence in the skb after hardware decryption is
+    still not confirmed by this reading — narrowed and re-scoped as
+    item 1 in "Remaining open items" above, not resolved.
+23. **NEW — `linux-kernel/` (the real rtlwifi source tree) confirmed
+    present and used directly for the first time this session
+    (findings.md Section 55.1):** all prior sections read rtlwifi
+    behavior via Feixiao-pattern inference; this session ran `grep`/
+    `sed` directly against `rtl8188ee-port/linux-kernel/drivers/net/
+    wireless/realtek/rtlwifi/`. This resolved two of the longest-
+    standing open items (scan flag, Section 55.2; CCMP-IV, Section
+    55.5) and confirmed the full `rtw88_hw_callbacks` API cluster
+    (Section 55.4) — including catching and correcting two wrong
+    guesses about `rtw88_set_hw_callbacks()`'s signature made earlier
+    in the same session, before its real body was read.
+24. **NEW — `rtlwifi_compat.c`/`rtlwifi_compat.h` written** (findings.md
+    Section 55.3): a skeleton, now substantially filled in — globals,
+    `ieee80211_alloc_hw()`, the hw-lookup pair, `rtlwifi_is_scanning()`,
+    `rtlwifi_set_hw_callbacks()`, and the full RX/tx-status/scan-done/
+    queue-no-op function cluster are all written and confirmed against
+    real source. The CCMP-IV skip decision (item 22 above, now resolved
+    per item 23) is implemented, flagged for boot-test confirmation.
+    These are new files, not yet added to Feixiao's actual build.
+25. **NEW — build-target duplicate-symbol conflict found (findings.md
+    Section 55.6), now the top-priority open item:** Feixiao's single
+    Xcode target (`rtw88.xcodeproj`) has no chip-family build guards.
+    `rtlwifi_compat.c` necessarily defines the same real mac80211-API
+    function names `rtw88_compat.c` already defines. Compiling both
+    into the same target is a guaranteed link error. This is a
+    project-structure decision that has not been made yet — a new kind
+    of open item, distinct from source-reading gaps, and it blocks
+    ever actually building `rtlwifi_compat.c` into the project.
+
+26. **NEW — firmware loading path resolved, new files drafted
+    (findings.md Section 56):** live-read `fw_blobs.h`,
+    `rtw88_firmware.c`, `linux/firmware.h`, and `gen_fw_blobs.py`.
+    Confirmed `struct rtw88_fw_blob` is chip-agnostic (reusable as-is);
+    confirmed `request_firmware()` is synchronous under the hood
+    despite living next to the nowait/async API; caught and disproved
+    a stale header comment misattributing the firmware implementation
+    to `rtw88_compat.c` (it's actually in `rtw88_firmware.c`); found
+    `gen_fw_blobs.py` hardcodes its output array name, blocking
+    unmodified reuse. Decided to fork the generator script rather than
+    parameterize it, per the project's stated separation goal. Drafted
+    (not yet added to any build target): `gen_fw_blobs_rtl8188ee.py`,
+    `fw_blobs_rtl8188ee.h` (own `struct rtl8188ee_fw_blob` type, not
+    just a distinct array name), `rtl8188ee_firmware.c` (mirrors
+    `rtw88_firmware.c`, symbols prefixed `rtl8188ee_` to dodge the same
+    duplicate-symbol class as item 25 — corrected from an earlier draft
+    that used `rtlwifi_`, which would have been ambiguous against
+    `rtlwifi_compat.c`'s own already-established `rtlwifi_` prefix for
+    the separate mac80211-shim layer), and a standalone
+    `rtl8188ee.kext/Info.plist` with its own bundle identity
+    (`com.rtlwifi.rtl8188ee`) and one `IOKitPersonalities` entry for
+    PCI ID `10EC:8179` (`IOPCIMatch` = `0x817910EC`). That plist's
+    `IOClass` is set to a new placeholder name, `RTL8188EEPCIDevice`,
+    with an explicit TODO — NOT a confirmation that `RTW88PCIDevice`
+    reuse is safe or unsafe either way; still gated on open item 2
+    below.
+
+27. **NEW — build-target conflict re-resolved for real, `Makefile.rtl8188ee`
+    drafted (findings.md Section 57):** direct read of
+    `rtw88.xcodeproj/project.pbxproj` (file list, build settings) and
+    the real `Feixiao/Makefile` (full contents) confirmed the SECOND
+    MAJOR CORRECTION at the top of this document — the build-target
+    problem was an Xcode-vs-Makefile misdiagnosis, not a real dead end.
+    `Makefile.rtl8188ee` drafted, mirroring `Feixiao/Makefile`'s real
+    structure (LINUX_SRC/DRIVER_SRCS/CHIP_SRCS/COMPAT_SRCS/FIRMWARE_SRCS/
+    KEXT_SRCS, `-include rtlwifi_compat.h`, fully separate build/out
+    tree producing `rtl8188ee.kext` as its own binary). `CHIP_SRCS`
+    reuses the already-confirmed 10-file rtl8188ee list unchanged.
+    `DRIVER_SRCS` (rtlwifi's shared core) is a NEW open item — drafted
+    from earlier general reading, not independently re-confirmed
+    against `linux-kernel/.../rtlwifi/Makefile`'s real `rtlwifi-objs`
+    list the way CHIP_SRCS was. `KEXT_SRCS` reuses
+    RTW88PCIDevice.cpp/RTW88IEEE80211.cpp from Feixiao/ directly,
+    unmodified — still just a runnable-in-principle placeholder, NOT
+    resolution of open item 2 (still unread). Two new open items
+    surfaced: whether MacKernelSDK and src/compat/linux/* headers
+    should be reused from Feixiao/ via relative path or vendored into
+    rtl8188ee-macos/ for independence (undecided, project-structure
+    choice); and that this reuse-vs-vendor question is now a real build
+    dependency, not just a documentation nicety, since
+    `Makefile.rtl8188ee`'s -I paths are the first place it's actually
+    cashed out.
+
+28. **NEW — RESOLVED (with one real gap): RTW88PCIDevice.cpp/
+    RTW88IEEE80211.cpp reuse, handover item 2, the longest-standing
+    open item in this whole document (findings.md Section 59):** full
+    read of both files plus live comparison against real rtlwifi
+    `core.c`. Key correction: the original framing of this item
+    ("rtl_priv's different layout" blocking reuse) was asking the
+    wrong question — both files only touch `hw->priv` via one bare
+    opaque cast, never dereferenced directly; every real access goes
+    through `hw->ops->*()` or compat helper functions. The actual
+    question was whether rtlwifi's real `struct ieee80211_ops`
+    (confirmed: `rtl_ops`, one shared definition for all chips,
+    `core.c:1879`) matches the ops this file calls. RESULT: 9 of 11
+    called members exist in `rtl_ops` under matching names (`start`,
+    `stop`, `tx`, `add_interface`, `remove_interface`, `set_key`,
+    `bss_info_changed`, `sta_add`, `sta_remove`); two spot-checked
+    full signatures (`tx`, `start`) match exactly against Feixiao's
+    own compat `mac80211.h` struct definition, parameter-for-
+    parameter. `RTW88PCIDevice.cpp` has NO `hw->priv`/`ieee80211_ops`
+    dependency at all (pure PCI/DMA/IOKit glue) — confirmed reusable
+    essentially as-is, upgraded from Section 57/58's "runnable-in-
+    principle placeholder" status. `RTW88IEEE80211.cpp` is
+    structurally reusable — the WPA2 handshake crypto (~400 lines),
+    MLME state machine, A-MPDU/BlockAck negotiation, and RX reorder
+    buffering are all chip-family-agnostic and do NOT need rewriting.
+    ONE real gap found: `hw_scan`/`cancel_hw_scan` are absent from
+    `rtl_ops` entirely — rtlwifi uses `sw_scan_start`/`sw_scan_complete`
+    (software/mac80211-driven scanning), a genuine architectural
+    difference from rtw88's firmware-offload scan, not a naming
+    mismatch. `RTW88IEEE80211.cpp`'s existing `cmdScan()` fallback
+    path already handles exactly this case in principle, but its
+    three `rtw88_sw_scan_*()` compat-helper calls have no rtlwifi-side
+    equivalents yet — concrete new TODO for `rtlwifi_compat.c`.
+    Info.plist's `IOClass` TODO can now move from a defensive
+    placeholder toward actually reusing `RTW88PCIDevice` — left as an
+    open project-structure choice (reuse the real class vs. keep a
+    distinctly-named subclass per the separation goal), not decided
+    here.
+
+**Status: source-reading investigation is very close to exhausted.
+Every item that was ever flagged as "the top-priority blocker" —
+build-target conflict, firmware path, and now PCIDevice/IEEE80211
+reuse — is resolved.** What's left is real but narrow: (1) NEW —
+`rtlwifi_sw_scan_*()` compat helpers not yet written (Section 59.4),
+the one concrete code gap from today's reuse finding; (2) NEW — 7 of 9
+matching-name `ieee80211_ops` members have unconfirmed full signatures
+(only `tx`/`start` were spot-checked); (3) the MacKernelSDK/compat-
+header reuse-vs-vendor decision (Section 57); (4) the firmware blob
+itself (`rtl8188efw.bin`) still not obtained; (5) smaller carried-
+forward items — `linux/sched.h` symbol usage, broader mac80211-stub
+coverage, boot-test confirmation of static-analysis conclusions.
+
+Use the accompanying findings.md as the detailed technical record —
+see Section 45 for the first-correction audit trail, Section 55 for
+the mac80211-compat-shim session, Section 56 for firmware, Section 57
+for the build-system correction, Section 58 for DRIVER_SRCS
+confirmation, and Section 59 for this session's PCIDevice/IEEE80211
+reuse resolution. This handover is the concise context a new Claude
+should read first.
+
+Use the accompanying findings.md as the detailed technical record —
+see Section 45 there for the full first-correction audit trail,
+Section 55 for the mac80211-compat-shim session, Section 56 for the
+firmware-path work, and Section 57 for this session's build-system
+correction and Makefile.rtl8188ee draft. This handover is the concise
+context a new Claude should read first.
+

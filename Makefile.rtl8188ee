@@ -1,0 +1,388 @@
+# Makefile.rtl8188ee for rtl8188ee-macos
+#
+# Structural mirror of Feixiao/Makefile (the real rtw88 build — confirmed
+# by direct read this session, NOT the Xcode project, which only tracks
+# the 8 hand-written compat/kext files; the actual "compile real upstream
+# Linux driver source" step happens entirely in that Makefile via
+# LINUX_SRC/DRIVER_SRCS/CHIP_SRCS + -include rtw88_compat.h). This file
+# reproduces that same mechanism against rtlwifi/rtl8188ee instead.
+#
+# IMPORTANT — this is a genuinely separate build, not a modification of
+# Feixiao's Makefile and not a second Xcode target. Every path below
+# (BUILD_DIR, OUT_DIR, output kext name/bundle ID) is kept distinct from
+# the rtw88 build on purpose: running `make -f Makefile.rtl8188ee` and
+# Feixiao's own `make` produce two separate object trees and two separate
+# linked kext binaries that never share a linker input. This is what
+# actually resolves the duplicate-symbol conflict (handover item 25/26,
+# findings.md Section 55.6) for the COMPAT/DRIVER code — two independent
+# binaries can each define ieee80211_rx_irqsafe etc. with no collision,
+# because they're never linked together. The rtlwifi_/rtl8188ee_ symbol
+# prefixing done earlier in this project is *not* required for this to
+# work; it was a defensive naming choice made before this Makefile
+# existed, and can stay as extra safety margin (e.g. against accidental
+# future static linking) without being load-bearing.
+#
+# What this Makefile does NOT resolve, and what is still open:
+#   - RTW88PCIDevice.cpp/RTW88IEEE80211.cpp reuse (KEXT_SRCS below) —
+#     still unconfirmed against rtl_priv's real layout (handover item 2).
+#     Included here as a placeholder so the Makefile is runnable-in-
+#     principle, per the same caveat the original Makefile.rtl8188ee
+#     draft used earlier in this project.
+#   - Firmware blob itself (rtl8188efw.bin) is not yet in
+#     firmware-rtl8188ee/ — gen_fw_blobs_rtl8188ee.py emits an empty
+#     table and the build still succeeds, but the resulting kext cannot
+#     actually load firmware until that file is added.
+#   - linux/sched.h symbol usage, broader mac80211-stub coverage,
+#     rtlwifi_is_scanning()'s #error-gated body (rtl_priv field not yet
+#     identified) — all carried forward unchanged from findings.md
+#     Section 55.7.
+#
+# Prerequisites (same as Feixiao's Makefile):
+#   Xcode Command Line Tools, macOS SDK, IOKit headers (in SDK)
+#
+# Usage:
+#   make -f Makefile.rtl8188ee              — build kext bundle → build/out/
+#   make -f Makefile.rtl8188ee kext          — build kext only
+#   make -f Makefile.rtl8188ee install       — copy to /Library/Extensions
+#   make -f Makefile.rtl8188ee load          — kextutil (unsigned)
+#   make -f Makefile.rtl8188ee unload        — kextunload
+#   make -f Makefile.rtl8188ee clean         — remove build/
+
+MAKEFLAGS += -j$(shell sysctl -n hw.logicalcpu)
+
+# ------------------------------------------------------------------ #
+# Paths                                                               #
+# ------------------------------------------------------------------ #
+
+PROJ_ROOT    := $(shell pwd)
+
+# rtlwifi/rtl8188ee real source — confirmed present at this exact path
+# earlier in this project (find ... -iname "wifi.h" match).
+LINUX_SRC    := $(PROJ_ROOT)/../linux-kernel/drivers/net/wireless/realtek/rtlwifi
+CHIP_SRC     := $(LINUX_SRC)/rtl8188ee
+
+COMPAT_DIR   := $(PROJ_ROOT)/src/compat
+KEXT_SRC     := $(PROJ_ROOT)/src/kext
+FIRMWARE_DIR := $(PROJ_ROOT)/firmware-rtl8188ee
+
+# TODO — NOT YET CONFIRMED: this assumes MacKernelSDK is only checked out
+# once, inside Feixiao/, and this build reuses it from there rather than
+# duplicating it into rtl8188ee-macos/. If that assumption is wrong (e.g.
+# you want this repo fully standalone/independent of Feixiao per the
+# original project-organization goal), this path needs to change to a
+# local copy instead. Flagging explicitly rather than silently vendoring
+# or silently assuming the shared location is fine long-term.
+MKSDK        := $(PROJ_ROOT)/../Feixiao/MacKernelSDK
+
+BUILD_DIR    := $(PROJ_ROOT)/build
+OUT_DIR      := $(BUILD_DIR)/out
+
+# Source bundle: Info.plist skeleton (tracked in git) — already created
+# this project at src/kext/rtl8188ee.kext/Contents/Info.plist
+KEXT_SKEL    := $(PROJ_ROOT)/src/kext/rtl8188ee.kext
+
+# Output bundle: fully assembled kext ready for OpenCore / kextutil
+OUT_KEXT     := $(OUT_DIR)/rtl8188ee.kext
+OUT_KEXT_BIN := $(OUT_KEXT)/Contents/MacOS/rtl8188ee
+
+# ------------------------------------------------------------------ #
+# Toolchain                                                           #
+# ------------------------------------------------------------------ #
+
+SDK          := $(shell xcrun --show-sdk-path)
+ARCH         := -arch x86_64
+MINOS        := -mmacosx-version-min=11.0
+
+CC           := xcrun clang
+CXX          := xcrun clang++
+LD           := xcrun clang++
+
+KEXT_FLAGS   := -fno-exceptions -fno-rtti \
+                -fno-stack-protector -mkernel \
+                $(ARCH) $(MINOS) \
+                -isysroot $(SDK) \
+                -I$(MKSDK)/Headers \
+                -I$(SDK)/System/Library/Frameworks/Kernel.framework/Headers
+
+# Compat include path overrides ALL linux/ and net/ headers so the real
+# rtlwifi driver C files find our shims instead of Feixiao's rtw88 ones.
+#
+# TODO — NOT YET CONFIRMED: rtlwifi_compat.c currently expects
+# src/compat/linux/*.h-style shims (per its own header comment: "It
+# assumes those come from the existing compat headers"). Whether it
+# reuses Feixiao's src/compat/linux/ headers as-is (via an -I path into
+# Feixiao/) or needs its own copy under rtl8188ee-macos/src/compat/linux/
+# is the SAME open question as MKSDK above, and is not resolved by this
+# Makefile. The path below assumes reuse from Feixiao/ — flagged, not
+# silently decided.
+COMPAT_FLAGS := \
+    -I$(COMPAT_DIR) \
+    -I$(PROJ_ROOT)/../Feixiao/src/compat/linux \
+    -I$(KEXT_SRC)
+
+# C flags for rtlwifi driver files
+DRIVER_CFLAGS := \
+    $(KEXT_FLAGS) \
+    $(COMPAT_FLAGS) \
+    -include $(COMPAT_DIR)/rtlwifi_compat.h \
+    -I$(LINUX_SRC) \
+    -I$(CHIP_SRC) \
+    -DRTL8188EE_MACOS=1 \
+    -D__KERNEL__ \
+    -Wno-implicit-function-declaration \
+    -Wno-int-conversion \
+    -Wno-incompatible-pointer-types \
+    -Wno-unused-variable \
+    -Wno-unused-function
+
+# C++ flags for kext wrapper files
+KEXT_CXXFLAGS := \
+    $(KEXT_FLAGS) \
+    -fapple-kext \
+    $(COMPAT_FLAGS) \
+    -std=c++17 \
+    -DKERNEL \
+    -Wno-deprecated-declarations \
+    -Wno-nullability-completeness
+
+# ------------------------------------------------------------------ #
+# Source files                                                         #
+# ------------------------------------------------------------------ #
+
+# rtlwifi shared core — CONFIRMED this session against the real
+# linux-kernel/.../rtlwifi/Makefile rtlwifi-objs list, exact 9 files:
+#   base.o cam.o core.o debug.o efuse.o ps.o rc.o regd.o stats.o
+# Earlier draft of this list was wrong in two ways, both fixed here:
+#   - stats.c was missing entirely
+#   - pci.c was wrongly included here; the real Kbuild puts pci.o in a
+#     SEPARATE object (rtl_pci.o, gated by CONFIG_RTLWIFI_PCI), not
+#     rtlwifi.o. Kept as its own PCI_SRCS list below rather than folded
+#     back in, so this distinction doesn't get lost again.
+DRIVER_SRCS := \
+    $(LINUX_SRC)/base.c \
+    $(LINUX_SRC)/cam.c \
+    $(LINUX_SRC)/core.c \
+    $(LINUX_SRC)/debug.c \
+    $(LINUX_SRC)/efuse.c \
+    $(LINUX_SRC)/ps.c \
+    $(LINUX_SRC)/rc.c \
+    $(LINUX_SRC)/regd.c \
+    $(LINUX_SRC)/stats.c
+
+# rtl_pci.o's real content, per the same Kbuild read — separate from
+# rtlwifi-objs on the Linux side, but there's no reason to keep it a
+# separate linked object here; folded into the same compile pattern as
+# DRIVER_SRCS since this build links everything into one kext binary
+# regardless. NOTE: real upstream also has CONFIG_RTLWIFI_USB / usb.c —
+# not included here since rtl8188ee is PCIe-only (10EC:8179 is a PCI
+# device ID, confirmed in Info.plist's IOPCIMatch).
+PCI_SRCS := \
+    $(LINUX_SRC)/pci.c
+
+# rtl8188ee chip-specific C files — CONFIRMED this project (earlier
+# session) against the real Kbuild rtl8188ee-objs list, exact 10 files,
+# no guessing:
+CHIP_SRCS := \
+    $(CHIP_SRC)/dm.c \
+    $(CHIP_SRC)/fw.c \
+    $(CHIP_SRC)/hw.c \
+    $(CHIP_SRC)/led.c \
+    $(CHIP_SRC)/phy.c \
+    $(CHIP_SRC)/pwrseq.c \
+    $(CHIP_SRC)/rf.c \
+    $(CHIP_SRC)/sw.c \
+    $(CHIP_SRC)/table.c \
+    $(CHIP_SRC)/trx.c
+
+# Compat C implementation — this project's rtlwifi_compat.c
+COMPAT_SRCS := \
+    $(COMPAT_DIR)/rtlwifi_compat.c
+
+# Firmware loader — compiled with system headers only (no Linux compat
+# headers), mirrors rtw88_firmware.c's isolation exactly. fw_blobs_
+# rtl8188ee.c is auto-generated from firmware-rtl8188ee/*.bin.
+FIRMWARE_SRCS := \
+    $(COMPAT_DIR)/rtl8188ee_firmware.c \
+    $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
+
+FW_BLOBS_C := $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
+
+# kmod_info.c — defines _kmod_info (required by kmutil/kextutil).
+#
+# TODO — NOT YET CONFIRMED: reusing Feixiao's kmod_info.c as-is (it's
+# generic kext boilerplate, likely fine) rather than forking it. Flagged
+# per the same reuse-caution pattern as the rest of this file, even
+# though this one is low-risk.
+KMOD_SRCS := \
+    $(PROJ_ROOT)/../Feixiao/src/kext/kmod_info.c
+
+# IOKit C++ wrapper — TODO, THE BIG OPEN ITEM (handover item 2 /
+# findings.md Section 55.7 item 6): reusing RTW88PCIDevice.cpp/
+# RTW88IEEE80211.cpp from Feixiao UNMODIFIED and UNCONFIRMED. rtl_priv's
+# struct layout has not been checked against what these files assume
+# about hw->priv. This is a placeholder so the Makefile is runnable-in-
+# principle only — do NOT treat a successful compile of these two files
+# as confirmation the reuse is correct; they may compile cleanly and
+# still be wrong at runtime (wrong struct offsets, wrong assumptions
+# about mac80211 bypass shape, etc.).
+KEXT_SRCS := \
+    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88Kext.cpp \
+    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88PCIDevice.cpp \
+    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88IEEE80211.cpp \
+    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88UserClient.cpp
+
+# ------------------------------------------------------------------ #
+# Object files                                                         #
+# ------------------------------------------------------------------ #
+
+DRIVER_OBJS   := $(patsubst $(LINUX_SRC)/%.c,  $(BUILD_DIR)/driver/%.o, $(DRIVER_SRCS))
+PCI_OBJS      := $(patsubst $(LINUX_SRC)/%.c,  $(BUILD_DIR)/driver/%.o, $(PCI_SRCS))
+CHIP_OBJS     := $(patsubst $(CHIP_SRC)/%.c,   $(BUILD_DIR)/driver/rtl8188ee/%.o, $(CHIP_SRCS))
+COMPAT_OBJS   := $(patsubst $(COMPAT_DIR)/%.c, $(BUILD_DIR)/compat/%.o, $(COMPAT_SRCS))
+FIRMWARE_OBJS := $(patsubst $(COMPAT_DIR)/%.c, $(BUILD_DIR)/compat/%.o, $(FIRMWARE_SRCS))
+KMOD_OBJS     := $(BUILD_DIR)/kext/kmod_info.o
+KEXT_OBJS     := $(patsubst %.cpp, $(BUILD_DIR)/kext/%.o, $(notdir $(KEXT_SRCS)))
+
+ALL_OBJS      := $(DRIVER_OBJS) $(PCI_OBJS) $(CHIP_OBJS) $(COMPAT_OBJS) $(FIRMWARE_OBJS) $(KMOD_OBJS) $(KEXT_OBJS)
+
+# ------------------------------------------------------------------ #
+# Linker flags                                                         #
+# ------------------------------------------------------------------ #
+
+KEXT_LDFLAGS := \
+    $(ARCH) \
+    -static \
+    -nostdlib \
+    -Xlinker -kext \
+    $(MKSDK)/Library/x86_64/libkmod.a \
+    $(MKSDK)/Library/universal/libkmodc++.a \
+    -F$(SDK)/System/Library/Frameworks
+
+# ------------------------------------------------------------------ #
+# Targets                                                             #
+# ------------------------------------------------------------------ #
+
+.PHONY: all kext install load unload clean
+
+all: kext
+
+kext: $(OUT_KEXT_BIN)
+
+$(OUT_KEXT_BIN): $(ALL_OBJS) | $(OUT_KEXT)/Contents/MacOS
+	@echo "  LD   $(notdir $@)"
+	$(LD) $(KEXT_LDFLAGS) -o $@ $(ALL_OBJS)
+	@echo "  SYNC $(OUT_KEXT)"
+	rsync -a --exclude='MacOS' $(KEXT_SKEL)/ $(OUT_KEXT)/
+	@echo "  NOTE  run 'sudo chown -R root:wheel $(OUT_KEXT)' for kextutil"
+	@echo "  KEXT $$(dwarfdump --uuid $(OUT_KEXT_BIN) 2>/dev/null)"
+	@echo "  OK   build/out/rtl8188ee.kext"
+
+# Compile rtlwifi shared-core C files with compat headers
+$(BUILD_DIR)/driver/%.o: $(LINUX_SRC)/%.c | $(BUILD_DIR)/driver
+	@echo "  CC   $(notdir $<)"
+	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
+
+# Compile rtl8188ee chip-specific C files with compat headers
+$(BUILD_DIR)/driver/rtl8188ee/%.o: $(CHIP_SRC)/%.c | $(BUILD_DIR)/driver/rtl8188ee
+	@echo "  CC   rtl8188ee/$(notdir $<)"
+	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
+
+# Compile compat C file (with Linux compat headers)
+$(BUILD_DIR)/compat/rtlwifi_compat.o: $(COMPAT_DIR)/rtlwifi_compat.c | $(BUILD_DIR)/compat
+	@echo "  CC   $(notdir $<)"
+	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
+
+# Generate fw_blobs_rtl8188ee.c from firmware-rtl8188ee/*.bin
+$(FW_BLOBS_C): $(wildcard $(FIRMWARE_DIR)/*.bin) scripts/gen_fw_blobs_rtl8188ee.py
+	@echo "  GEN  fw_blobs_rtl8188ee.c"
+	python3 $(PROJ_ROOT)/scripts/gen_fw_blobs_rtl8188ee.py $(FIRMWARE_DIR) $@
+
+# Compile firmware loader + blobs (system headers only — no compat
+# header conflicts, same isolation as rtw88_firmware.c)
+FW_CFLAGS := $(KEXT_FLAGS) \
+    -I$(MKSDK)/Headers \
+    -I$(SDK)/System/Library/Frameworks/Kernel.framework/Headers \
+    -I$(COMPAT_DIR) \
+    -Wno-unused-function
+
+$(BUILD_DIR)/compat/rtl8188ee_firmware.o: $(COMPAT_DIR)/rtl8188ee_firmware.c | $(BUILD_DIR)/compat
+	@echo "  CC   rtl8188ee_firmware.c"
+	$(CC) $(FW_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/compat/fw_blobs_rtl8188ee.o: $(COMPAT_DIR)/fw_blobs_rtl8188ee.c | $(BUILD_DIR)/compat
+	@echo "  CC   fw_blobs_rtl8188ee.c"
+	$(CC) $(FW_CFLAGS) -c $< -o $@
+
+# Compile kmod_info.c (plain C, no compat headers, reused from Feixiao)
+$(BUILD_DIR)/kext/kmod_info.o: $(PROJ_ROOT)/../Feixiao/src/kext/kmod_info.c | $(BUILD_DIR)/kext
+	@echo "  CC   kmod_info.c"
+	$(CC) $(KEXT_FLAGS) -c $< -o $@
+
+# Compile kext C++ wrapper files (reused from Feixiao — see KEXT_SRCS
+# TODO above; this rule does not imply the reuse is confirmed correct)
+$(BUILD_DIR)/kext/%.o: $(PROJ_ROOT)/../Feixiao/src/kext/%.cpp | $(BUILD_DIR)/kext
+	@echo "  CXX  $(notdir $<)"
+	$(CXX) $(KEXT_CXXFLAGS) -c $< -o $@
+
+# ------------------------------------------------------------------ #
+# Directory creation                                                  #
+# ------------------------------------------------------------------ #
+
+$(BUILD_DIR)/driver:
+	mkdir -p $@
+
+$(BUILD_DIR)/driver/rtl8188ee:
+	mkdir -p $@
+
+$(BUILD_DIR)/compat:
+	mkdir -p $@
+
+$(BUILD_DIR)/kext:
+	mkdir -p $@
+
+$(OUT_DIR):
+	mkdir -p $@
+
+$(OUT_KEXT)/Contents/MacOS:
+	mkdir -p $@
+
+# ------------------------------------------------------------------ #
+# Install / load                                                      #
+# ------------------------------------------------------------------ #
+
+install: kext
+	@echo "Installing rtl8188ee.kext to /Library/Extensions..."
+	sudo cp -R $(OUT_KEXT) /Library/Extensions/
+	sudo chown -R root:wheel /Library/Extensions/rtl8188ee.kext
+	sudo chmod -R 755 /Library/Extensions/rtl8188ee.kext
+	@echo "Done. Run 'make -f Makefile.rtl8188ee load' or reboot to activate."
+
+load:
+	@echo "Loading rtl8188ee.kext (requires SIP kext loading enabled)..."
+	sudo kextutil -v $(OUT_KEXT)
+
+unload:
+	@echo "Unloading rtl8188ee.kext..."
+	sudo kextunload -b com.rtlwifi.rtl8188ee
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+# ------------------------------------------------------------------ #
+# OpenCore injection helper                                           #
+# ------------------------------------------------------------------ #
+# To use with OpenCore:
+#   1. Copy build/out/rtl8188ee.kext to OC/Kexts/
+#   2. Add to config.plist -> Kernel -> Add:
+#      Arch: Any
+#      BundlePath: rtl8188ee.kext
+#      Comment: Realtek rtl8188ee WiFi
+#      Enabled: YES
+#      ExecutablePath: Contents/MacOS/rtl8188ee
+#      MaxKernel: (empty)
+#      MinKernel: 20.0.0   (macOS 11+)
+#      PlistPath: Contents/Info.plist
+#   3. Rebuild OC cache: sudo kextcache -i /
+#
+# Development/testing should use the USB EFI, per this project's
+# original goal notes — do not modify the stable internal EFI.

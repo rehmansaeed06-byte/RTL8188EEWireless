@@ -3608,4 +3608,50 @@ Section 55.2 — corrected while in the area).
 
 ------------------------------------------------------------------------
 
+## 61. RESOLVED: all 9 `ieee80211_ops` member signatures confirmed
+exact — signature-verification work fully closed
+
+Live `sed`/`grep` against real `core.c` and the compat `net/mac80211.h`
+this session (not inference), covering the 7 members left unverified
+after Section 59/60 (`tx`, `start`, and `config` were already
+confirmed):
+
+| Member | rtlwifi (`core.c`) | Compat header | Match |
+|---|---|---|---|
+| `stop` | `(hw, bool suspend)` | `(hw, bool suspend)` | exact |
+| `add_interface` | `(hw, vif)` | `(hw, vif)` | exact |
+| `remove_interface` | `(hw, vif)` | `(hw, vif)` | exact |
+| `sta_add` | `(hw, vif, sta)` | `(hw, vif, sta)` | exact |
+| `sta_remove` | `(hw, vif, sta)` | `(hw, vif, sta)` | exact |
+| `bss_info_changed` | `(hw, vif, bss_conf, changed)` | `(hw, vif, info, changed)` | exact (3rd param name differs cosmetically, same type `struct ieee80211_bss_conf *`) |
+| `set_key` | `(hw, cmd, vif, sta, key)` | `(hw, cmd, vif, sta, key)` | exact |
+
+**All 9 of 9 `ieee80211_ops` members `RTW88IEEE80211.cpp` calls are now
+confirmed to have exact-matching signatures against real rtlwifi.**
+This closes out the last item carrying genuine compile-risk
+uncertainty from the Section 59 reuse investigation. Combined with
+Section 59's structural finding (`RTW88PCIDevice.cpp`/
+`RTW88IEEE80211.cpp` reuse) and Section 60's scan-helper work, handover
+item 2 — open since the very first version of this document — is now
+fully closed, not just structurally promising.
+
+## 61.1 Updated remaining open items
+
+1. MacKernelSDK / compat-linux-header reuse-vs-vendor decision — still
+   undecided (Section 57).
+2. Firmware blob (`rtl8188efw.bin`) still not obtained — requires a
+   local download from linux-firmware, not something resolvable via
+   source reading.
+3. Items 3-8 from Section 55.7 otherwise unchanged and carried forward
+   as-is (`linux/sched.h` symbol usage, broader mac80211-stub coverage,
+   boot-test confirmation of static-analysis conclusions).
+
+At this point, essentially every open item that blocks a first attempt
+at compiling `Makefile.rtl8188ee` end-to-end is resolved except the
+firmware blob (a download, not a research task) and the MacKernelSDK
+path decision (a one-line project-structure choice). The realistic
+next milestone is attempting an actual local build.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

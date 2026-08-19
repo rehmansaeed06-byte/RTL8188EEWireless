@@ -914,23 +914,39 @@ The evidence currently says:
     signature mismatch, `radio_idx=0` is the correct single-radio
     default. This item is now fully closed, not just code-complete.
 
-**Status: source-reading investigation is very close to exhausted.
+30. **RESOLVED: all 9 `ieee80211_ops` member signatures confirmed
+    exact (findings.md Section 61).** The last 7 (`stop`,
+    `add_interface`, `remove_interface`, `sta_add`, `sta_remove`,
+    `bss_info_changed`, `set_key`) checked full-body against real
+    `core.c` and Feixiao's compat `net/mac80211.h` — every one is an
+    exact parameter-for-parameter match. Combined with `tx`/`start`/
+    `config` confirmed earlier, this closes handover item 2 — open
+    since the very first version of this document — completely: not
+    just structurally promising, every signature this port actually
+    calls is verified correct.
+
+**Status: source-reading investigation is essentially complete.**
 Every item that was ever flagged as "the top-priority blocker" —
-build-target conflict, firmware path, PCIDevice/IEEE80211 reuse, and
-the scan compat helpers (including the config-signature follow-up) —
-is resolved.** What's left is real but narrow: (1) 7 of 9 matching-name
-`ieee80211_ops` members still have unconfirmed full signatures beyond
-`tx`/`start`/now-confirmed `config`; (2) the MacKernelSDK/compat-header
-reuse-vs-vendor decision (Section 57); (3) the firmware blob itself
-(`rtl8188efw.bin`) still not obtained; (4) smaller carried-forward
-items — `linux/sched.h` symbol usage, broader mac80211-stub coverage,
-boot-test confirmation of static-analysis conclusions.
+build-target conflict, firmware path, PCIDevice/IEEE80211 reuse, the
+scan compat helpers, and now full signature verification — is
+resolved. What's left: (1) the MacKernelSDK/compat-header reuse-vs-
+vendor decision (Section 57), a project-structure choice, not a
+research gap; (2) the firmware blob itself (`rtl8188efw.bin`), a local
+download from linux-firmware, not resolvable via source reading;
+(3) smaller carried-forward items — `linux/sched.h` symbol usage,
+broader mac80211-stub coverage, boot-test confirmation of static-
+analysis conclusions. Essentially everything blocking a first attempt
+at compiling `Makefile.rtl8188ee` end-to-end is resolved except items
+1-2 above. The realistic next milestone is attempting an actual local
+build.
 
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for
 the mac80211-compat-shim session, Section 56 for firmware, Section 57
 for the build-system correction, Section 58 for DRIVER_SRCS
 confirmation, Section 59 for the PCIDevice/IEEE80211 reuse resolution,
+Section 60 for the scan compat helpers, and Section 61 for final
+signature verification.
 and Section 60 for this session's scan compat helpers. This handover
 is the concise context a new Claude should read first.
 

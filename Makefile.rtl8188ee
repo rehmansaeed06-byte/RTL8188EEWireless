@@ -65,14 +65,13 @@ COMPAT_DIR   := $(PROJ_ROOT)/src/compat
 KEXT_SRC     := $(PROJ_ROOT)/src/kext
 FIRMWARE_DIR := $(PROJ_ROOT)/firmware-rtl8188ee
 
-# TODO — NOT YET CONFIRMED: this assumes MacKernelSDK is only checked out
-# once, inside Feixiao/, and this build reuses it from there rather than
-# duplicating it into rtl8188ee-macos/. If that assumption is wrong (e.g.
-# you want this repo fully standalone/independent of Feixiao per the
-# original project-organization goal), this path needs to change to a
-# local copy instead. Flagging explicitly rather than silently vendoring
-# or silently assuming the shared location is fine long-term.
-MKSDK        := $(PROJ_ROOT)/../Feixiao/MacKernelSDK
+# RESOLVED (findings.md Section 62): vendored as its own git submodule
+# directly in rtl8188ee-macos/, pinned to the SAME commit Feixiao's
+# submodule uses (7af1933c27aefcbdf4809ee44478829aad30f9c1) so both
+# projects build against identical SDK headers rather than silently
+# drifting apart over time. This repo no longer depends on Feixiao/
+# existing as a sibling folder for this path.
+MKSDK        := $(PROJ_ROOT)/MacKernelSDK
 
 BUILD_DIR    := $(PROJ_ROOT)/build
 OUT_DIR      := $(BUILD_DIR)/out
@@ -107,17 +106,16 @@ KEXT_FLAGS   := -fno-exceptions -fno-rtti \
 # Compat include path overrides ALL linux/ and net/ headers so the real
 # rtlwifi driver C files find our shims instead of Feixiao's rtw88 ones.
 #
-# TODO — NOT YET CONFIRMED: rtlwifi_compat.c currently expects
-# src/compat/linux/*.h-style shims (per its own header comment: "It
-# assumes those come from the existing compat headers"). Whether it
-# reuses Feixiao's src/compat/linux/ headers as-is (via an -I path into
-# Feixiao/) or needs its own copy under rtl8188ee-macos/src/compat/linux/
-# is the SAME open question as MKSDK above, and is not resolved by this
-# Makefile. The path below assumes reuse from Feixiao/ — flagged, not
-# silently decided.
+# RESOLVED (findings.md Section 62): vendored a local copy of both
+# src/compat/linux/ (33 headers + mmc/ subdir) and src/compat/net/
+# (mac80211.h) directly into rtl8188ee-macos/src/compat/. This project
+# no longer depends on Feixiao/ existing as a sibling folder for these
+# paths either — combined with the MacKernelSDK submodule resolution
+# above, rtl8188ee-macos/ is now fully standalone.
 COMPAT_FLAGS := \
     -I$(COMPAT_DIR) \
-    -I$(PROJ_ROOT)/../Feixiao/src/compat/linux \
+    -I$(COMPAT_DIR)/linux \
+    -I$(COMPAT_DIR)/net \
     -I$(KEXT_SRC)
 
 # C flags for rtlwifi driver files

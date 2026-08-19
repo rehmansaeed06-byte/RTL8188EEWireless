@@ -42,9 +42,16 @@
 #ifndef RTLWIFI_COMPAT_H
 #define RTLWIFI_COMPAT_H
 
-#include "compat/net/mac80211.h"   /* existing rtw88-built shim; provides
-                                       struct ieee80211_hw, struct wiphy,
-                                       struct ieee80211_ops, etc. */
+#include "net/mac80211.h"   /* existing rtw88-built shim; provides
+                                struct ieee80211_hw, struct wiphy,
+                                struct ieee80211_ops, etc. Corrected
+                                from an earlier "compat/net/mac80211.h"
+                                path — COMPAT_DIR itself already IS
+                                src/compat (both in the vendored-local
+                                and, previously, the Feixiao-relative
+                                Makefile setup), so a leading compat/
+                                segment never resolved against either
+                                -I path (findings.md Section 62). */
 
 /*
  * Callback vtable, CONFIRMED against the real repo

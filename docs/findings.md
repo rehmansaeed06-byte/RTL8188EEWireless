@@ -3896,4 +3896,149 @@ should be expected and are not a sign anything above is wrong.
 
 ------------------------------------------------------------------------
 
+# 66. Second Real Build Attempt — 13 Errors Categorized and Fixed
+
+User ran `make -f Makefile.rtl8188ee` a second time. `grep -inE
+"error:|undefined symbol|fatal error"` isolated 13 real errors (plus
+3 unrelated `rc.c`/`struct ieee80211_tx_rate_control`/`rate_control_ops`
+errors — NOT addressed this round, see 66.5 below), all traceable to
+gaps identified from reading `core.c`'s real `rtl_ops` literal and
+`ps.c`'s TIM/PS handling, none requiring the `linux-kernel`/
+`rtw88-stable` siblings to be present locally (fixes derived from
+user-run greps against the real source, same method as Section 65).
+
+## 66.1 `base.c:14: fatal error: 'linux/udp.h' file not found`
+
+New file, `src/compat/linux/udp.h` — same pattern as `linux/ip.h`
+(Section 65.2): real on-wire UDP header (`source`, `dest`, `len`,
+`check`, all `u16`, network-byte-order), for the same
+`rtl_is_special_data()` DHCP/ARP/EAPOL classifier in `base.c` that
+already needed `iphdr`.
+
+## 66.2 `core.c:221,248: use of undeclared identifier 'fallthrough'`
+
+One-line fix in `rtlwifi_compat.h`: `#define fallthrough do {} while
+(0)`, force-included alongside the existing `time.h`/`atomic.h`/
+`interrupt.h` block (Section 65.1's pattern). `fallthrough;` is a
+C23/recent-kernel pseudo-keyword marking an intentional switch
+fall-through, not a real identifier — matches upstream Linux's own
+`<linux/compiler_attributes.h>` fallback definition for compilers
+without the fallthrough attribute.
+
+## 66.3 `core.c:606: incomplete definition of type 'struct ieee80211_conf'`
+
+`hw->conf` was an anonymous struct member — fine for direct field
+access (`hw->conf.flags`) but breaks the moment `rtl_op_config` does
+`struct ieee80211_conf *conf = &hw->conf;`, since a pointer can't have
+the type of an anonymous struct (no name to declare the pointer with).
+Fix: named `struct ieee80211_conf` (flags, power_level,
+listen_interval, dynamic_ps_timeout, chandef — unchanged from the old
+anonymous version — plus a new `ps_dtim_period` field, see 66.4), with
+`hw->conf` now an instance of that named type. Drop-in: every existing
+`hw->conf.field` access still compiles unchanged.
+
+Confirmed (grep against `core.c`/`ps.c` this session, same method as
+Section 65.3's `cfg80211.h` gap analysis) that `conf->beacon_int`,
+`->bssid`, `->enable_beacon`, `->use_cts_prot`, `->use_short_preamble`,
+`->use_short_slot` are NOT part of `struct ieee80211_conf` — those
+belong to `rtl_op_bss_info_changed`'s separate `struct
+ieee80211_bss_conf *` parameter (already fully modeled, all six
+fields present). Folding them into `ieee80211_conf` would have been
+wrong; kept separate.
+
+## 66.4 `ps.c`: `WLAN_EID_TIM`, `struct ieee80211_tim_ie`, `ieee80211_check_tim()`, `ps_dtim_period`
+
+All four errors here trace to one real code path, `ps.c`'s TIM/DTIM
+beacon-parsing logic. Grepped real usage directly (`ps.c:495-530`,
+user-run, this session) before writing anything — same discipline as
+`ip.h`/`udp.h`, since a wrong TIM bitmap calculation is a silent
+runtime PS-wake bug, not just a build nuisance:
+
+```c
+tim = rtl_find_ie(data, len - FCS_LEN, WLAN_EID_TIM);   /* tim: u8 * */
+...
+tim_len = tim[1];
+tim_ie = (struct ieee80211_tim_ie *) &tim[2];
+if (!WARN_ON_ONCE(!hw->conf.ps_dtim_period))
+    rtlpriv->psc.dtim_counter = tim_ie->dtim_count;
+u_buffed = ieee80211_check_tim(tim_ie, tim_len,
+      rtlpriv->mac80211.assoc_id, false);
+m_buffed = tim_ie->bitmap_ctrl & 0x01;
+```
+
+- `WLAN_EID_TIM` = 5, standard 802.11 element ID (Linux's own
+  `<linux/ieee80211.h>`, not rtlwifi-specific).
+- `struct ieee80211_tim_ie { dtim_count, dtim_period, bitmap_ctrl,
+  virtual_map[1] } __packed` — standard TIM element layout.
+- `ps_dtim_period` added to the new named `ieee80211_conf` (66.3).
+- `ieee80211_check_tim()` — **caught a real bug in this session's
+  first draft before it reached the compiler**: the first version of
+  this function was written with the well-known 3-argument mac80211
+  signature `(tim, tim_len, aid)`. The actual call site above passes
+  **four** arguments — `(tim_ie, tim_len, rtlpriv->mac80211.assoc_id,
+  false)`. A 3-arg static inline against a 4-arg real call site would
+  have been a straight second-round compile error; caught by
+  confirming the exact call site by grep before the first build
+  attempt of this fix, not after. Signature corrected to accept the
+  4th `bool` parameter, but **its real semantics are NOT confirmed** —
+  this project's `ieee80211_check_tim()` doesn't match the plainer
+  3-arg version found in `ieee80211.h`-only searches, and its real
+  body lives in `net/mac80211/util.c` (not visible from a
+  header-only diff the way `tim_ie`'s field layout was). Accepted but
+  UNUSED in this compat implementation; bitmap-bit logic is otherwise
+  the standard 3-arg calculation, unchanged. **Flagged as a real open
+  item, not silently guessed** — if PS/TIM wake behavior looks wrong
+  at runtime, this parameter's real meaning is the first thing to
+  chase down.
+
+## 66.5 `ps.c:804: no member named 'category' in ... action`
+
+`mgmt->u.action` only had `variable[0]`. Added `u8 category;` before
+it — the one field `ps.c` actually reads
+(`mgmt->u.action.category`). Real upstream's action union has further
+nested per-category structs (addba_req/resp, delba, ...) that this
+port doesn't reference and did not add, consistent with the existing
+minimal-superset approach elsewhere in this file (e.g. `sta_notify_cmd`
+only having the two enumerators rtlwifi actually uses).
+
+## 66.6 `core.c:1887: undeclared identifier 'ieee80211_handle_wake_tx_queue'`
+
+`.wake_tx_queue` itself was already a real `ieee80211_ops` member
+(added Section 65-adjacent work); this fixes the *function* assigned
+to it not existing. `core.c`'s real `rtl_ops` literal does `.wake_tx_queue
+= ieee80211_handle_wake_tx_queue,` — a real upstream mac80211 stock
+helper drivers can assign directly. Implemented as a no-op stub, not a
+faithful port of upstream's internal-txq-draining behavior: per the
+handover doc (Section 52/item 20), this port's TX path bypasses
+mac80211's TX queueing entirely (`RTW88IEEE80211::outputPacket()` →
+`hw->ops->tx()` directly), so nothing in this port's architecture ever
+schedules a txq for this function to drain. Exists only so the literal
+function-pointer assignment compiles/links; flagged in-comment as
+expected-unreachable given this port's TX shape rather than silently
+implemented as if it does real work.
+
+## 66.7 NOT addressed this round: `rc.c` / `ieee80211_tx_rate_control` / `rate_control_ops`
+
+Three additional real errors appeared in the same build log
+(`rc.c:134`, `rc.c:169`, `rc.c:298` — incomplete
+`ieee80211_tx_rate_control`/`rate_control_ops` types). Distinct
+subsystem (mac80211 rate-control registration, not the TIM/PS/conf
+cluster above) — deliberately deferred rather than folded in
+speculatively, same discipline as Section 64 holding `ip.h` out of
+the Section 63 stub batch. Real usage not yet grepped. **New
+top-of-list open item for the next round.**
+
+## 66.8 Status
+
+All 6 categories above (udp.h, fallthrough, ieee80211_conf/
+ps_dtim_period, TIM cluster, action.category, wake_tx_queue) have
+source fixes, all additive-only under `src/compat/`, nothing vendored
+touched. The `ieee80211_check_tim` 4th-parameter semantics remain an
+explicit open question (66.4), not a guess presented as confirmed.
+`rc.c`'s rate-control errors (66.7) are a new, separate, not-yet-
+started item. **Not yet re-verified by a third build attempt** — same
+"next step" framing as Sections 62/63/65.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

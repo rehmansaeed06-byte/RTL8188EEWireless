@@ -84,6 +84,15 @@ struct ieee80211_mgmt {
             u8 variable[0];
         } __packed probe_resp;
         struct {
+            /* category — CONFIRMED real: ps.c reads
+             * mgmt->u.action.category directly. Real upstream's
+             * action union has further nested per-category structs
+             * (addba_req, addba_resp, delba, ...) after this field;
+             * only category itself is referenced here, so only it is
+             * added, consistent with this compat layer's existing
+             * minimal-superset approach (same as sta_notify_cmd
+             * above only adding the two enumerators rtlwifi uses). */
+            u8 category;
             u8 variable[0];
         } __packed action;
     } u;
@@ -325,6 +334,35 @@ static inline void wiphy_ext_feature_set(struct wiphy *wiphy,
 #define ieee80211_hw_set(hw, flg)   ((hw)->flags |= IEEE80211_HW_##flg)
 #define ieee80211_hw_check(hw, flg) ((hw)->flags &  IEEE80211_HW_##flg)
 
+/*
+ * struct ieee80211_conf — CONFIRMED real (not synthesized) by grepping
+ * every hw->conf./conf-> field actually referenced in core.c/ps.c this
+ * session: flags, chandef, ps_dtim_period. Previously hw->conf was an
+ * anonymous struct member — that compiled fine for direct field access
+ * (hw->conf.flags etc.) but broke the moment core.c's rtl_op_config did
+ * `struct ieee80211_conf *conf = &hw->conf;`: a pointer can't have the
+ * type of an anonymous struct, since the type has no name to declare
+ * the pointer with. Naming the struct (and keeping hw->conf as an
+ * instance of it) fixes that while remaining a drop-in — every existing
+ * hw->conf.field access still works unchanged.
+ *
+ * NOTE: conf->beacon_int/bssid/enable_beacon/use_cts_prot/
+ * use_short_preamble/use_short_slot are NOT part of this struct —
+ * confirmed (same grep session) those all belong to
+ * rtl_op_bss_info_changed's separate `struct ieee80211_bss_conf *`
+ * parameter (conventionally also named conf/bss_conf at call sites),
+ * which already exists below with all six fields. Folding them in here
+ * would have been wrong.
+ */
+struct ieee80211_conf {
+    u32  flags;
+    int  power_level;
+    u16  listen_interval;
+    int  dynamic_ps_timeout;
+    struct cfg80211_chan_def chandef;
+    u8   ps_dtim_period; /* real field, ps.c: hw->conf.ps_dtim_period */
+};
+
 struct ieee80211_hw {
     void *priv;
     struct wiphy *wiphy;
@@ -340,14 +378,10 @@ struct ieee80211_hw {
     u32  sta_data_size;
     u32  vif_data_size;
 
-    /* hw->conf: current config flags consulted by driver */
-    struct {
-        u32  flags;
-        int  power_level;
-        u16  listen_interval;
-        int  dynamic_ps_timeout;
-        struct cfg80211_chan_def chandef;
-    } conf;
+    /* hw->conf: current config flags consulted by driver — see the
+     * named struct ieee80211_conf above for why this must be a named
+     * type rather than an anonymous struct. */
+    struct ieee80211_conf conf;
 
     void *kext_hw;
 };
@@ -978,6 +1012,31 @@ static inline int ieee80211_emulate_switch_vif_chanctx(struct ieee80211_hw *hw,
         struct ieee80211_vif_chanctx_switch *vifs, int n_vifs,
         enum ieee80211_chanctx_switch_mode mode) { return 0; }
 
+/*
+ * ieee80211_handle_wake_tx_queue — real upstream mac80211 exports this
+ * as a stock helper drivers can assign directly to .wake_tx_queue
+ * (core.c's rtl_ops literal does exactly that: `.wake_tx_queue =
+ * ieee80211_handle_wake_tx_queue,`). Different bug class than the
+ * missing-struct-field errors above: `wake_tx_queue` itself was
+ * already a real member on this struct (line ~851) — this fixes the
+ * function assigned to it not existing.
+ *
+ * Real upstream's version drains mac80211's own internal per-txq
+ * software queue and calls ->ops->tx() per frame. This compat layer
+ * has no such internal TX queue to drain: per the handover doc
+ * (Section 52 / item 20), this port's TX path bypasses mac80211's TX
+ * queueing entirely — RTW88IEEE80211::outputPacket() builds each
+ * frame and calls hw->ops->tx() directly, so nothing ever calls
+ * ieee80211_wake_tx_queue()/schedules a txq for this function to
+ * drain. It exists here only so the literal function-pointer
+ * assignment in core.c's rtl_ops table compiles and links; it should
+ * never actually be invoked given this port's TX architecture. Kept
+ * as a no-op rather than omitted so an unexpected call is silently
+ * harmless instead of a link error.
+ */
+static inline void ieee80211_handle_wake_tx_queue(struct ieee80211_hw *hw,
+        struct ieee80211_txq *txq) { }
+
 /* Ampdu params.
  * NOTE: named (not anonymous) per rtlwifi/core.c:1373-1375 real usage:
  *   enum ieee80211_ampdu_mlme_action action = params->action;
@@ -995,6 +1054,72 @@ enum ieee80211_ampdu_mlme_action {
     IEEE80211_AMPDU_TX_STOP_FLUSH, IEEE80211_AMPDU_TX_STOP_FLUSH_CONT,
     IEEE80211_AMPDU_TX_OPERATIONAL,
 };
+
+/*
+ * TIM element — ps.c reads hw->conf.ps_dtim_period (fixed above) plus
+ * parses a received TIM IE via ieee80211_check_tim() to decide whether
+ * this station's AID bit is set. WLAN_EID_TIM=5 and the struct layout
+ * below are the standard 802.11 TIM element (Linux's own
+ * <linux/ieee80211.h>, not rtlwifi-specific).
+ *
+ * CORRECTED signature — the real call site (ps.c, live-grepped this
+ * session) is `ieee80211_check_tim(tim_ie, tim_len,
+ * rtlpriv->mac80211.assoc_id, false)`: FOUR arguments, not three. My
+ * first draft only had (tim, tim_len, aid) — a 3-arg static inline
+ * with a 4-arg real call site would have been a straight compile
+ * error, caught here before a build attempt rather than after.
+ *
+ * The 4th bool parameter's real semantics are NOT confirmed — this
+ * kernel tree's ieee80211_check_tim() differs from the plain 3-arg
+ * version in more recent upstream mac80211, and its body wasn't part
+ * of what was grepped (it lives in net/mac80211/util.c, not
+ * ieee80211.h, so it isn't visible from a header-only diff the way
+ * tim_ie's field layout was). Rather than guess what it gates and
+ * risk a silently-wrong PS/TIM decision, it's accepted but UNUSED
+ * here — the bitmap-bit computation below is unchanged from the
+ * standard 3-arg logic. This is flagged, not hidden: if TIM/PS
+ * behavior looks wrong at runtime, this parameter's real meaning is
+ * the first thing to chase down (see whether the real function body
+ * is reachable via `grep -rn "ieee80211_check_tim" ../linux-kernel`
+ * across more than just ieee80211.h, or checking a newer/older
+ * upstream mac80211 source for this exact 4-arg variant).
+ */
+#define WLAN_EID_TIM 5
+
+struct ieee80211_tim_ie {
+    u8 dtim_count;
+    u8 dtim_period;
+    u8 bitmap_ctrl;
+    u8 virtual_map[1];
+} __packed;
+
+static inline bool ieee80211_check_tim(const struct ieee80211_tim_ie *tim,
+                                        u8 tim_len, u16 aid,
+                                        bool _uapsd_unconfirmed /* see block comment above — unused */)
+{
+    u8 mask;
+    u8 index, indexn1, indexn2;
+
+    if (!tim || tim_len < sizeof(*tim))
+        return false;
+
+    if (aid == 0)
+        return tim->bitmap_ctrl & 1;
+
+    aid &= 0x3fff;
+    index = aid / 8;
+    mask  = 1 << (aid & 7);
+
+    indexn1 = tim->bitmap_ctrl & 0xfe;
+    indexn2 = tim_len + indexn1 - 4;
+
+    if (index < indexn1 || index > indexn2)
+        return false;
+
+    index -= indexn1;
+
+    return !!(tim->virtual_map[index] & mask);
+}
 
 struct ieee80211_ampdu_params {
     enum ieee80211_ampdu_mlme_action action;

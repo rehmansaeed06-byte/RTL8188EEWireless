@@ -60,6 +60,20 @@
                                  'atomic_t'" (build-log confirmed). */
 #include <linux/interrupt.h>
 
+/*
+ * fallthrough; — a C23/recent-kernel pseudo-keyword core.c uses as a
+ * bare statement inside switch cases (real usage: `fallthrough;` on its
+ * own line, no arguments). Not a real identifier or function — just a
+ * marker for "no break here, this is intentional." No compat/linux/*.h
+ * previously defined it, so it errored as an unknown identifier. A
+ * no-op statement macro is the correct compat shim (matches upstream
+ * Linux's own <linux/compiler_attributes.h> fallback definition when
+ * the compiler doesn't support the fallthrough attribute).
+ */
+#ifndef fallthrough
+#define fallthrough do {} while (0)
+#endif
+
 #include "net/mac80211.h"   /* existing rtw88-built shim; provides
                                 struct ieee80211_hw, struct wiphy,
                                 struct ieee80211_ops, etc. Corrected

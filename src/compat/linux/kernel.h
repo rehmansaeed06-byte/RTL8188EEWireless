@@ -96,6 +96,10 @@ static inline int   IS_ERR_OR_NULL(const void *ptr) { return !ptr || IS_ERR(ptr)
 #define likely(x)   __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
 
+/* Kernel-stack-usage compiler hints; macOS has no equivalent stack-size
+ * config to react to, so these are no-ops. See rtl8188ee/hw.c. */
+#define noinline_for_stack
+#define __always_inline inline __attribute__((always_inline))
 #define ALIGN_DOWN(x, a)  ((x) & ~((a) - 1))
 #define PTR_ALIGN(p, a)   ((typeof(p))ALIGN((unsigned long)(p), (a)))
 

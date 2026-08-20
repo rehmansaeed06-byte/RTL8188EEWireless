@@ -4835,13 +4835,36 @@ the user's actual external `regd.c`/`regd.h`** (the ones the real build
 will use, from the sibling `linux-kernel` checkout) and should be before
 this section is treated as fully closing Section 71.6.
 
-## Recommended next step
+## CONFIRMED against the real external files — Section 71.6 is CLOSED
 
-Run the two verification commands below against the *real* external
-`regd.c`/`regd.h` (not the stand-in used here) to (a) confirm the actual
-files' include lines match what's assumed above, and (b) confirm they
-use modern `NL80211_BAND_*` naming rather than the old `IEEE80211_BAND_*`
-form. If both check out, Section 71.6 can be marked closed outright.
+The user ran the verification commands against the actual
+`../linux-kernel/drivers/net/wireless/realtek/rtlwifi/regd.c` /
+`regd.h` on the real build machine:
+
+- `regd.c` includes only `"wifi.h"` and `"regd.h"`, `regd.h` includes
+  nothing — matches the assumption above exactly.
+- `regd.c` uses `NL80211_BAND_2GHZ` / `NL80211_BAND_5GHZ` (modern
+  naming) — the caveat above is resolved; no `IEEE80211_BAND_*` usage
+  exists in the real file.
+- A real `xcrun clang ... -mkernel` build was run
+  (`make -f Makefile.rtl8188ee clean && make -f Makefile.rtl8188ee`).
+  Output shows `CC regd.c` completing with only pre-existing
+  sign-conversion / integer-precision warnings (all unrelated to
+  cfg80211 visibility — e.g. `-Wsign-conversion` on `ch->flags &= ~...`,
+  a `-Wshorten-64-to-32` on `__ffs`), then the build proceeded straight
+  to `CC stats.c`. No error of any kind was raised on `regd.c`, and no
+  `cfg80211`/`ieee80211_regdomain`/`NL80211_RRF_*` symbol errors
+  occurred anywhere in the log.
+
+**Section 71.6 (the regd.c cfg80211-visibility blocker) is resolved.**
+The fix was the pre-existing `#include "cfg80211.h"` at the tail of
+`src/compat/net/mac80211.h` (see above) — no code changes were needed,
+only this documentation update to stop future sessions from re-opening
+a solved problem.
+
+The next real open items are §67.8 (no real workqueue implementation)
+and confirming a full clean build (all remaining driver source files)
+completes end-to-end, not just `regd.c`/`stats.c`.
 
 ------------------------------------------------------------------------
 

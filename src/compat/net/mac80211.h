@@ -275,6 +275,15 @@ enum nl80211_channel_type {
 #define IEEE80211_CHAN_NO_HT40PLUS  (1 << 9)
 #define IEEE80211_CHAN_NO_HT40MINUS (1 << 10)
 #define IEEE80211_CHAN_NO_OFDM      (1 << 6)
+/* Real upstream Linux (commit 8fe02e16, "cfg80211: consolidate
+ * passive-scan and no-ibss flags") merged these two legacy channel
+ * flags into IEEE80211_CHAN_NO_IR, keeping both old names as aliases
+ * for pre-merge callers. rtlwifi's regd.c (out-of-tree here, in
+ * ../linux-kernel) still uses the old names directly, so both must
+ * resolve — verified against the same commit that introduced the
+ * NL80211_RRF_* alias pair below. */
+#define IEEE80211_CHAN_PASSIVE_SCAN IEEE80211_CHAN_NO_IR
+#define IEEE80211_CHAN_NO_IBSS      IEEE80211_CHAN_NO_IR
 
 struct ieee80211_channel {
     enum nl80211_band band;
@@ -283,6 +292,10 @@ struct ieee80211_channel {
     u32 flags;
     int max_power;
     int max_reg_power;
+    /* regd.c:_rtl_reg_apply_beaconing_flags reads this to decide
+     * whether to clear NO_IBSS/PASSIVE_SCAN on a country-IE-sourced
+     * regulatory update. */
+    bool beacon_found;
 };
 
 struct ieee80211_rate {
@@ -353,6 +366,14 @@ struct cfg80211_chan_def {
  * not to collide with the two above. */
 #define WIPHY_FLAG_IBSS_RSN              (1 << 2)
 #define WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL (1 << 3)
+/* regd.c:_rtl_regd_init_wiphy sets/clears these on wiphy->flags —
+ * real upstream cfg80211 wiphy.flags bits, values not load-bearing
+ * here since this compat layer never inspects them elsewhere, only
+ * stores what the driver sets (consistent with the rest of this
+ * flags field's usage throughout the file). */
+#define WIPHY_FLAG_CUSTOM_REGULATORY      (1 << 4)
+#define WIPHY_FLAG_STRICT_REGULATORY      (1 << 5)
+#define WIPHY_FLAG_DISABLE_BEACON_HINTS   (1 << 6)
 
 #define NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR  (1 << 0)
 
@@ -1707,8 +1728,9 @@ struct ieee80211_prep_tx_info {
 #define IEEE80211_CHAN_NO_80MHZ   (1 << 11)
 #define IEEE80211_CHAN_NO_160MHZ  (1 << 12)
 
-#define REGULATORY_STRICT_REG           (1 << 0)
-#define REGULATORY_COUNTRY_IE_IGNORE    (1 << 2)
+#define REGULATORY_CUSTOM_REG           (1 << 0)
+#define REGULATORY_STRICT_REG           (1 << 1)
+#define REGULATORY_DISABLE_BEACON_HINTS (1 << 2)
 
 /* nl80211_dfs_regions — used by rtw_regulatory in main.h */
 enum nl80211_dfs_regions {
@@ -1805,4 +1827,6 @@ struct rate_control_ops {
 int  ieee80211_rate_control_register(const struct rate_control_ops *ops);
 void ieee80211_rate_control_unregister(const struct rate_control_ops *ops);
 
+
+#include "cfg80211.h"
 #endif /* _RTW88_COMPAT_MAC80211_H */

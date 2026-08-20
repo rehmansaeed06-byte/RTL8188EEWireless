@@ -1,6 +1,47 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## SIXTH UPDATE (read this first) — fifth build attempt CONFIRMS Section
+## SEVENTH UPDATE (read this first) — the SIXTH UPDATE below was
+**itself a real misdiagnosis, not just fallout from the comment bug**.
+A fresh build log at the start of this session showed the exact same
+`regd.c`/`pci.c` errors the SIXTH UPDATE claimed were resolved
+(`ieee80211_regdomain`, `NL80211_RRF_*`, `pci_dev` missing `bus`/
+`devfn`, `PCI_EXP_LNKCTL_CCC`/`_ASPMC`). Direct inspection of the
+user's actual committed tree (clean `git status`, no pending changes)
+confirmed none of these symbols existed anywhere in `src/compat/` —
+this was a real gap, not a stale log. Real fixes were written and
+verified against fetched upstream sources (torvalds/linux's
+`pci_regs.h`, `regulatory.h`, `nl80211.h`) — see findings.md Section
+70.1 for the full list, including a genuine bug caught and fixed
+before it could ship: a naive `freq_reg_info()` stub returning `NULL`
+would have silently passed every `IS_ERR()` check in regd.c and
+caused a null-pointer dereference, since this compat layer's real
+`IS_ERR()` does NOT treat NULL as an error. Fixed to return a real
+`ERR_PTR(-ERANGE)` instead.
+
+A second, distinct real gap (`pci_bus` missing a `self` field,
+dereferenced by rtlwifi's bridge-vendor-detection code) was found and
+fixed in a second build round the same session — Section 70.2.
+
+**Currently blocked on a genuinely new, unresolved problem**: after
+both fixes above, `pci_bus->self` compiles clean, but `regd.c` fails
+with the EXACT SAME errors as before either fix — despite the user
+directly grep-confirming the needed symbols (`struct
+ieee80211_regdomain`, `NL80211_RRF_NO_OFDM`) exist in their
+`cfg80211.h` at the expected line numbers. This is not a missing
+definition; it's a definition that exists but isn't reaching `regd.c`
+at compile time. Not yet diagnosed. See findings.md Section 70.3 for
+the live hypotheses (most likely: `regd.c`/`regd.h`'s own `#include`
+chain doesn't pull in `net/cfg80211.h` the way assumed) and the
+concrete next step: **read `regd.c`'s actual `#include` lines and
+`regd.h`'s content before touching cfg80211.h again** — not yet done
+this session, and doing so is a precondition for any further fix in
+this area, not an optional nice-to-have. A `clang -E` preprocessor
+dry run to trace the actual header resolution was attempted but
+produced suspiciously empty output and needs re-running properly
+(unfiltered, `2>&1 | head -30`) before trusting any conclusion from
+it.
+
+## SIXTH UPDATE — fifth build attempt CONFIRMS Section
 68's diagnosis was correct: every error from the `IEEE80211_MIN_ACTION_
 SIZE`/`module_init`/`module_exit` fixes is gone, and `regd.c`/`pci.c`
 (seen failing in the pre-comment-fix log two rounds ago) compiled
@@ -13,13 +54,14 @@ values were checked against real independent sources (a direct fetch
 of torvalds/linux's real ieee80211.h, and a real linux-wireless
 mailing-list thread confirming reason code 39's meaning) before being
 written, not recalled from memory alone, given Section 68's lesson
-about shipping unverified guesses. **Not yet re-verified by a build
-attempt with this round's fix present** — that's the immediate next
-step. Still-open items, unchanged: the Makefile's header dependency
-tracking needs a real fix (a `clean` has been required every round so
-far — Section 68.2), and the workqueue subsystem still has no
-implementation anywhere (Section 67.8) — not yet hit as an actual
-error since the build hasn't reached the link stage.
+about shipping unverified guesses. **This update's "confirmed clean"
+claim about regd.c/pci.c turned out to be WRONG — see the SEVENTH
+UPDATE above.** Still-open items, unchanged: the Makefile's header
+dependency tracking needs a real fix (a `clean` has been required
+every round so far — Section 68.2), and the workqueue subsystem still
+has no implementation anywhere (Section 67.8) — hit as a real error
+this session (`pci.c`'s `works` undeclared-identifier error, Section
+70.1), not yet fixed.
 
 ## FIFTH UPDATE — fourth build attempt required TWO
 misdiagnosed rounds before finding the real cause (findings.md Section

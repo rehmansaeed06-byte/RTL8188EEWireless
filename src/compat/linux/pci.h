@@ -48,6 +48,27 @@ struct pci_device_id {
 /* rtw8814AE */
 #define PCI_DEVICE_ID_RTL8814A  0x8813
 
+/*
+ * Minimal pci_bus stub. Real upstream pci.c only ever dereferences
+ * ->number (bus number, used for logging/identity strings, e.g.
+ * "%02x:%02x.%x", pdev->bus->number, PCI_SLOT(pdev->devfn),
+ * PCI_FUNC(pdev->devfn)) — not the full topology (children/parent/
+ * self), which this single-device compat layer has no need to model.
+ */
+struct pci_dev;
+
+struct pci_bus {
+    u8 number;
+    /* Parent bridge device, or NULL for a device with no discoverable
+     * bridge. Confirmed real usage: pci.c dereferences pdev->bus->self
+     * to reach the parent PCI bridge (real Linux PCI idiom, matches
+     * ath9k's identical pattern and the historical rtl8192ce
+     * bridge-vendor oops thread on linux-kernel@). Callers already
+     * null-check this, matching real upstream's documented behavior
+     * that bus->self can legitimately be NULL. */
+    struct pci_dev *self;
+};
+
 struct pci_dev {
     u16 vendor;
     u16 device;
@@ -69,7 +90,19 @@ struct pci_dev {
 
     /* Pointer back to our kext device object */
     void *kext_dev;
+
+    /* Bus/slot/function identity (pci.c:1804/1939/1940/1941/1964/
+     * 1966/1968 dereference pdev->bus->number and pdev->devfn for
+     * logging and capability lookups) */
+    struct pci_bus bus_storage;
+    struct pci_bus *bus;
+    unsigned int devfn;
 };
+
+/* Real upstream include/uapi/linux/pci.h macros (verified) */
+#define PCI_DEVFN(slot, func)  ((((slot) & 0x1f) << 3) | ((func) & 0x07))
+#define PCI_SLOT(devfn)        (((devfn) >> 3) & 0x1f)
+#define PCI_FUNC(devfn)        ((devfn) & 0x07)
 
 /* PCI config space */
 #define PCI_COMMAND         0x04
@@ -77,9 +110,16 @@ struct pci_dev {
 #define PCI_COMMAND_MEMORY  0x02
 #define PCI_CAP_ID_EXP      0x10
 #define PCI_EXP_LNKCTL                   0x10
-#define PCI_EXP_LNKCTL_CLKREQ_EN        0x100
-#define PCI_EXP_LNKCTL_ASPM_L0S         0x01
-#define PCI_EXP_LNKCTL_ASPM_L1          0x02
+/* Real values verified against torvalds/linux's
+ * include/uapi/linux/pci_regs.h (fetched, not recalled): the low two
+ * bits are the ASPM control field (ASPMC), individually named
+ * ASPM_L0S/ASPM_L1 below; CCC is bit 6 (Common Clock Configuration),
+ * a separate, non-overlapping field in the same register. */
+#define PCI_EXP_LNKCTL_ASPMC            0x0003  /* ASPM Control (both bits) */
+#define PCI_EXP_LNKCTL_ASPM_L0S         0x0001  /* L0s Enable */
+#define PCI_EXP_LNKCTL_ASPM_L1          0x0002  /* L1 Enable */
+#define PCI_EXP_LNKCTL_CCC               0x0040  /* Common Clock Configuration */
+#define PCI_EXP_LNKCTL_CLKREQ_EN        0x0100
 #define PCI_EXP_DEVCTL2                  0x28
 #define PCI_EXP_DEVCTL2_COMP_TMOUT_DIS   0x0010
 

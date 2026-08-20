@@ -66,6 +66,12 @@ static inline u32 div_u64(u64 dividend, u32 divisor) { return (u32)(dividend / d
 #define ENODEV        19
 #define EINVAL        22
 #define ENOSPC        28
+/* Same numeric value on Linux and BSD/XNU (POSIX-standardized) —
+ * cross-checked against MacKernelSDK/Headers/sys/errno.h before
+ * adding, not just assumed identical. Needed by cfg80211.h's
+ * freq_reg_info() for a real ERR_PTR(-ERANGE) "no matching rule"
+ * return, matching what real upstream cfg80211 returns. */
+#define ERANGE        34
 #define EALREADY      37
 #define ENOTSUPP      524
 #define EOPNOTSUPP    95

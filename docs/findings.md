@@ -4405,4 +4405,238 @@ was already confirmed correct.
 
 ------------------------------------------------------------------------
 
+# 70. Sixth Build Attempt — SIXTH UPDATE's "confirmed clean" claim was itself wrong; regd.c/pci.c gaps were real
+
+**Correction to the SIXTH UPDATE in the handover doc.** That update
+claimed the fifth build attempt confirmed `regd.c` and `pci.c`
+compiled clean. A fresh build log pasted by the user at the start of
+this session showed the exact same `regd.c`/`pci.c` errors the SIXTH
+UPDATE said were resolved — `struct ieee80211_regdomain`/`struct
+ieee80211_reg_rule` incomplete, `NL80211_RRF_PASSIVE_SCAN`/
+`NL80211_RRF_NO_OFDM`/`NL80211_RRF_NO_IBSS` undeclared, `pci_dev` missing
+`bus`/`devfn`, `PCI_EXP_LNKCTL_CCC`/`PCI_EXP_LNKCTL_ASPMC` undeclared,
+plus a `works` undeclared-identifier error in `pci.c` (workqueue-
+related, Section 67.8's still-open item). Direct inspection of the
+user's actual, clean-git-status, currently-committed `src/compat/`
+tree confirmed none of these symbols existed anywhere in it — the
+SIXTH UPDATE's "confirmed clean" was a real misdiagnosis, not a
+stale-log artifact on the user's end (verified via `git log`, `git
+status`, and file-mtime-vs-commit-time checks before writing anything,
+given this document's own repeated lesson about not trusting a
+plausible-looking claim without checking it).
+
+## 70.1 Real fixes written this round, each verified against a fetched upstream source
+
+- **`pci.h`**: added `struct pci_bus` (with `number` and, after a
+  second round below, `self`), `bus`/`devfn` fields on `pci_dev`, and
+  `PCI_DEVFN`/`PCI_SLOT`/`PCI_FUNC` macros — values matched against
+  `include/uapi/linux/pci.h`.
+- **`pci.h`**: added `PCI_EXP_LNKCTL_ASPMC` (0x0003) and
+  `PCI_EXP_LNKCTL_CCC` (0x0040) — fetched directly from
+  torvalds/linux's `include/uapi/linux/pci_regs.h`, not recalled.
+- **`mac80211.h`**: added `IEEE80211_CHAN_PASSIVE_SCAN`/
+  `IEEE80211_CHAN_NO_IBSS` as aliases of the pre-existing
+  `IEEE80211_CHAN_NO_IR` — confirmed via a real kernel commit
+  (8fe02e16, "cfg80211: consolidate passive-scan and no-ibss flags")
+  that these were merged and the old names kept as aliases for
+  pre-merge callers, which is exactly regd.c's situation (older
+  rtlwifi source using the pre-merge names directly). Also added
+  `beacon_found` to `ieee80211_channel` and three missing
+  `WIPHY_FLAG_*` bits.
+- **`cfg80211.h`**: added the real `struct ieee80211_regdomain`/
+  `ieee80211_reg_rule`/`ieee80211_freq_range`/`ieee80211_power_rule`
+  shapes and `REG_RULE()`/`REG_RULE_EXT()` macros — fetched from
+  torvalds/linux's `include/net/regulatory.h`. Added `NL80211_RRF_*`
+  flags with real bit values from `include/uapi/linux/nl80211.h`
+  (`NO_OFDM = 1<<0`; `PASSIVE_SCAN`/`NO_IBSS` aliased to the same
+  `NL80211_RRF_NO_IR` merge as above, same commit). Added a **real**
+  (non-stub) `wiphy_apply_custom_regulatory()` that walks
+  `wiphy->bands[]` and applies each matching rule's flags to affected
+  channels — not a no-op, since regd.c's own subsequent
+  `_rtl_reg_apply_world_flags()`/`_rtl_reg_apply_radar_flags()` calls
+  depend on the baseline per-channel flags this function sets.
+- **A real bug caught and fixed while writing `freq_reg_info()`**:
+  this compat layer's real `IS_ERR()` (kernel.h) does NOT treat NULL
+  as an error (`IS_ERR_VALUE` only catches the top ~4095 pointer
+  values) — confirmed by reading kernel.h's actual implementation
+  before writing anything, not assumed. regd.c gates every
+  `freq_reg_info()` result behind `IS_ERR()`. A naive `return NULL`
+  would have made every one of those checks pass, and the caller would
+  then dereference a NULL `reg_rule` — a real, would-have-shipped bug
+  if not caught. Fixed to return `ERR_PTR(-ERANGE)` instead, matching
+  what real upstream cfg80211 returns for a no-match frequency. This
+  required adding `ERANGE` (34) to `kernel.h`'s hand-rolled errno
+  list — cross-checked against `MacKernelSDK/Headers/sys/errno.h` to
+  confirm the same numeric value holds on both Linux and BSD/XNU
+  (POSIX-standardized) before adding it.
+
+## 70.2 Second round, same session: `pci_bus->self` — another real, distinct gap
+
+After the fixes above were applied and rebuilt, all `regd.c` errors
+and the `pci.c` bus/devfn/LNKCTL errors were gone, but one **new**
+error appeared: `pci.c:1804: no member named 'self' in 'struct
+pci_bus'`. This is real, distinct rtlwifi behavior — the historical
+bridge-vendor-detection path (`_rtl_pci_find_adapter` and later
+ASPM setup) dereferences `pdev->bus->self` to reach the parent PCI
+bridge as its own `struct pci_dev *`, confirmed against a real,
+independent source: a 2011 linux-wireless mailing-list thread ("Oops
+when insmod rtl8192ce") discussing exactly this field being NULL on
+some topologies, plus ath9k's structurally identical `parent =
+pdev->bus->self` pattern. Fixed by forward-declaring `struct pci_dev`
+before `struct pci_bus` (same ordering problem real upstream headers
+have and solve the same way) and adding a `self` pointer, left
+permanently NULL since this compat layer has no real PCI bus
+enumeration — callers in pci.c already null-check it, matching real
+upstream's own documented behavior that `bus->self` can legitimately
+be NULL.
+
+## 70.3 Third round, same session: `regd.c` STILL failing after cfg80211.h fixes verified present in the file
+
+A build after 70.1+70.2 fixed the `pci_bus->self` error cleanly (that
+specific error is gone from the next log) but reproduced the *exact
+same* `regd.c` errors from 70.1 (`ieee80211_regdomain` incomplete,
+`NL80211_RRF_PASSIVE_SCAN`/`NL80211_RRF_NO_OFDM`/`NL80211_RRF_NO_IBSS`
+undeclared, `ieee80211_reg_rule` incomplete) — despite the user
+directly grep-confirming those exact symbols exist in their
+`cfg80211.h` (`struct ieee80211_regdomain` at line 193,
+`NL80211_RRF_NO_OFDM` at line 228). This is a genuinely new kind of
+problem: not a missing definition, but a definition that exists in
+the file yet is somehow not visible to `regd.c` at compile time.
+
+**Not yet resolved — this is the immediate next step for whoever
+picks this up next.** Live hypotheses being checked, none confirmed
+yet:
+- `regd.c`/`wifi.h` might not `#include` cfg80211.h/mac80211.h at all
+  in a way that reaches this compat layer (checked: `wifi.h` has zero
+  occurrences of `cfg80211.h` — real upstream `wifi.h` includes `<net/
+  mac80211.h>` directly and relies on mac80211.h transitively pulling
+  in enough cfg80211 surface, or regd.c includes `regd.h` which then
+  includes cfg80211.h — not yet confirmed which, `regd.c`'s own
+  `#include` lines not yet read this session).
+- A second, stale, or wrong-precedence `cfg80211.h` shadowing the
+  real one — checked via `find / -iname cfg80211.h`: only one live
+  copy exists (`src/compat/net/cfg80211.h`), plus an inert `.Trash`
+  copy that cannot be on any include path. Ruled out.
+- The actual per-file compile command for `regd.c` might not include
+  `-I .../compat/net` at all, or might have some other flag ordering
+  issue that causes the wrong header resolution or an early bail-out
+  before reaching the `#include` in question. `grep -n "COMPAT_FLAGS"`
+  confirms `COMPAT_FLAGS` includes `-I$(COMPAT_DIR)/net`, and this is
+  spliced into the driver-file compile flags — but not yet confirmed
+  those flags are actually the ones used for regd.c specifically (vs.
+  some other flag variable), and not yet confirmed there isn't an
+  `#ifdef`-gated block in cfg80211.h or wifi.h that's skipping the
+  real content on this build.
+- A `clang -E` preprocessor dry run to directly see which cfg80211.h
+  gets pulled in (or whether it's pulled in at all) produced NO
+  output at all, not even an error — this itself is a red flag
+  (command likely failed silently, or stderr got swallowed) and needs
+  re-running with output captured properly (`2>&1 | head -30` without
+  a grep filter that could be hiding a real failure) before drawing
+  any conclusion from it.
+
+**Next immediate step**: read `regd.c`'s own `#include` lines and
+`regd.h`'s content directly (not yet done this session — this
+compat-layer investigation has focused entirely on symbol
+availability inside cfg80211.h/mac80211.h, not on confirming regd.c
+actually pulls that header in at all). Then re-run the `clang -E`
+check with unfiltered output. Do not add more symbols to cfg80211.h
+speculatively until the actual inclusion path is confirmed — if
+regd.c isn't including this header at all, no amount of content added
+to it will fix anything, and that would repeat this section's own
+lesson (70's opening paragraph) about verifying before claiming
+something is fixed.
+
+------------------------------------------------------------------------
+
+# 71. Section 70.3 follow-up — three of the live hypotheses checked
+     against what's actually in this repo; the fourth needs files this
+     repo doesn't contain
+
+## 71.1 Scope limit, stated up front
+
+`regd.c`/`regd.h`/`wifi.h` (the actual rtlwifi driver source) are **not
+vendored in this repo**. `Makefile.rtl8188ee`'s `LINUX_SRC` points at
+`../linux-kernel/drivers/net/wireless/realtek/rtlwifi`, a sibling
+directory outside `rtl8188ee-macos/`. Only the macOS compat/kext layer
+lives here. Everything below was checked against files that *are*
+present; the remaining open item still needs `regd.c`/`regd.h` pasted
+or uploaded directly.
+
+## 71.2 Ruled out: `#ifdef`-gated definitions in `cfg80211.h`
+
+Grepped `src/compat/net/cfg80211.h` for every `#if`/`#ifdef`/`#ifndef`/
+`#endif`. The only pair is the file's own outer include guard
+(`_RTW88_COMPAT_CFG80211_H`). `struct ieee80211_regdomain`, `struct
+ieee80211_reg_rule`, and the `NL80211_RRF_*` defines are not behind any
+conditional block. This specifically rules out the scenario where
+`grep` finds the symbols textually (as the user did, per 70.3) while
+they're actually compiled out for the build — that would have produced
+exactly the reported symptom, but isn't what's happening here.
+
+## 71.3 Ruled out: a second/stale `cfg80211.h` inside this repo's own tree
+
+Only one copy exists: `src/compat/net/cfg80211.h`. (70.3 already ruled
+out a stray copy elsewhere on the filesystem via `find / -iname
+cfg80211.h`; this just confirms the repo itself is clean too.)
+
+## 71.4 Mostly ruled out: `-I` flag ordering for `regd.c`'s own compile
+
+`regd.c` compiles under the generic driver rule
+(`$(BUILD_DIR)/driver/%.o: $(LINUX_SRC)/%.c`), using `DRIVER_CFLAGS` =
+`KEXT_FLAGS` + `COMPAT_FLAGS` + `-include rtlwifi_compat.h` +
+`-I$(LINUX_SRC) -I$(CHIP_SRC)` + defines. `COMPAT_FLAGS` puts
+`-I$(COMPAT_DIR)` *before* `-I$(LINUX_SRC)`/`-I$(CHIP_SRC)`. Since
+`$(COMPAT_DIR)/net/cfg80211.h` exists, `#include <net/cfg80211.h>`
+resolves against it via that first `-I` entry before clang ever looks
+in `LINUX_SRC`/`CHIP_SRC` — so a plain flag-ordering mistake causing
+the compat header to lose to some other file doesn't look like the
+cause, *given the file is included via that exact spelling*. This
+doesn't fully close the flag-ordering hypothesis from 70.3, since it
+was never confirmed that `regd.c`'s compile command is actually
+`DRIVER_CFLAGS` verbatim on the user's end (could differ if invoked
+outside this Makefile, e.g. from Xcode) — but on this repo's own build
+path, it should work.
+
+**Related, smaller, real finding**: `COMPAT_FLAGS` (Makefile lines
+115-119) also lists `-I$(COMPAT_DIR)/linux` and `-I$(COMPAT_DIR)/net`
+as separate entries. These are redundant no-ops for angle-bracket
+includes — `-I$(COMPAT_DIR)` alone already resolves `<linux/x.h>` and
+`<net/x.h>` correctly since the subfolder layout matches. Harmless as
+written, but the comment directly above them ("Compat include path
+overrides ALL linux/ and net/ headers") implies they're doing more
+than they are. Worth trimming so a future reader doesn't assume they're
+load-bearing.
+
+## 71.5 New, not-yet-acted-on finding: identical include guards vs. Feixiao
+
+Every header in `src/compat/` — not just `cfg80211.h` — still uses
+`_RTW88_COMPAT_*` include guards, unchanged from being forked out of
+Feixiao's rtw88 compat layer (confirmed via grep across all of
+`src/compat/net/*.h` and `src/compat/linux/*.h`). Today this is
+harmless: only one copy of each header sits on this project's own
+include path, so there's no actual guard collision right now. But
+`Makefile.rtl8188ee` already reaches into `../Feixiao/src/kext/` for
+the four unmodified `KEXT_SRCS` `.cpp` files (a separate, already-
+documented open item — Makefile lines 217-230). If a future edit ever
+adds any `-I` path reaching into `../Feixiao/src/compat/` (e.g. while
+debugging the `KEXT_SRCS` reuse question), the identical guard macro
+names would cause whichever copy is found second on that translation
+unit to be silently skipped — producing exactly this "symbols exist in
+the file but aren't visible" symptom, just from a different cause than
+70.3's regd.c question. Recommend renaming this project's guards to
+`_RTL8188EE_COMPAT_*` defensively, independent of whether it turns out
+to be today's actual cause.
+
+## 71.6 Still the real next step, unchanged in substance from 70.3
+
+None of the above required `regd.c`/`regd.h`. The actual next action is
+still: get `regd.c`'s real `#include` lines and `regd.h`'s content (not
+present in this repo — needs to come from the `../linux-kernel/...`
+tree or be pasted directly) to confirm whether `regd.c` pulls in `net/
+cfg80211.h` at all, and if so, through what path. Do not add anything
+further to `cfg80211.h` until that's confirmed, per 70.3's own caveat.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

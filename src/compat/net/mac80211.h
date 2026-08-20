@@ -775,7 +775,8 @@ enum ieee80211_ac_numbers {
 };
 
 /* Sequence control mask */
-#define IEEE80211_SCTL_SEQ  0xFFF0
+#define IEEE80211_SCTL_FRAG  0x000F
+#define IEEE80211_SCTL_SEQ   0xFFF0
 
 struct ieee80211_txq {
     struct ieee80211_vif *vif;

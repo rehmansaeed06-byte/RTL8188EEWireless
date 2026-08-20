@@ -130,4 +130,12 @@ void rtlwifi_sw_scan_start(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
 void rtlwifi_sw_scan_switch_channel(struct ieee80211_hw *hw);
 void rtlwifi_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *vif);
 
+/*
+ * rate-control registry accessor — findings.md Section 66's rc.c fix
+ * cluster. See the block comment on ieee80211_rate_control_register()
+ * in rtlwifi_compat.c for why this exists and what's still unresolved
+ * (no confirmed real call site for .get_rate/.rate_init yet).
+ */
+const struct rate_control_ops *rtlwifi_get_rate_control_ops(void);
+
 #endif /* RTLWIFI_COMPAT_H */

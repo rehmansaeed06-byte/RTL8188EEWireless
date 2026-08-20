@@ -633,6 +633,57 @@ bool rtlwifi_is_scanning(void)
  */
 
 /* ------------------------------------------------------------------ */
+/* Rate-control registration — real functions, not stubs               */
+/* (new this session, findings.md Section 66's rc.c fix cluster)       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * ieee80211_rate_control_register()/_unregister() — real upstream
+ * mac80211 maintains a list of registered rate_control_ops and lets
+ * drivers select one by name (hw->rate_control_algorithm, confirmed
+ * real in base.c — Section 66.3). This compat layer has no such
+ * registry: there is exactly one rate-control algorithm ever compiled
+ * in for a single-chip RTL8188EE port (rc.c's own rtl_rate_ops), so a
+ * full named-lookup registry would be machinery with nothing to
+ * dispatch between.
+ *
+ * Implementation: store the one registered ops pointer in a static
+ * global and expose it via rtlwifi_get_rate_control_ops() for
+ * whichever real call site ends up needing to invoke .get_rate/
+ * .rate_init/etc (the IOKit TX path per findings.md Section 52, or
+ * rtl_op_sta_add's real rate_control_rate_init()-equivalent call —
+ * neither is traced yet; this only wires the registration half real
+ * rc.c code needs to link and run rtl_rate_control_register() without
+ * crashing, matching this compat layer's existing minimal-real-
+ * function approach). FIXME: no real call site for get_rate/rate_init
+ * has been traced yet — TX path (Section 52) currently bypasses
+ * mac80211 rate selection entirely by calling hw->ops->tx() directly,
+ * so it's not yet confirmed whether/where this registered ops table
+ * is actually invoked from in this port's architecture. Flagged, not
+ * silently assumed unreachable.
+ */
+static const struct rate_control_ops *g_rtlwifi_rate_ops;
+
+int ieee80211_rate_control_register(const struct rate_control_ops *ops)
+{
+    if (!ops)
+        return -1; /* -EINVAL, avoiding a new errno.h dependency here */
+    g_rtlwifi_rate_ops = ops;
+    return 0;
+}
+
+void ieee80211_rate_control_unregister(const struct rate_control_ops *ops)
+{
+    if (g_rtlwifi_rate_ops == ops)
+        g_rtlwifi_rate_ops = NULL;
+}
+
+const struct rate_control_ops *rtlwifi_get_rate_control_ops(void)
+{
+    return g_rtlwifi_rate_ops;
+}
+
+/* ------------------------------------------------------------------ */
 /* Firmware-load teardown blocking                                     */
 /* (findings.md Section 49.5)                                          */
 /* ------------------------------------------------------------------ */

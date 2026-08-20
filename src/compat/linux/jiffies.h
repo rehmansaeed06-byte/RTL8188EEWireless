@@ -8,6 +8,13 @@
 /* 1 jiffy = 1 ms */
 #define HZ 1000UL
 
+/* MSEC_PER_SEC — CONFIRMED real: base.c does
+ * msecs_to_jiffies(IN_4WAY_TIMEOUT_TIME) where IN_4WAY_TIMEOUT_TIME
+ * is itself defined in terms of MSEC_PER_SEC (rtlwifi's own wifi.h,
+ * not this compat layer) — standard Linux <linux/time.h> constant,
+ * just never previously force-included/defined here. */
+#define MSEC_PER_SEC 1000L
+
 /*
  * mach_absolute_time() returns nanoseconds on ARM64 (1 unit = 1 ns).
  * On x86 it is in TSC-derived units (~1 ns at GHz frequencies).

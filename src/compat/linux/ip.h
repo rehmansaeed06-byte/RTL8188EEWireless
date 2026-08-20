@@ -22,6 +22,13 @@
 
 #include "types.h"
 
+/* IPPROTO_UDP — CONFIRMED real: base.c's rtl_is_special_data() checks
+ * `IPPROTO_UDP == ip->protocol` right after the iphdr cast below, to
+ * finish DHCP classification. Standard <linux/in.h>/<uapi/linux/in.h>
+ * value (17), not rtlwifi-specific — only the one value this driver
+ * actually compares against is added, not the full IPPROTO_* set. */
+#define IPPROTO_UDP 17
+
 struct iphdr {
 #if defined(__LITTLE_ENDIAN_BITFIELD) || 1
     /* macOS/x86_64 is little-endian; rtlwifi is only built for

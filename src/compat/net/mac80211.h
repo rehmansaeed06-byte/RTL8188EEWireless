@@ -83,20 +83,99 @@ struct ieee80211_mgmt {
             __le16 capab_info;
             u8 variable[0];
         } __packed probe_resp;
+        /*
+         * action — full real shape, confirmed by grep of every
+         * `.action.` dereference across base.c: `category` (flat),
+         * `action_code` (flat — base.c:1384's
+         * `switch (mgmt->u.action.action_code)`, confirmed by exact
+         * transcript of that line, not assumed), plus three nested
+         * per-category structs — `addba_req` (base.c:1415, ADDBA
+         * negotiation), `ht_smps` (base.c:2418-2426, SM Power Save
+         * frames this driver builds itself), `delba` (base.c:2542-
+         * 2543, BlockAck teardown). Real upstream mac80211's action
+         * union has more per-category variants (addba_resp,
+         * measurement, ext_chan_switch, ...) base.c never references
+         * — kept out, same minimal-superset approach as elsewhere.
+         *
+         * The inner union is deliberately ANONYMOUS (kept, not
+         * named) — this is real upstream mac80211's actual layout:
+         * every variant duplicates its own `action_code` byte at
+         * offset 0, and a bare `u8 action_code` sits alongside them
+         * in the same anonymous union, letting code read the action
+         * code without knowing which category applies yet. Anonymous
+         * flattening promotes every member (addba_req, ht_smps,
+         * delba, action_code) to be a direct member of the outer
+         * `action` struct, so both `mgmt->u.action.action_code`
+         * (flat) and `mgmt->u.action.addba_req.capab` (nested) work
+         * with no extra path segment — verified by local
+         * reproduction (compiled standalone) before writing this,
+         * not assumed. See findings.md Section 68 for why this only
+         * became relevant now: an earlier attempt in this same edit
+         * mistakenly "fixed" this by naming the union, which broke
+         * the flat `action_code` path (`u.action.field` no longer
+         * resolved) and would have shipped a NEW bug instead of the
+         * real fix, which was never the struct shape at all — it was
+         * the missing IEEE80211_MIN_ACTION_SIZE macro below, caught
+         * before it reached the compiler by locally reproducing every
+         * candidate layout against the real call patterns first.
+         */
         struct {
-            /* category — CONFIRMED real: ps.c reads
-             * mgmt->u.action.category directly. Real upstream's
-             * action union has further nested per-category structs
-             * (addba_req, addba_resp, delba, ...) after this field;
-             * only category itself is referenced here, so only it is
-             * added, consistent with this compat layer's existing
-             * minimal-superset approach (same as sta_notify_cmd
-             * above only adding the two enumerators rtlwifi uses). */
             u8 category;
+            union {
+                struct {
+                    u8 action_code;
+                    u8 dialog_token;
+                    __le16 capab;
+                    __le16 timeout;
+                    __le16 start_seq_num;
+                } __packed addba_req;
+                struct {
+                    u8 action_code;
+                    u8 smps_control; /* real upstream type is u8, not
+                                         a multi-byte field — values are
+                                         SM_PS static/dynamic/disabled */
+                } __packed ht_smps;
+                struct {
+                    u8 action_code;
+                    __le16 params;
+                    __le16 reason_code;
+                } __packed delba;
+                u8 action_code;
+            };
             u8 variable[0];
         } __packed action;
     } u;
 } __packed;
+
+/*
+ * IEEE80211_MIN_ACTION_SIZE(field) — CONFIRMED real, previously
+ * missing entirely. This — not the action union's shape — was the
+ * actual root cause of the `action_code`/`addba_req`/`ht_smps`/
+ * `delba` "undeclared identifier" errors across two build rounds:
+ * base.c calls this as `IEEE80211_MIN_ACTION_SIZE(action_code)` /
+ * `(addba_req)` / `(ht_smps)` / `(delba)`, and with no macro defined,
+ * clang parsed each call as a bare C expression — the macro-argument
+ * token read as an ordinary undeclared identifier, not a struct
+ * member access at all (confirmed by the real compiler output this
+ * session, not assumed from the error text alone). It also explains
+ * the separate `base.c:2734/2735` "parameter list without types"
+ * errors from the same root pattern (see module_init/module_exit in
+ * linux/module.h — also a missing macro, not a struct problem).
+ *
+ * Real upstream mac80211 computes this as
+ * `offsetofend(struct ieee80211_mgmt, u.action.u.<field>)`, but that
+ * form requires a NAMED inner union — verified locally that changing
+ * this project's anonymous union to match would break the flat
+ * `action_code` access path base.c also uses (see the block comment
+ * above). Since the anonymous-union layout is kept (matches real
+ * upstream's actual field promotion), the macro instead goes through
+ * `u.action.field` directly, which resolves correctly for all four
+ * real call tokens because anonymous-union members are direct members
+ * of `action` — verified by local compilation against every real call
+ * pattern before writing this, not assumed to work by analogy.
+ */
+#define IEEE80211_MIN_ACTION_SIZE(field) \
+    offsetofend(struct ieee80211_mgmt, u.action.field)
 
 struct ieee80211_hdr_3addr {
     __le16 frame_control;
@@ -268,6 +347,12 @@ struct cfg80211_chan_def {
 
 #define WIPHY_FLAG_SUPPORTS_TDLS         (1 << 0)
 #define WIPHY_FLAG_TDLS_EXTERNAL_SETUP   (1 << 1)
+/* IBSS_RSN / HAS_REMAIN_ON_CHANNEL — CONFIRMED real: base.c's
+ * _rtl_init_mac80211() sets both unconditionally on hw->wiphy->flags
+ * (not gated on any chip capability check). New bit values, chosen
+ * not to collide with the two above. */
+#define WIPHY_FLAG_IBSS_RSN              (1 << 2)
+#define WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL (1 << 3)
 
 #define NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR  (1 << 0)
 
@@ -329,6 +414,12 @@ static inline void wiphy_ext_feature_set(struct wiphy *wiphy,
 #define IEEE80211_HW_WANT_MONITOR_VIF           (1u << 13)
 #define IEEE80211_HW_NO_AUTO_VIF                (1u << 14)
 #define IEEE80211_HW_SW_CRYPTO_CONTROL          (1u << 15)
+/* PS_NULLFUNC_STACK — CONFIRMED real: base.c's _rtl_init_mac80211()
+ * sets this whenever software LPS is in play (rtlpriv->psc.swctrl_lps),
+ * meaning mac80211's own PS null-func keepalive stack handles power
+ * save rather than the driver. New bit value, not aliasing anything
+ * existing. */
+#define IEEE80211_HW_PS_NULLFUNC_STACK          (1u << 16)
 
 /* ieee80211_hw_set(hw, FLAG) → hw->flags |= IEEE80211_HW_FLAG */
 #define ieee80211_hw_set(hw, flg)   ((hw)->flags |= IEEE80211_HW_##flg)
@@ -377,6 +468,20 @@ struct ieee80211_hw {
     u32  txq_data_size;
     u32  sta_data_size;
     u32  vif_data_size;
+    /* Three fields below CONFIRMED real by grep this session:
+     * - max_listen_interval: base.c sets it directly
+     *   (hw->max_listen_interval = MAX_LISTEN_INTERVAL) right next to
+     *   the already-existing max_rate_tries/max_rates assignments —
+     *   same struct, just never added.
+     * - rate_control_algorithm: base.c sets it to a literal string
+     *   ("rtl_rc") so mac80211's rate-control-registration lookup can
+     *   find rc.c's rtl_rate_ops by name; real upstream type is
+     *   `const char *`.
+     * - max_rx_aggregation_subframes: rtl_rx_ampdu_apply() (base.c)
+     *   writes rtlpriv->hw->max_rx_aggregation_subframes directly. */
+    u16  max_listen_interval;
+    const char *rate_control_algorithm;
+    u16  max_rx_aggregation_subframes;
 
     /* hw->conf: current config flags consulted by driver — see the
      * named struct ieee80211_conf above for why this must be a named
@@ -1131,6 +1236,39 @@ struct ieee80211_ampdu_params {
     u16 timeout;
 };
 
+/*
+ * IEEE80211_MAX_AMPDU_BUF_HT — CONFIRMED real: base.c's
+ * rtl_rx_ampdu_apply() falls back to this when BT-coexist agg-size
+ * control is off. Standard upstream mac80211 value (64 — the max HT
+ * BlockAck window size), not rtlwifi-specific.
+ *
+ * IEEE80211_ADDBA_PARAM_TID_MASK — CONFIRMED real: base.c extracts
+ * the TID out of an ADDBA request's capab field with
+ * `(capab & IEEE80211_ADDBA_PARAM_TID_MASK) >> 2`. Standard upstream
+ * mac80211 value — TID occupies bits [5:2] of the ADDBA capability
+ * field per the 802.11 spec, hence mask 0x003C.
+ */
+#define IEEE80211_MAX_AMPDU_BUF_HT     64
+#define IEEE80211_ADDBA_PARAM_TID_MASK 0x003C
+
+/*
+ * WLAN_CATEGORY_HT / WLAN_HT_ACTION_SMPS / WLAN_CATEGORY_BACK /
+ * WLAN_ACTION_DELBA — CONFIRMED real: base.c's rtl_make_smps_action()
+ * and its DELBA-frame-building counterpart set these into
+ * action_frame->u.action.category/action_code directly. Standard
+ * 802.11 category/action-code values from upstream
+ * <linux/ieee80211.h> (rc.c/base.c only ever #include "wifi.h", never
+ * a real ieee80211.h — confirms these are meant to come from whatever
+ * stands in for it, i.e. this compat layer, not something
+ * rtlwifi-local). Only the four values this driver actually
+ * references are added, not the full set of WLAN_CATEGORY / WLAN_ACTION
+ * enumeration values.
+ */
+#define WLAN_CATEGORY_HT     7
+#define WLAN_CATEGORY_BACK   3
+#define WLAN_HT_ACTION_SMPS  1
+#define WLAN_ACTION_DELBA    2
+
 /* ------------------------------------------------------------------ */
 /*  ieee80211_hw alloc / free                                           */
 /* ------------------------------------------------------------------ */
@@ -1593,5 +1731,57 @@ static inline void init_waitqueue_head(wait_queue_head_t *wq)
 #define wait_event_interruptible(wq, cond)  ({ (void)(cond); 0; })
 #define wait_event_timeout(wq, cond, to)    ({ (void)(cond); 1; })
 
+
+/*
+ * ---------------------------------------------------------------
+ * mac80211 rate-control-registration API — rc.c's whole reason for
+ * existing. CONFIRMED real usage this session (rc.c, live-grepped):
+ * a `static const struct rate_control_ops rtl_rate_ops = { .name,
+ * .alloc, .free, .alloc_sta, .free_sta, .rate_init, .rate_update,
+ * .tx_status, .get_rate }` literal, registered via
+ * `ieee80211_rate_control_register(&rtl_rate_ops)` /
+ * `ieee80211_rate_control_unregister(&rtl_rate_ops)`. Every member
+ * function's signature below is taken from rc.c's real definitions
+ * (full bodies read this session), not guessed — e.g. `alloc` takes
+ * `struct ieee80211_hw *` while every other member takes the driver's
+ * own opaque `void *ppriv`/`void *priv_sta`, matching real upstream
+ * mac80211's actual split (alloc is the one callback that hasn't been
+ * handed the driver's private pointer yet, since it's the one
+ * creating it).
+ *
+ * ieee80211_tx_rate_control: only `skb` and `short_preamble` are
+ * dereferenced anywhere in rc.c (txrc->skb, txrc->short_preamble) —
+ * real upstream's struct has more fields (sband, bss_conf, reported
+ * rates, etc.) that this driver never reads, so only the two
+ * confirmed-real fields are added, same minimal-superset approach as
+ * everywhere else in this file.
+ */
+struct ieee80211_tx_rate_control {
+    struct sk_buff *skb;
+    bool short_preamble;
+};
+
+struct rate_control_ops {
+    const char *name;
+    void *(*alloc)(struct ieee80211_hw *hw);
+    void  (*free)(void *priv);
+    void *(*alloc_sta)(void *priv, struct ieee80211_sta *sta, gfp_t gfp);
+    void  (*free_sta)(void *priv, struct ieee80211_sta *sta, void *priv_sta);
+    void  (*rate_init)(void *priv, struct ieee80211_supported_band *sband,
+                        struct cfg80211_chan_def *chandef,
+                        struct ieee80211_sta *sta, void *priv_sta);
+    void  (*rate_update)(void *priv, struct ieee80211_supported_band *sband,
+                          struct cfg80211_chan_def *chandef,
+                          struct ieee80211_sta *sta, void *priv_sta,
+                          u32 changed);
+    void  (*tx_status)(void *priv, struct ieee80211_supported_band *sband,
+                        struct ieee80211_sta *sta, void *priv_sta,
+                        struct sk_buff *skb);
+    void  (*get_rate)(void *priv, struct ieee80211_sta *sta, void *priv_sta,
+                       struct ieee80211_tx_rate_control *txrc);
+};
+
+int  ieee80211_rate_control_register(const struct rate_control_ops *ops);
+void ieee80211_rate_control_unregister(const struct rate_control_ops *ops);
 
 #endif /* _RTW88_COMPAT_MAC80211_H */

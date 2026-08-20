@@ -43,8 +43,36 @@ struct workqueue_struct {
 extern struct workqueue_struct *system_wq;
 extern struct workqueue_struct *system_long_wq;
 
-struct workqueue_struct *alloc_workqueue(const char *name, unsigned int flags,
-                                          int max_active);
+/*
+ * alloc_workqueue — CORRECTED this session: real upstream Linux
+ * defines this as a variadic printf-style MACRO
+ * (`fmt, flags, max_active, ...args`), not a plain 3-arg function —
+ * confirmed by the real call site (base.c's _rtl_init_deferred_work,
+ * grepped this session): `alloc_workqueue("%s", WQ_UNBOUND, 0,
+ * rtlpriv->cfg->name)`, 4 arguments against what was previously a
+ * fixed 3-param declaration ("too many arguments to function call,
+ * expected 3, have 4" — real compiler error, not a hypothetical).
+ * Only this one call site exists in the driver code this build
+ * compiles (DRIVER_SRCS), so the varargs are handled generically
+ * (vsnprintf into the workqueue's fixed name[64] buffer) rather than
+ * specially-cased for "%s" + one string arg, in case other rtlwifi
+ * source not yet hit by a build error uses a different format.
+ */
+struct workqueue_struct *alloc_workqueue(const char *fmt, unsigned int flags,
+                                          int max_active, ...);
+/*
+ * NOTE — separate from the arity fix above: alloc_workqueue() (and
+ * queue_work/destroy_workqueue/etc. below) are declared here but have
+ * NO implementation anywhere in this project yet (confirmed by grep,
+ * this session — rtlwifi_compat.c is COMPAT_SRCS's only compiled .c,
+ * and none of the workqueue functions have a body there). This is a
+ * pre-existing gap, not something this round's arity fix introduced
+ * or needs to solve — the build hasn't reached the link stage yet
+ * (still hitting real compile errors first, base.c/rc.c this round).
+ * Flagged here so it isn't mistaken for "done" once compile errors
+ * stop: a real thread_call/IOLock-backed workqueue implementation is
+ * still needed in rtlwifi_compat.c before this build will link.
+ */
 struct workqueue_struct *alloc_ordered_workqueue(const char *name,
                                                   unsigned int flags);
 void destroy_workqueue(struct workqueue_struct *wq);

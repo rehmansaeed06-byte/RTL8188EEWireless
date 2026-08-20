@@ -1,27 +1,73 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## THIRD UPDATE (read this first) — second real build attempt, 13 errors
-categorized and fixed (findings.md Section 66). All traced to `core.c`'s
-real `rtl_ops` literal and `ps.c`'s TIM/PS handling: `linux/udp.h` (new
-file, same pattern as `ip.h`), `fallthrough` macro, a named
-`struct ieee80211_conf` (`hw->conf` was anonymous, breaking
-`rtl_op_config`'s `&hw->conf` pointer-take) with a new `ps_dtim_period`
-field, the TIM cluster (`WLAN_EID_TIM`, `struct ieee80211_tim_ie`,
-`ieee80211_check_tim()`), `mgmt->u.action.category`, and a no-op
-`ieee80211_handle_wake_tx_queue()` stub (this port bypasses mac80211 TX
-queueing entirely, so it should never actually fire — see Section 52).
-One real bug caught before it reached the compiler: `ieee80211_check_tim`
-was first drafted with the well-known 3-arg mac80211 signature, but the
-real `ps.c` call site (grepped directly, not assumed) passes 4 arguments
-— fixed, though the 4th parameter's real semantics remain an open,
-explicitly-flagged question (Section 66.4), not a silent guess.
-**NOT yet addressed:** 3 more real errors in the same build log
-(`rc.c` / `ieee80211_tx_rate_control` / `rate_control_ops`, Section
-66.7) — new top-of-list open item, distinct subsystem, deliberately
-deferred rather than folded in speculatively. **Not yet re-verified by
-a third build attempt** — that's the immediate next step.
+## FIFTH UPDATE (read this first) — fourth build attempt required TWO
+misdiagnosed rounds before finding the real cause (findings.md Section
+68 — read it in full, it's a genuine process lesson, not just a fix
+list). Sequence: (1) a self-inflicted regression — a `*/` appearing
+INSIDE a comment's prose (`WLAN_CATEGORY_*/WLAN_ACTION_*`) prematurely
+closed the comment and broke the whole file; fixed by rewording. (2) A
+build-cache trap — after that fix, `make` still showed old errors at
+unchanged line numbers because header-only changes weren't triggering
+recompilation (`make clean` required; the Makefile's dependency
+tracking may need a real fix — new open item, Section 68.2). (3) THE
+REAL BUG, found only after getting FULL non-grep-filtered compiler
+output instead of the one-line summary: `IEEE80211_MIN_ACTION_SIZE`
+was never defined anywhere. With it undefined, `IEEE80211_MIN_ACTION_
+SIZE(action_code)` etc. don't expand as macros — clang reads the bare
+argument tokens as ordinary undeclared identifiers, which looks
+IDENTICAL in one-line error text to "struct doesn't have this field."
+Two full rounds (Section 67.3 and this section's first attempt) were
+spent correctly-but-pointlessly refining the `action` union's shape,
+which was never actually broken. **Concrete process lesson for future
+rounds**: if a struct-field error persists after the field is
+genuinely present and correctly spelled, check whether the access is
+happening through an undefined macro before touching the struct
+again. The real fixes — `IEEE80211_MIN_ACTION_SIZE(field)` defined as
+`offsetofend(struct ieee80211_mgmt, u.action.field)` against the
+ORIGINAL (correct, anonymous-union) `action` struct, plus `module_init`/
+`module_exit` no-op stubs (same missing-macro root cause, different
+call site: `base.c:2734/2735`'s "parameter list without types") — were
+both verified by actually compiling the exact shipped bytes against
+real call patterns with `cc -c` before being sent back, not just
+eyeballed. **Not yet re-verified by a build attempt with both fixes
+present** — that's the immediate next step. Also NOT YET addressed
+(seen in the pre-fix build log, real, separate): `regd.c`'s `struct
+ieee80211_regdomain`/`struct ieee80211_reg_rule`/`NL80211_RRF_*`, and
+`pci.c`'s `struct pci_dev` field gaps (`bus`, `devfn`) plus
+`PCI_EXP_LNKCTL_*` constants.
 
-## SECOND MAJOR CORRECTION (read this next, after the one above)
+## FOURTH UPDATE — third real build attempt, 20 errors categorized and
+fixed (findings.md Section 67). Two clusters:
+`ieee80211_hw`/`wiphy` gaps (`max_listen_interval`, `rate_control_algorithm`,
+`max_rx_aggregation_subframes`, `WIPHY_FLAG_IBSS_RSN`,
+`WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL`, `IEEE80211_HW_PS_NULLFUNC_STACK`) and
+`base.c`'s action-frame/AMPDU/DHCP code (`struct ieee80211_mgmt.u.action`
+rewritten with real `addba_req`/`ht_smps`/`delba` variants — not just
+extended field-by-field, `IEEE80211_MAX_AMPDU_BUF_HT`,
+`IEEE80211_ADDBA_PARAM_TID_MASK`, `WLAN_CATEGORY_HT/BACK`,
+`WLAN_HT_ACTION_SMPS`, `WLAN_ACTION_DELBA`, `IPPROTO_UDP`,
+`MSEC_PER_SEC`). Two real bugs, not missing symbols: (1) `skb_queue_walk`
+was entirely absent (only `_safe` existed); (2) `alloc_workqueue`'s
+compat declaration was a plain 3-arg function, but real upstream Linux
+defines it as a variadic printf-style macro. `rc.c`'s rate-control
+cluster is done: real `rate_control_ops`/`ieee80211_tx_rate_control`
+types plus actual `ieee80211_rate_control_register()`/`_unregister()`
+function bodies in `rtlwifi_compat.c`. Open items: `ieee80211_check_tim`'s
+4th parameter semantics (unconfirmed), and the workqueue subsystem has
+no implementation anywhere in this project (expected link errors).
+
+## THIRD UPDATE — second real build attempt, 13 errors categorized and
+fixed (findings.md Section 66). All traced to `core.c`'s real `rtl_ops`
+literal and `ps.c`'s TIM/PS handling: `linux/udp.h` (new file, same
+pattern as `ip.h`), `fallthrough` macro, a named `struct ieee80211_conf`
+(`hw->conf` was anonymous, breaking `rtl_op_config`'s `&hw->conf`
+pointer-take) with a new `ps_dtim_period` field, the TIM cluster
+(`WLAN_EID_TIM`, `struct ieee80211_tim_ie`, `ieee80211_check_tim()`),
+`mgmt->u.action.category`, and a no-op `ieee80211_handle_wake_tx_queue()`
+stub (this port bypasses mac80211 TX queueing entirely, so it should
+never actually fire — see Section 52).
+
+## SECOND MAJOR CORRECTION (read this next, after the ones above)
 The "build-target duplicate-symbol conflict" described throughout this
 document as the top-priority open item (item 25) was ITSELF misdiagnosed
 as an Xcode target-membership problem. Direct read of `rtw88.xcodeproj`
@@ -995,11 +1041,16 @@ further errors on the next attempt; this is a normal fix-and-rebuild
 loop, not a sign the architecture above is wrong.
 
 ## Next immediate step
-Third real `make -f Makefile.rtl8188ee` build attempt, to (a) confirm
-Section 66's 13 fixes actually resolve cleanly and (b) get real grep-
-able source for the deferred `rc.c`/`ieee80211_tx_rate_control`/
-`rate_control_ops` errors (Section 66.7) so they can be fixed the same
-grep-before-writing way as every prior round, not guessed.
+Fifth real `make -f Makefile.rtl8188ee` build attempt, to confirm
+Section 68's two fixes (IEEE80211_MIN_ACTION_SIZE, module_init/
+module_exit) resolve cleanly, and to get real grep-able source for
+`regd.c` (struct ieee80211_regdomain/ieee80211_reg_rule/NL80211_RRF_*)
+and `pci.c` (struct pci_dev's bus/devfn fields, PCI_EXP_LNKCTL_*) —
+neither addressed yet, both confirmed real in the pre-Section-68 build
+log. If a struct-field error reappears for something already added,
+check for an undefined macro wrapping the access FIRST (see Section
+68.3) before touching the struct again — that mistake cost two whole
+rounds this time.
 
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for
@@ -1008,9 +1059,11 @@ for the build-system correction, Section 58 for DRIVER_SRCS
 confirmation, Section 59 for the PCIDevice/IEEE80211 reuse resolution,
 Section 60 for the scan compat helpers, Section 61 for signature
 verification, Section 62 for the vendoring resolution, Section 65 for
-the first real build attempt and its fixes, and Section 66 for the
-second real build attempt and its fixes (udp.h, fallthrough,
-ieee80211_conf/ps_dtim_period, TIM/check_tim, action.category,
-wake_tx_queue). This handover is the concise context a new Claude
-should read first.
+the first real build attempt and its fixes, Section 66 for the second
+real build attempt and its fixes, Section 67 for the third real build
+attempt and its fixes, and Section 68 for the fourth build attempt —
+a comment-bug regression, a build-cache trap, and the real lesson:
+two rounds spent fixing a struct that was never broken because the
+actual cause was a missing macro. This handover is the concise context
+a new Claude should read first.
 

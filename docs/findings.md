@@ -4041,4 +4041,307 @@ started item. **Not yet re-verified by a third build attempt** — same
 
 ------------------------------------------------------------------------
 
+# 67. Third Real Build Attempt — 20 Errors, base.c/rc.c/skbuff.h, All Fixed
+
+User ran `make -f Makefile.rtl8188ee` a third time. All 66-round fixes
+compiled clean (no udp.h/fallthrough/ieee80211_conf/TIM/action.category/
+wake_tx_queue errors this round). New errors were entirely in `base.c`
+(15) and `rc.c` (3, carried over unaddressed from Section 66.7), plus
+one that turned out to be `skbuff.h`, not `base.c`, once traced. Every
+fix below is grep-confirmed against real source before being written —
+several rounds of user-run greps this session, escalating in
+specificity as each answer raised a more precise follow-up question
+(e.g. the ieee80211_tx_rate_control fields, the exact rc.c function
+signatures, the real `.action.` union shape across the whole file, not
+just the one member that happened to error first).
+
+## 67.1 `ieee80211_hw` — three new real fields
+
+`max_listen_interval` (u16), `rate_control_algorithm` (const char *),
+`max_rx_aggregation_subframes` (u16) — all three confirmed by direct
+grep of the exact assignment sites in `base.c`
+(`hw->max_listen_interval = MAX_LISTEN_INTERVAL`, `hw->
+rate_control_algorithm = "rtl_rc"`, `rtlpriv->hw->
+max_rx_aggregation_subframes = ...`), not inferred from field names
+alone.
+
+## 67.2 `wiphy` flags + `IEEE80211_HW_PS_NULLFUNC_STACK`
+
+`WIPHY_FLAG_IBSS_RSN`, `WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL` — confirmed
+real, set unconditionally in `_rtl_init_mac80211()`. New bit values
+(2, 3), chosen not to collide with the two pre-existing
+`WIPHY_FLAG_SUPPORTS_TDLS`/`WIPHY_FLAG_TDLS_EXTERNAL_SETUP` (0, 1).
+`IEEE80211_HW_PS_NULLFUNC_STACK` — confirmed real, set alongside the
+already-existing `SUPPORTS_PS` when `swctrl_lps` is active; new bit
+value (1<<16), first unused slot after the existing 0-15 range.
+
+## 67.3 `struct ieee80211_mgmt.u.action` — corrected/expanded, not just extended
+
+Section 65/66's `action` member only had `category` (added when
+ps.c's read was the only confirmed use). A full grep of every
+`.action.` dereference across `base.c` this session (not just the
+error-of-the-moment) found real usage goes further: a flat
+`action_code` byte, plus three nested per-category structs —
+`addba_req` (ADDBA negotiation, base.c:1415), `ht_smps` (SM Power
+Save frames this driver builds itself, base.c:2418-2426), `delba`
+(BlockAck teardown, base.c:2542-2543). Rewrote the whole `action`
+member as a category byte + union of the three real variants (each
+with its own `action_code` first byte, matching real upstream's
+layout) rather than adding one flat field per error round.
+
+**Caught and self-corrected during this same edit, before it reached
+the user:** the first draft of `ht_smps` included a fabricated
+`sta_addr[ETH_ALEN]` field that no grep confirmed, and typed
+`smps_control` as `__le16` instead of the real `u8`. Neither was
+based on actual `base.c` usage — corrected immediately (removed the
+invented field, fixed the type) rather than shipped as if confirmed.
+Flagging this here rather than silently fixing it, since it's exactly
+the kind of unconfirmed-guess mistake this whole session's discipline
+is meant to catch before a build attempt, not after.
+
+## 67.4 `IEEE80211_MAX_AMPDU_BUF_HT`, `IEEE80211_ADDBA_PARAM_TID_MASK`, `WLAN_CATEGORY_*`/`WLAN_ACTION_*`/`WLAN_HT_ACTION_*`
+
+All standard 802.11/upstream-mac80211 numeric constants, not
+rtlwifi-local — confirmed by call-site grep (`rtl_rx_ampdu_apply()`'s
+fallback, the ADDBA TID-extraction bitmask, and the four category/
+action-code values `base.c`'s own SMPS/DELBA action-frame builders
+set) plus confirming `rc.c`/`base.c` only `#include "wifi.h"` (never a
+real `ieee80211.h`), meaning these are expected to come from whatever
+stands in for it — i.e. this compat layer. Real spec/upstream values
+used (`WLAN_CATEGORY_BACK`=3, `WLAN_CATEGORY_HT`=7,
+`WLAN_HT_ACTION_SMPS`=1, `WLAN_ACTION_DELBA`=2,
+`IEEE80211_MAX_AMPDU_BUF_HT`=64, `IEEE80211_ADDBA_PARAM_TID_MASK`=
+0x003C), not invented — only the specific values this driver
+references are added, same minimal-superset approach as elsewhere.
+
+## 67.5 `IPPROTO_UDP`, `MSEC_PER_SEC`
+
+`IPPROTO_UDP`=17 added to `linux/ip.h` (next to the `iphdr` it's used
+alongside in `rtl_is_special_data()`'s DHCP classifier).
+`MSEC_PER_SEC`=1000 added to `linux/jiffies.h` (next to the existing
+`msecs_to_jiffies()` it's used with, via `base.c`'s
+`msecs_to_jiffies(IN_4WAY_TIMEOUT_TIME)`). Both standard Linux
+constants, single confirmed value each, not the full IPPROTO_*/time
+unit families.
+
+## 67.6 `skb_queue_walk` — root-caused, not just symbol-added
+
+Two errors that looked unrelated to a missing macro (`base.c:1668:
+expected ';' after expression`, `base.c:1673: 'break' statement not in
+loop or switch statement`) actually traced to the SAME root cause:
+`skb_queue_walk_safe` existed in `skbuff.h` but plain `skb_queue_walk`
+did not. The undefined macro name meant `skb_queue_walk(queue, skb) {
+... }` parsed as an ordinary (implicit-function-call) expression
+statement followed by a separate, loop-less `{ ... break; ... }`
+block — hence "expected ';'" and "'break' not in loop", not a plainer
+"undeclared identifier". Confirmed the one real call site
+(`rtl_tx_report_handler`, `base.c`) unlinks-then-immediately-`break`s,
+so the simpler (non-`_safe`) container_of traversal pattern already
+used by `skb_queue_walk_safe` was copied without the `tmp`-caching
+half, rather than reusing `_safe` and ignoring the extra arg.
+
+## 67.7 `rc.c`'s `rate_control_ops`/`ieee80211_tx_rate_control` — carried over from 66.7, now done
+
+Deferred in Section 66.7 pending real signatures; grepped this
+session (full bodies of all 7 `rate_control_ops` member functions,
+every `txrc->` dereference in `rc.c`). Findings:
+- `ieee80211_tx_rate_control`: only `skb` and `short_preamble` are
+  ever dereferenced in `rc.c` — real upstream's struct has more
+  fields (sband, bss_conf, reported rates) this driver never reads,
+  so only the two confirmed fields are modeled.
+- `rate_control_ops`: 9-member struct matching the real
+  `rtl_rate_ops` literal exactly — `.alloc` uniquely takes
+  `struct ieee80211_hw *` (not yet handed the driver's own private
+  pointer, since it's the one creating it) while every other member
+  takes the opaque `void *priv`/`void *priv_sta` rc.c's own functions
+  use; every parameter list taken from rc.c's real function
+  definitions (`rtl_tx_status`, `rtl_rate_init`, `rtl_rate_update`,
+  `rtl_rate_alloc`, `rtl_rate_free`, `rtl_rate_alloc_sta`,
+  `rtl_get_rate`), not guessed.
+- `ieee80211_rate_control_register()`/`_unregister()`: real
+  functions (not stubs), added to `rtlwifi_compat.c` — a single
+  static global holds the one-and-only registered ops pointer (this
+  is a single-chip, single-algorithm port; a full named-lookup
+  registry would be machinery with nothing to dispatch between),
+  exposed via a new `rtlwifi_get_rate_control_ops()` accessor.
+  **FIXME flagged in-comment, not silently assumed resolved:** no
+  real call site for `.get_rate`/`.rate_init` has been traced yet —
+  the TX path (Section 52) currently bypasses mac80211 rate selection
+  entirely via direct `hw->ops->tx()` calls, so whether/where this
+  registered ops table actually gets invoked in this port's
+  architecture is still open.
+
+## 67.8 `alloc_workqueue` — real bug, not a missing symbol
+
+`base.c:448`: `"too many arguments to function call, expected 3, have
+4"` against `alloc_workqueue("%s", WQ_UNBOUND, 0, rtlpriv->cfg->
+name)`. Root cause: real upstream Linux's `alloc_workqueue` is a
+**variadic printf-style macro** (`fmt, flags, max_active, ...args`),
+not a plain 3-parameter function — this compat layer's declaration
+was simply wrong, not incomplete. Fixed the declared signature to
+match (`const char *fmt, unsigned int flags, int max_active, ...`).
+
+**Separately flagged, not fixed this round:** confirmed by grep that
+`alloc_workqueue` — and the rest of the workqueue subsystem
+(`queue_work`, `destroy_workqueue`, etc.) — has NO implementation
+anywhere in this project yet; `rtlwifi_compat.c` is `COMPAT_SRCS`'s
+only compiled `.c` and none of these functions have a body there.
+This is a pre-existing gap, not something this round's signature fix
+introduced. Not yet a build blocker (still hitting compile errors,
+not the link stage), but noted here so it isn't mistaken for solved
+once compile errors stop — a real `thread_call`/`IOLock`-backed
+workqueue implementation is still needed before this build will link.
+**New tracked open item.**
+
+## 67.9 Status
+
+19 of the 20 errors from this round's log have source fixes (the 20th,
+`alloc_workqueue`'s arity, is really the same underlying signature bug
+counted twice across two error lines). All additive-only under
+`src/compat/`, one real function body added to `rtlwifi_compat.c`
+(rate-control registration), nothing vendored touched. Two new
+explicitly-flagged open items surfaced (not silently resolved): (1)
+`ieee80211_check_tim`'s 4th-parameter semantics (carried from Section
+66.4), (2) the workqueue subsystem has no implementation yet (67.8) —
+expected to surface as link errors once compile errors clear. One
+self-caught mistake documented in 67.3 (fabricated `ht_smps` field)
+rather than silently corrected. **Not yet re-verified by a fourth
+build attempt** — same "next step" framing as every prior round.
+
+------------------------------------------------------------------------
+
+# 68. Fourth Build Attempt — Comment-Bug Self-Inflicted Regression, Then Two Rounds Misdiagnosing a Missing Macro as a Struct Problem
+
+User ran a fourth build. This section documents a real process failure
+worth reading carefully — two consecutive rounds spent "fixing" a
+struct that was never broken, because the actual root cause (a missing
+macro) produced misleading error text that looked exactly like the
+struct-field errors from Section 67.3.
+
+## 68.1 Self-inflicted regression: `*/` inside a comment
+
+Section 67's `mac80211.h` handoff included the line (inside a `/*
+... */` comment): `not the full WLAN_CATEGORY_*/WLAN_ACTION_*
+enumeration.` The `*/` immediately after `WLAN_CATEGORY_` is a literal
+C comment-close token — the comment ended there, early, and everything
+after it (through the next real `*/`) got parsed as live code,
+producing cascading "unknown type name"/"expected ';'" errors at
+`mac80211.h:1220`. Root cause: careless comment wording, not a
+technical gap. Fixed by rewording to avoid `*/` appearing inside prose
+(`the full set of WLAN_CATEGORY / WLAN_ACTION enumeration values`).
+**Lesson recorded here directly**: any future edit to this file's
+comments must avoid `*/` appearing as a substring, including inside
+glob-style or path-style prose (`FOO_*/BAR_*` reads exactly like a
+close-then-reopen to the preprocessor even though it's clearly meant
+as text to a human).
+
+## 68.2 A build-cache trap that looked like the fix hadn't landed
+
+After the comment fix, a rebuild still showed the OLD errors
+(`action_code`, `addba_req`, etc.) at unchanged line numbers, which
+initially looked like the corrected file hadn't been picked up. Root
+cause, confirmed by direct inspection: `make`'s dependency tracking
+didn't recompile `.c` files whose only changed dependency was a header
+(`rc.o`/`stats.o` on disk predated the `mac80211.h` edit). `make -f
+Makefile.rtl8188ee clean` followed by a fresh build resolved it. **New
+tracked open item, not yet investigated further**: this project's
+Makefile may be missing proper `.d`-file/header dependency tracking —
+worth checking `Makefile.rtl8188ee`'s dependency generation flags
+(`-MMD`/`-MP` or equivalent) at some point so header-only changes
+reliably trigger recompilation without a manual `clean` each time.
+Also surfaced in the same noisy log: `unable to open output file
+.../build/driver/rtl8188ee/dm.o: No such file or directory` — a
+half-finished `build/` tree from a prior interrupted/parallel run,
+resolved by the same `clean`. Neither is a source-code bug.
+
+## 68.3 The real root cause, finally found: a missing macro, not a struct problem
+
+Even after the clean rebuild, `action_code`/`addba_req`/`ht_smps`/
+`delba` STILL errored — at which point it became clear Section 67.3's
+diagnosis (the `action` union's field shape) was never actually wrong,
+because those exact fields were confirmed compiling fine in isolation.
+Getting the user to paste FULL (non-grep-filtered) compiler output
+for one specific error, rather than the collapsed one-line summary,
+revealed the actual context:
+
+```c
+if (skb->len < IEEE80211_MIN_ACTION_SIZE(action_code))
+```
+
+`IEEE80211_MIN_ACTION_SIZE` was never defined anywhere in this compat
+layer. With the macro undefined, `IEEE80211_MIN_ACTION_SIZE(field)`
+doesn't expand — clang parses `action_code`/`addba_req`/`ht_smps`/
+`delba` as bare, ordinary (non-macro-argument) C expressions, i.e.
+plain undeclared identifiers, which is indistinguishable in the
+one-line grep'd error text from "this struct doesn't have this field"
+— hence two whole rounds spent correctly-but-pointlessly refining a
+struct that was already right, chasing a symptom instead of the
+cause. Same root-cause pattern as Section 67.6's `skb_queue_walk`
+(missing macro misparsing as something else entirely) — should have
+been the first thing checked once the struct fields kept "still
+failing" after being genuinely present.
+
+This also explained `base.c:2734/2735`'s "a parameter list without
+types is only allowed in a function definition" — same pattern, a
+different missing macro: `module_init(rtl_core_module_init);` /
+`module_exit(rtl_core_module_exit);` with no `module_init`/
+`module_exit` macro defined parses as a bare (invalid) function-style
+declaration.
+
+## 68.4 `IEEE80211_MIN_ACTION_SIZE` — fixed, and verified by actual local compilation before shipping
+
+Confirmed real call sites (grepped): `IEEE80211_MIN_ACTION_SIZE
+(action_code)` (base.c:1379, pci.c:510 — smallest possible action
+frame), `(addba_req)` (base.c:1400), `(ht_smps)` (base.c:2398, 2404),
+`(delba)` (base.c:2525, 2531). Real upstream mac80211 computes this
+via `offsetofend(struct ieee80211_mgmt, u.action.u.<field>)` against a
+NAMED inner union — but this project's `action` union is deliberately
+ANONYMOUS (matches real upstream's actual member-promotion layout,
+letting `mgmt->u.action.action_code` and
+`mgmt->u.action.addba_req.capab` both resolve directly with no `.u.`
+in between). A first attempt at this fix wrongly named the inner union
+to match the textbook macro form — which would have broken the flat
+`action_code` path and shipped a NEW real bug. **Caught before being
+sent to the user**: every candidate struct/macro combination was
+compiled standalone (`cc -c`, real toolchain, not just eyeballed)
+against the real call patterns from base.c/pci.c before this was
+written back to the project. The version that shipped —
+`#define IEEE80211_MIN_ACTION_SIZE(field) offsetofend(struct
+ieee80211_mgmt, u.action.field)`, paired with the ORIGINAL anonymous-
+union `action` struct (i.e. Section 67.3's struct shape was correct
+all along and needed no further changes) — is the one that actually
+compiled clean, extracted byte-for-byte from the real file and tested,
+not merely asserted to work by analogy.
+
+## 68.5 `module_init`/`module_exit`
+
+Confirmed missing from `linux/module.h` (every other module-related
+macro was already stubbed there; these two simply hadn't been added).
+This is a macOS kext, not a loadable `.ko` — there's no Linux module
+loader to register with, and this port's real load/unload path is
+IOKit's own driver lifecycle (established earlier in this project's
+build-system work), so these are correct as pure no-op stubs:
+`#define module_init(fn)` / `#define module_exit(fn)`. Verified by
+local compilation against the real `base.c` call pattern before
+shipping.
+
+## 68.6 Status
+
+Both real fixes (the `IEEE80211_MIN_ACTION_SIZE` macro and
+`module_init`/`module_exit`) are verified by standalone compilation of
+the exact shipped bytes against the real call patterns from
+base.c/pci.c — not just balance-checked or eyeballed, given this
+section's two rounds of costly misdiagnosis were exactly the failure
+mode of trusting a plausible-looking fix without testing it first.
+`regd.c`'s `struct ieee80211_regdomain`/`struct ieee80211_reg_rule`/
+`NL80211_RRF_*` gaps (seen in the pre-comment-fix build log) and
+`pci.c`'s `struct pci_dev` field gaps (`bus`, `devfn`) and
+`PCI_EXP_LNKCTL_*` constants are confirmed NOT YET addressed — real,
+separate, not-yet-grepped items for the next round. The Section 68.2
+Makefile dependency-tracking gap is also unaddressed — flagged, not
+fixed. **Not yet re-verified by a build attempt with both fixes
+present** — that's the immediate next step.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

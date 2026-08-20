@@ -103,6 +103,28 @@ static inline void skb_queue_purge(struct sk_buff_head *list)
         kfree_skb(skb);
 }
 
+/*
+ * skb_queue_walk — CONFIRMED real: base.c's rtl_tx_report_handler()
+ * uses the plain (non-`_safe`) form: `skb_queue_walk(queue, skb) { ...
+ * skb_unlink(skb, queue); ...; break; }`. Only `_safe` previously
+ * existed here — the missing macro caused the whole `skb_queue_walk
+ * (queue, skb) { ... }` call to be parsed as an ordinary (undeclared-
+ * function) expression statement instead of a for-loop, which is
+ * exactly why the real compiler errors were "expected ';' after
+ * expression" and "'break' statement not in loop" rather than a
+ * plain "undeclared identifier" — the braces after it were read as a
+ * separate compound statement, not a loop body.
+ *
+ * Safe to define without the safe-next caching skb_queue_walk_safe
+ * uses: the one real call site unlinks then immediately `break`s,
+ * so nothing continues iterating past the unlink — same container_of
+ * traversal style as the _safe version above, just without a `tmp`.
+ */
+#define skb_queue_walk(queue, skb) \
+    for ((skb) = container_of((queue)->list.next, struct sk_buff, list); \
+         &(skb)->list != &(queue)->list; \
+         (skb) = container_of((skb)->list.next, struct sk_buff, list))
+
 #define skb_queue_walk_safe(queue, skb, tmp) \
     for ((skb) = container_of((queue)->list.next, struct sk_buff, list), \
          (tmp) = container_of((skb)->list.next, struct sk_buff, list); \

@@ -47,7 +47,7 @@
  * rtlwifi_set_hw_callbacks() below) reference the pointer without a
  * header-level extern.
  */
-static struct ieee80211_hw *g_rtlwifi_hw;
+static struct ieee80211_hw *g_rtlwifi_hw = NULL;
 
 /*
  * Per-hw callback vtable, mirroring rtw88_compat.c's g_hw_cbs /
@@ -155,8 +155,6 @@ struct ieee80211_hw *ieee80211_alloc_hw(size_t priv_data_len,
     return hw;
 }
 
-/* Defining declaration with initializer — see comment at top of file. */
-static struct ieee80211_hw *g_rtlwifi_hw = NULL;
 
 /* ------------------------------------------------------------------ */
 /* hw lookup — belt-and-suspenders pair                                */

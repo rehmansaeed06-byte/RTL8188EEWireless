@@ -137,6 +137,16 @@ struct ieee80211_hw *ieee80211_alloc_hw(size_t priv_data_len,
      * the reference shim; safe to delete later if rtlwifi's probe path
      * turns out to always set this before anything reads it.
      */
+        /* Static fallback channel: 2.4 GHz band, CH1 (2412 MHz). Some rx
+     * paths dereference hw->conf.chandef.chan unconditionally, so it
+     * must never be NULL before the driver's own config path runs. */
+    static struct ieee80211_channel s_default_chan = {
+        .band        = NL80211_BAND_2GHZ,
+        .center_freq = 2412,
+        .hw_value    = 1,
+        .flags       = 0,
+        .max_power   = 20,
+    };
     hw->conf.chandef.chan = &s_default_chan;
     hw->conf.chandef.width = NL80211_CHAN_WIDTH_20_NOHT;
 

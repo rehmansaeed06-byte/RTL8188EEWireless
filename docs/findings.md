@@ -4758,4 +4758,91 @@ findings section instead of a nonexistent `71.10`.
 
 ------------------------------------------------------------------------
 
+# 71.11 The regd.c cfg80211-visibility blocker (Section 71.6) is very
+# likely already fixed in-tree, and was undocumented
+
+## What was checked
+
+Real upstream `regd.c` / `regd.h` (fetched from a public mirror of the
+Linux kernel's `drivers/net/wireless/realtek/rtlwifi` tree, since neither
+file is vendored in this repo) were inspected line-by-line for their
+`#include` behavior:
+
+- `regd.c` includes only `"wifi.h"` and `"regd.h"` — it never includes
+  `<net/cfg80211.h>` directly.
+- `regd.h` has **no `#include` lines at all**. It depends entirely on
+  whatever included it first (`wifi.h`) having already made the needed
+  types visible.
+- Therefore the only route by which `regd.c` can see
+  `struct ieee80211_regdomain`, `NL80211_RRF_*`, `freq_reg_info()`,
+  `wiphy_apply_custom_regulatory()`, etc. is transitively through
+  `<net/mac80211.h>` — because in real upstream Linux, `net/mac80211.h`
+  itself does `#include <net/cfg80211.h>`.
+
+## The fix already exists, uncommented on, undocumented
+
+`src/compat/net/mac80211.h` already contains:
+
+```
+#include "cfg80211.h"
+#endif /* _RTW88_COMPAT_MAC80211_H */
+```
+
+placed as the very last thing before its closing guard — i.e. included
+*after* `struct wiphy` and everything else `cfg80211.h` depends on are
+already defined, which matches the precondition documented in
+`cfg80211.h`'s own header comment.
+
+`git log` confirms this is not a working-tree change: it is already
+committed, in `d5b39e6 "mac80211 edits"`. It predates the audit that
+produced Sections 70–71 of this document, yet Section 71.6 still listed
+"does regd.c pull in net/cfg80211.h at all" as the unresolved next step.
+This is the same class of docs-behind-code gap already caught once in
+Section 71.7 — it happened again, on a more consequential item.
+
+## Verification performed
+
+Since neither the macOS SDK nor the external rtlwifi tree is available
+in the environment this audit ran in, verification was done by:
+
+1. Writing an independent probe `.c` file (not copied from any GPL
+   source — only symbol names, which are dictated by the third-party
+   API surface and are not independently copyrightable expression) that
+   does `#include "net/mac80211.h"` and references the exact identifiers
+   `regd.c` needs: `struct ieee80211_regdomain`, `NL80211_RRF_NO_OFDM`,
+   `NL80211_RRF_PASSIVE_SCAN`, `NL80211_RRF_NO_IBSS`,
+   `wiphy_apply_custom_regulatory()`, `freq_reg_info()`.
+2. Compiling it with `gcc -fsyntax-only` against this repo's real
+   `src/compat` headers (only missing XNU-only system headers were
+   stubbed as empty/minimal shims, e.g. `machine/endian.h`,
+   `kern/clock.h`, `kern/thread_call.h` — none of that stubbing touches
+   this repo's own compat code).
+3. Result: **clean compile, zero errors**, confirming the symbols are
+   visible through the exact include chain `regd.c` uses.
+
+## One caveat this does NOT close
+
+A broader probe covering `enum ieee80211_band` / `IEEE80211_BAND_2GHZ`
+failed — this repo's compat layer uses the modern post-rename names
+(`enum nl80211_band` / `NL80211_BAND_2GHZ`, renamed upstream around
+kernel 4.7). The specific `regd.c`/`regd.h` fetched for this audit came
+from a circa-2013 (pre-rename) Android kernel fork, so this mismatch is
+most likely just an artifact of using a stale reference copy, not a real
+bug — this project's own commit history (e.g. the `NL80211_RRF_NO_IR`
+merge referencing a 2018-era upstream commit) indicates it already
+targets modern kernel conventions. **This has not been checked against
+the user's actual external `regd.c`/`regd.h`** (the ones the real build
+will use, from the sibling `linux-kernel` checkout) and should be before
+this section is treated as fully closing Section 71.6.
+
+## Recommended next step
+
+Run the two verification commands below against the *real* external
+`regd.c`/`regd.h` (not the stand-in used here) to (a) confirm the actual
+files' include lines match what's assumed above, and (b) confirm they
+use modern `NL80211_BAND_*` naming rather than the old `IEEE80211_BAND_*`
+form. If both check out, Section 71.6 can be marked closed outright.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

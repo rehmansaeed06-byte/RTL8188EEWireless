@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>rtl8188ee</string>
+
+    <!--
+      Separate bundle ID from com.rtw88.driver — this is a standalone kext,
+      not an addition to rtw88.kext's IOKitPersonalities. Deliberate: if
+      rtlwifi_compat.c ends up needing its own Xcode target to avoid the
+      mac80211-symbol collision with rtw88_compat.c (handover item 25,
+      findings.md Section 55.6 — still open), that target should produce a
+      genuinely separate kext binary. Putting this personality inside
+      rtw88.kext's plist would imply the opposite (one binary, two chip
+      families), which conflicts with why the fork exists in the first
+      place. TODO: confirm this is still the intended structure once the
+      build-target decision is actually made.
+    -->
+    <key>CFBundleIdentifier</key>
+    <string>com.rtlwifi.rtl8188ee</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>rtl8188ee</string>
+
+    <key>CFBundlePackageType</key>
+    <string>KEXT</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+
+    <key>CFBundleSignature</key>
+    <string>????</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright 2026 rtl8188ee-macos. GPL-2.0 OR BSD-3-Clause</string>
+
+    <key>OSBundleCompatibleVersion</key>
+    <string>0.1.0</string>
+
+    <key>OSBundleLibraries</key>
+    <dict>
+        <key>com.apple.iokit.IONetworkingFamily</key>
+        <string>1.0.0</string>
+        <key>com.apple.iokit.IOPCIFamily</key>
+        <string>2.9</string>
+        <key>com.apple.kpi.bsd</key>
+        <string>20.0.0</string>
+        <key>com.apple.kpi.iokit</key>
+        <string>20.0.0</string>
+        <key>com.apple.kpi.libkern</key>
+        <string>20.0.0</string>
+        <key>com.apple.kpi.mach</key>
+        <string>20.0.0</string>
+        <key>com.apple.kpi.unsupported</key>
+        <string>20.0.0</string>
+    </dict>
+
+    <key>IOKitPersonalities</key>
+    <dict>
+
+        <!--
+          PCI ID 10EC:8179 (RTL8188EE) -> IOPCIMatch 0x817910EC, following
+          the exact <device><vendor> little-endian byte order used by every
+          existing entry in rtw88.kext's plist (e.g. RTL8822BE 10EC:8822 ->
+          0xB82210EC). Not independently re-verified against a datasheet —
+          derived by pattern-matching the existing table's own encoding.
+        -->
+        <key>RTL8188EE</key>
+        <dict>
+            <key>CFBundleIdentifier</key>
+            <string>com.rtlwifi.rtl8188ee</string>
+
+            <!--
+              RESOLVED per findings.md Section 59: the original concern
+              ("rtl_priv's layout differs from rtw_dev's") was the wrong
+              question — RTW88PCIDevice.cpp has NO hw->priv/ieee80211_ops
+              dependency at all (pure PCI/DMA/IOKit glue), and
+              RTW88IEEE80211.cpp only casts hw->priv opaquely, never
+              dereferencing it directly. The real ieee80211_ops shape
+              (rtlwifi's real `rtl_ops`, core.c:1879) matches 9 of 11
+              members this code calls, two spot-checked signatures exact.
+              STILL OPEN, deliberately not auto-resolved here: whether to
+              literally rename this to RTW88PCIDevice (reusing the real
+              class as-is) or keep a distinct RTL8188EEPCIDevice
+              name/subclass per this project's stated separation goal,
+              even though the underlying implementation would be shared
+              either way. Kept as RTL8188EEPCIDevice for now — a
+              project-structure choice, not a safety placeholder anymore.
+            -->
+            <key>IOClass</key>
+            <string>RTL8188EEPCIDevice</string>
+
+            <key>IOPCIMatch</key>
+            <string>0x817910EC</string>
+            <key>IOProbeScore</key>
+            <integer>5000</integer>
+            <key>IOProviderClass</key>
+            <string>IOPCIDevice</string>
+            <key>RTW88ChipName</key>
+            <string>rtl8188ee</string>
+
+            <!--
+              Realtek's actual upstream filename (linux-firmware rtlwifi/
+              path), per earlier findings — NOT yet present in the repo.
+              This is a real, tracked prerequisite (gen_fw_blobs_rtl8188ee.py
+              emits an empty table and logs a reminder until it's added to
+              firmware-rtl8188ee/), not silently assumed away.
+            -->
+            <key>RTW88FWName</key>
+            <string>rtl8188efw.bin</string>
+        </dict>
+
+    </dict>
+</dict>
+</plist>

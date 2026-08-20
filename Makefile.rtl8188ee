@@ -48,7 +48,19 @@
 #   make -f Makefile.rtl8188ee unload        — kextunload
 #   make -f Makefile.rtl8188ee clean         — remove build/
 
-MAKEFLAGS += -j$(shell sysctl -n hw.logicalcpu)
+# Parallelism is opt-in, not automatic. The previous approach
+# (unconditionally appending MAKEFLAGS += -j<n>, then trying to detect
+# an existing command-line -j via $(findstring j,$(MAKEFLAGS)) to avoid
+# overriding it) does not work reliably on GNU Make 3.81 -- the version
+# Apple ships and hasn't updated since 2006 due to GPLv3 -- because
+# MAKEFLAGS as visible during makefile parsing does not yet reflect a
+# command-line -j the way findstring needs (findings.md Section 71.9).
+# Confirmed by directly checking `make --version` (3.81) and observing
+# identical MAKEFLAGS output with and without a command-line -j1.
+#
+# Usage: make -f Makefile.rtl8188ee -jN kext   (parallel, N of your choice)
+#        make -f Makefile.rtl8188ee kext       (serial -- safe default)
+
 
 # ------------------------------------------------------------------ #
 # Paths                                                               #

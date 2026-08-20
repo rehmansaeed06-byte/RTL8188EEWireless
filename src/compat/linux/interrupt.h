@@ -42,9 +42,26 @@ static inline void disable_irq(unsigned int irq) {}
 static inline void disable_irq_nosync(unsigned int irq) {}
 static inline void synchronize_irq(unsigned int irq) {}
 
-/* tasklet — simplified to direct call in our context */
+/* tasklet — simplified to direct call in our context.
+ *
+ * Real upstream (post use_callback/tasklet_setup merge) supports two
+ * calling conventions on the same struct: the old
+ * tasklet_init(t, func, data) where func takes `unsigned long`, and
+ * the new tasklet_setup(t, callback) where callback takes
+ * `struct tasklet_struct *`. use_callback picks which union member
+ * tasklet_schedule() invokes. This project's actual rtlwifi/pci.c
+ * (confirmed by direct grep — findings.md Section 71.10) only calls
+ * tasklet_setup()/from_tasklet(), never tasklet_init(), but both are
+ * kept here rather than only adding the new one, since other files
+ * in the vendored driver tree were not similarly checked and may
+ * still use the old API.
+ */
 struct tasklet_struct {
-    void (*func)(unsigned long);
+    bool use_callback;
+    union {
+        void (*func)(unsigned long);
+        void (*callback)(struct tasklet_struct *);
+    };
     unsigned long data;
 };
 
@@ -52,13 +69,32 @@ static inline void tasklet_init(struct tasklet_struct *t,
                                  void (*func)(unsigned long),
                                  unsigned long data)
 {
+    t->use_callback = false;
     t->func = func;
     t->data = data;
 }
 
+static inline void tasklet_setup(struct tasklet_struct *t,
+                                  void (*callback)(struct tasklet_struct *))
+{
+    t->use_callback = true;
+    t->callback = callback;
+    t->data = 0;
+}
+
+/* Real upstream: container_of(callback_tasklet, typeof(*var), tasklet_fieldname).
+ * Confirmed verbatim against torvalds/linux's real include/linux/interrupt.h,
+ * not guessed (findings.md Section 71.10). */
+#define from_tasklet(var, callback_tasklet, tasklet_fieldname) \
+    container_of(callback_tasklet, typeof(*var), tasklet_fieldname)
+
 static inline void tasklet_schedule(struct tasklet_struct *t)
 {
-    if (t->func) t->func(t->data);
+    if (t->use_callback) {
+        if (t->callback) t->callback(t);
+    } else {
+        if (t->func) t->func(t->data);
+    }
 }
 
 static inline void tasklet_kill(struct tasklet_struct *t) {}

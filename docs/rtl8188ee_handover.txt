@@ -1,6 +1,67 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## SEVENTH UPDATE (read this first) — the SIXTH UPDATE below was
+## EIGHTH UPDATE (read this first) — repository/code audit reconciled with the documentation
+
+A direct audit of the supplied project archive was performed against both
+`docs/findings.md` and this handover, with the actual source files and
+working-tree state checked rather than relying on the previous pasted
+summary. The important result is that the code had advanced beyond the
+previous handover, so this update records the missing changes.
+
+### Current source changes that were present but previously undocumented
+
+1. **`src/compat/linux/interrupt.h` now supports the newer tasklet API.**
+   `tasklet_struct` has a `use_callback` selector plus an old/new callback
+   union; `tasklet_setup()` and `from_tasklet()` are implemented; and
+   `tasklet_schedule()` dispatches through either convention. The old
+   `tasklet_init()` API remains supported as a compatibility precaution.
+   This matches the actual rtlwifi `pci.c` usage previously checked.
+   See `findings.md` Sections 71.7.1 and 71.10.
+
+2. **`Makefile.rtl8188ee` no longer forces automatic parallelism.**
+   The previous unconditional `MAKEFLAGS += -j$(shell sysctl -n
+   hw.logicalcpu)` was removed. Builds are serial by default, while
+   parallelism is explicitly requested with `make -f Makefile.rtl8188ee
+   -jN kext`. See `findings.md` Section 71.7.2.
+
+3. **Current working-tree state represented by the supplied archive:**
+   `Makefile.rtl8188ee` modified, `src/compat/linux/interrupt.h` modified,
+   and `build/driver/regd.o` untracked. These are working-tree changes, not
+   claimed to be committed.
+
+4. The source previously referred to nonexistent `findings.md` Sections
+   71.9 and 71.10. Those references are now reconciled by the new findings
+   Sections 71.7–71.10.
+
+### What is NOT fixed
+
+The `regd.c` visibility problem remains unresolved. The required
+`struct ieee80211_regdomain`, `struct ieee80211_reg_rule`, and
+`NL80211_RRF_*` definitions exist in this project's compat `cfg80211.h`,
+but the external `regd.c` still fails to see them in the reported build.
+This is still an **include/visibility problem, not a reason to add more
+speculative definitions**.
+
+The actual rtlwifi `regd.c`, `regd.h`, and `wifi.h` source files are outside
+this repository at `../linux-kernel/drivers/net/wireless/realtek/rtlwifi`.
+They are therefore required for the next step. Read `regd.c`'s own include
+block and `regd.h` first, then run a properly captured `clang -E` trace.
+Do not modify `cfg80211.h` again until that path is established.
+
+The workqueue implementation gap from the earlier build audit also remains
+open. The existence of `build/driver/regd.o` must not be interpreted as a
+clean end-to-end kext build.
+
+### Correct next step
+
+**Obtain/read the external rtlwifi `regd.c` and `regd.h`, trace the actual
+header inclusion path, and then perform the next clean build.**
+
+Do not repeat the old handover's "sixth build attempt" wording; that state
+has already been superseded. The current code/documentation checkpoint is
+this EIGHTH UPDATE plus findings Sections 70–71.10.
+
+## SEVENTH UPDATE (historical; superseded by EIGHTH UPDATE) — the SIXTH UPDATE below was
 **itself a real misdiagnosis, not just fallout from the comment bug**.
 A fresh build log at the start of this session showed the exact same
 `regd.c`/`pci.c` errors the SIXTH UPDATE claimed were resolved

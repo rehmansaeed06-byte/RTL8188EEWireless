@@ -4639,4 +4639,123 @@ further to `cfg80211.h` until that's confirmed, per 70.3's own caveat.
 
 ------------------------------------------------------------------------
 
+# 71.7 Current repository/code audit — documentation was behind the actual source state
+
+A direct comparison of the repository state against Sections 70–71 found
+that the source tree had advanced beyond the last documented finding.
+This section records those changes so the findings document and the code
+now describe the same state.
+
+### 71.7.1 `src/compat/linux/interrupt.h`: new-style tasklet API support was added
+
+The current working tree contains a real change to the tasklet compatibility
+layer. The previous simplified `tasklet_struct` only carried the old
+`void (*func)(unsigned long)` callback. It now supports both the old
+`tasklet_init()` convention and the newer `tasklet_setup()` convention:
+
+- `struct tasklet_struct` has a `bool use_callback` selector and a union
+  containing `func` and `callback`.
+- `tasklet_init()` marks the tasklet as using the old `func` convention.
+- `tasklet_setup()` stores a `callback(struct tasklet_struct *)` and marks
+  the tasklet as using the new convention.
+- `from_tasklet()` is provided using `container_of()`.
+- `tasklet_schedule()` dispatches through the selected convention.
+- `tasklet_kill()` remains the existing no-op in this simplified compat
+  environment.
+
+This change was made because the actual rtlwifi `pci.c` uses the new
+`tasklet_setup()`/`from_tasklet()` API. Both conventions are retained as a
+compatibility precaution because the complete external rtlwifi source tree
+is not vendored in this repository and therefore all old-style callers in
+that external tree have not been audited here.
+
+The source comment previously referred to a nonexistent `findings.md
+Section 71.10`; this section is the corrected documentation reference.
+
+### 71.7.2 Makefile parallel-build behavior changed: serial by default
+
+`Makefile.rtl8188ee` no longer unconditionally appends
+`MAKEFLAGS += -j$(shell sysctl -n hw.logicalcpu)`.
+
+The current behavior is intentionally:
+
+- `make -f Makefile.rtl8188ee kext` — serial/default build.
+- `make -f Makefile.rtl8188ee -jN kext` — explicit parallel build.
+
+The reason recorded in the source is that Apple's GNU Make 3.81 does not
+reliably expose a command-line `-j` through `MAKEFLAGS` during makefile
+parsing in the way the previous detection logic expected. Parallelism is
+therefore now opt-in rather than silently forced by the Makefile.
+
+The Makefile previously referred to nonexistent `findings.md Section 71.9`;
+this section is the corrected documentation reference.
+
+### 71.7.3 Build artifact currently present
+
+The working tree contains an untracked `build/driver/regd.o` object.
+This is evidence that a `regd.o` object exists in the current build tree,
+but it is **not** treated as proof that the complete kext build is clean or
+that the `regd.c` visibility problem is solved. The complete external
+rtlwifi source tree is still outside this repository, and the documented
+`regd.c` include-chain question remains unresolved.
+
+### 71.7.4 Git working-tree state at the time of this documentation audit
+
+The repository audit showed these working-tree changes:
+
+- modified: `Makefile.rtl8188ee`
+- modified: `src/compat/linux/interrupt.h`
+- untracked: `build/driver/regd.o`
+
+No claim is made here that these changes are committed. They are part of
+the current working state represented by the supplied project archive.
+
+------------------------------------------------------------------------
+
+# 71.8 Documentation-reference cleanup
+
+The source files contained references to `findings.md Section 71.9` and
+`findings.md Section 71.10`, but those sections did not exist in the
+previous revision. Sections 71.7.1 and 71.7.2 above now document the two
+actual changes that those references were intended to describe.
+
+The remaining numbering is deliberately kept sequential from this point;
+no earlier findings sections are renumbered because older handover and
+research notes refer to their existing section numbers.
+
+------------------------------------------------------------------------
+
+# 71.9 Current build/documentation status after the audit
+
+The project is **not at a clean end-to-end kext-build checkpoint**.
+The current source state includes the tasklet compatibility addition and
+the Makefile parallelism correction, but neither should be described as
+an end-to-end build success.
+
+The primary unresolved technical blocker remains the same as Section 71.6:
+the actual external `regd.c`/`regd.h` source must be inspected to establish
+how `net/cfg80211.h` reaches `regd.c`, followed by a properly captured
+preprocessor trace. No additional speculative definitions should be added
+to `cfg80211.h` before that inclusion path is established.
+
+The workqueue implementation gap from Section 67.8 also remains open;
+it has not been silently reclassified as fixed by the presence of object
+files in `build/driver/`.
+
+------------------------------------------------------------------------
+
+# 71.10 Verified tasklet-source fact
+
+The tasklet compatibility change in Section 71.7.1 is based on the actual
+rtlwifi `pci.c` usage previously checked during this session:
+the relevant code uses `tasklet_setup(t, callback)` and
+`from_tasklet(...)`, rather than the old `tasklet_init()` form. This is a
+source-usage observation, not a claim that every file in the external
+rtlwifi tree has been audited for old-style tasklet callers.
+
+This section exists specifically so source comments can refer to a real
+findings section instead of a nonexistent `71.10`.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

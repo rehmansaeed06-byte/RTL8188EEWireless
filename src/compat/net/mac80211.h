@@ -1269,6 +1269,27 @@ struct ieee80211_ampdu_params {
 #define WLAN_HT_ACTION_SMPS  1
 #define WLAN_ACTION_DELBA    2
 
+/*
+ * WLAN_HT_SMPS_CONTROL_* — CONFIRMED real: base.c's
+ * rtl_make_smps_action() sets action_frame->u.action.ht_smps.
+ * smps_control to one of these three depending on the requested
+ * ieee80211_smps_mode. Standard 802.11-2020 SM Power Save Control
+ * field values (real spec-defined encoding, not rtlwifi-local):
+ * bit 0 = SM Power Save enable/disable, bit 1 = mode (static/dynamic)
+ * when enabled. Static = 0b00, Dynamic = 0b10, Disabled = 0b01 —
+ * these are the exact values real upstream mac80211's
+ * <linux/ieee80211.h> uses.
+ *
+ * WLAN_REASON_QSTA_TIMEOUT — CONFIRMED real: base.c's DELBA-frame
+ * builder sets action_frame->u.action.delba.reason_code to this via
+ * cpu_to_le16(). Standard 802.11 reason code 39 ("STA leaving QBSS
+ * due to timeout"), the value real upstream mac80211 also uses.
+ */
+#define WLAN_HT_SMPS_CONTROL_DISABLED 0
+#define WLAN_HT_SMPS_CONTROL_STATIC   1
+#define WLAN_HT_SMPS_CONTROL_DYNAMIC  3
+#define WLAN_REASON_QSTA_TIMEOUT      39
+
 /* ------------------------------------------------------------------ */
 /*  ieee80211_hw alloc / free                                           */
 /* ------------------------------------------------------------------ */

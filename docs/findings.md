@@ -4344,4 +4344,65 @@ present** — that's the immediate next step.
 
 ------------------------------------------------------------------------
 
+# 69. Fifth Build Attempt — Confirms Section 68's Diagnosis Correct; 4 Remaining Constants
+
+User ran `make -f Makefile.rtl8188ee clean && make -f
+Makefile.rtl8188ee`. Every error from Section 68's fixes is gone —
+`IEEE80211_MIN_ACTION_SIZE`, `module_init`/`module_exit`, the whole
+`action_code`/`addba_req`/`ht_smps`/`delba` cluster, AND (not
+previously confirmed clean) `regd.c` and `pci.c` from the earlier
+pre-comment-fix log all compiled without error this round. This
+directly validates Section 68.3's diagnosis: the `action` union really
+was correct all along, and the two missing macros really were the
+whole problem.
+
+Only 4 errors remained, all plain missing 802.11-spec constants
+(`base.c`'s SMPS-action-frame and DELBA-frame builders), no macro or
+struct-shape complexity this time:
+
+```c
+action_frame->u.action.ht_smps.smps_control = WLAN_HT_SMPS_CONTROL_DISABLED;  /* base.c:2419 */
+action_frame->u.action.ht_smps.smps_control = WLAN_HT_SMPS_CONTROL_STATIC;    /* base.c:2423 */
+action_frame->u.action.ht_smps.smps_control = WLAN_HT_SMPS_CONTROL_DYNAMIC;   /* base.c:2427 */
+action_frame->u.action.delba.reason_code = cpu_to_le16(WLAN_REASON_QSTA_TIMEOUT); /* base.c:2544 */
+```
+
+## 69.1 Values verified against real sources before writing, not from memory alone
+
+Given Section 68's lesson about shipping unverified guesses, every
+value here was checked against a real, independently-found source
+before being added, not just recalled:
+
+- `WLAN_HT_SMPS_CONTROL_DISABLED/STATIC/DYNAMIC` = 0/1/3 — confirmed
+  directly against `torvalds/linux`'s real
+  `include/linux/ieee80211.h` (fetched, not assumed): `#define
+  WLAN_HT_SMPS_CONTROL_DISABLED 0`, `_STATIC 1`, `_DYNAMIC 3` (note
+  the gap at 2 — matches the separate `WLAN_HT_CAP_SM_PS_*` capability
+  enum's 0/1/2/3 ordering, these are a different, non-contiguous
+  namespace for the power-control-field encoding specifically).
+- `WLAN_REASON_QSTA_TIMEOUT` = 39 — confirmed via a real
+  linux-wireless mailing list exchange discussing this exact driver
+  behavior ("reason code 39 means that the peer ... is requesting
+  this due to a timeout"), corroborating the value rather than
+  reciting it from recollection.
+
+## 69.2 Status
+
+All 4 constants added to `mac80211.h`, next to the existing
+`WLAN_CATEGORY_*`/`WLAN_ACTION_*` block from Section 67.4. Checked
+specifically for the Section 68.1 comment-bug class of mistake (a
+stray `*/` inside prose) before shipping — none present this time.
+Still outstanding, unchanged from Section 68.6: the Section 68.2
+Makefile dependency-tracking gap (a `clean` was needed again this
+round — worth fixing properly at some point rather than remembering
+to `clean` every time), and the workqueue subsystem implementation
+gap (Section 67.8) — the build hasn't reached the link stage yet, so
+this still hasn't been hit as an actual error. **Not yet re-verified
+by a build attempt with this round's fix present** — that's the
+immediate next step. If further real errors turn up, remember Section
+68.3's lesson: check for a missing macro before touching a struct that
+was already confirmed correct.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

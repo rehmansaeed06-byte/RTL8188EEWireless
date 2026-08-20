@@ -1,6 +1,27 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## FIFTH UPDATE (read this first) — fourth build attempt required TWO
+## SIXTH UPDATE (read this first) — fifth build attempt CONFIRMS Section
+68's diagnosis was correct: every error from the `IEEE80211_MIN_ACTION_
+SIZE`/`module_init`/`module_exit` fixes is gone, and `regd.c`/`pci.c`
+(seen failing in the pre-comment-fix log two rounds ago) compiled
+clean too — those were never real gaps, just fallout from the earlier
+comment-bug killing the whole file. Only 4 new errors this round, all
+plain missing 802.11 constants used in base.c's SMPS/DELBA action-
+frame builders: `WLAN_HT_SMPS_CONTROL_DISABLED/STATIC/DYNAMIC` (0/1/3)
+and `WLAN_REASON_QSTA_TIMEOUT` (39) — findings.md Section 69. Both
+values were checked against real independent sources (a direct fetch
+of torvalds/linux's real ieee80211.h, and a real linux-wireless
+mailing-list thread confirming reason code 39's meaning) before being
+written, not recalled from memory alone, given Section 68's lesson
+about shipping unverified guesses. **Not yet re-verified by a build
+attempt with this round's fix present** — that's the immediate next
+step. Still-open items, unchanged: the Makefile's header dependency
+tracking needs a real fix (a `clean` has been required every round so
+far — Section 68.2), and the workqueue subsystem still has no
+implementation anywhere (Section 67.8) — not yet hit as an actual
+error since the build hasn't reached the link stage.
+
+## FIFTH UPDATE — fourth build attempt required TWO
 misdiagnosed rounds before finding the real cause (findings.md Section
 68 — read it in full, it's a genuine process lesson, not just a fix
 list). Sequence: (1) a self-inflicted regression — a `*/` appearing
@@ -29,12 +50,12 @@ ORIGINAL (correct, anonymous-union) `action` struct, plus `module_init`/
 call site: `base.c:2734/2735`'s "parameter list without types") — were
 both verified by actually compiling the exact shipped bytes against
 real call patterns with `cc -c` before being sent back, not just
-eyeballed. **Not yet re-verified by a build attempt with both fixes
-present** — that's the immediate next step. Also NOT YET addressed
-(seen in the pre-fix build log, real, separate): `regd.c`'s `struct
-ieee80211_regdomain`/`struct ieee80211_reg_rule`/`NL80211_RRF_*`, and
-`pci.c`'s `struct pci_dev` field gaps (`bus`, `devfn`) plus
-`PCI_EXP_LNKCTL_*` constants.
+eyeballed. Also NOT YET addressed at that point (seen in the pre-fix
+build log, real, separate): `regd.c`'s `struct ieee80211_regdomain`/
+`struct ieee80211_reg_rule`/`NL80211_RRF_*`, and `pci.c`'s `struct
+pci_dev` field gaps (`bus`, `devfn`) plus `PCI_EXP_LNKCTL_*` constants
+— since confirmed clean by the fifth build attempt (see SIXTH UPDATE
+above), so these were never real gaps.
 
 ## FOURTH UPDATE — third real build attempt, 20 errors categorized and
 fixed (findings.md Section 67). Two clusters:
@@ -1041,16 +1062,12 @@ further errors on the next attempt; this is a normal fix-and-rebuild
 loop, not a sign the architecture above is wrong.
 
 ## Next immediate step
-Fifth real `make -f Makefile.rtl8188ee` build attempt, to confirm
-Section 68's two fixes (IEEE80211_MIN_ACTION_SIZE, module_init/
-module_exit) resolve cleanly, and to get real grep-able source for
-`regd.c` (struct ieee80211_regdomain/ieee80211_reg_rule/NL80211_RRF_*)
-and `pci.c` (struct pci_dev's bus/devfn fields, PCI_EXP_LNKCTL_*) —
-neither addressed yet, both confirmed real in the pre-Section-68 build
-log. If a struct-field error reappears for something already added,
-check for an undefined macro wrapping the access FIRST (see Section
-68.3) before touching the struct again — that mistake cost two whole
-rounds this time.
+Sixth real `make -f Makefile.rtl8188ee` build attempt (run `clean`
+first, same as every round so far — Section 68.2's dependency-tracking
+gap is still unfixed), to confirm Section 69's 4 SMPS/DELBA constants
+resolve cleanly. If a struct-field error reappears for something
+already added, check for an undefined macro wrapping the access FIRST
+(see Section 68.3) before touching the struct again.
 
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for
@@ -1061,9 +1078,10 @@ Section 60 for the scan compat helpers, Section 61 for signature
 verification, Section 62 for the vendoring resolution, Section 65 for
 the first real build attempt and its fixes, Section 66 for the second
 real build attempt and its fixes, Section 67 for the third real build
-attempt and its fixes, and Section 68 for the fourth build attempt —
-a comment-bug regression, a build-cache trap, and the real lesson:
-two rounds spent fixing a struct that was never broken because the
-actual cause was a missing macro. This handover is the concise context
-a new Claude should read first.
+attempt and its fixes, Section 68 for the fourth build attempt (a
+comment-bug regression, a build-cache trap, and the real lesson: two
+rounds spent fixing a struct that was never broken), and Section 69
+for the fifth build attempt, which confirmed Section 68's diagnosis
+was correct and added the last 4 missing SMPS/DELBA constants. This
+handover is the concise context a new Claude should read first.
 

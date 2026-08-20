@@ -1316,8 +1316,6 @@ struct ieee80211_ampdu_params {
 /*  ieee80211_hw alloc / free                                           */
 /* ------------------------------------------------------------------ */
 
-/* Implemented in rtw88_compat.c */
-void rtw88_register_hw(struct ieee80211_hw *hw);
 /* rtw88_get_hw: external-linkage accessor for the static g_rtw88_hw pointer.
  * Use this instead of 'extern struct ieee80211_hw *g_rtw88_hw' — the variable
  * has internal linkage so a direct extern declaration is UB and resolves to an
@@ -1330,36 +1328,15 @@ struct ieee80211_hw *rtw88_get_hw(void);
  * cltq after the call, truncating the 64-bit return value to 32 bits. */
 struct ieee80211_hw *wiphy_to_ieee80211_hw(struct wiphy *wiphy);
 
-static inline struct ieee80211_hw *ieee80211_alloc_hw(size_t priv_data_len,
-                                                       const struct ieee80211_ops *ops)
-{
-    /* Static fallback channel: 2.4 GHz band, CH1 (2412 MHz).
-     * rtw_rx_fill_rx_status dereferences hw->conf.chandef.chan unconditionally,
-     * so it must never be NULL — even before the driver calls ieee80211_config(). */
-    static struct ieee80211_channel s_default_chan = {
-        .band        = NL80211_BAND_2GHZ,
-        .center_freq = 2412,
-        .hw_value    = 1,
-        .flags       = 0,
-        .max_power   = 20,
-    };
 
-    struct ieee80211_hw *hw = (struct ieee80211_hw *)
-        kzalloc(sizeof(*hw) + priv_data_len, GFP_KERNEL);
-    if (!hw) return NULL;
-    hw->priv = (u8 *)hw + sizeof(*hw);
-    hw->wiphy = (struct wiphy *)kzalloc(sizeof(struct wiphy), GFP_KERNEL);
-    if (!hw->wiphy) { kfree(hw); return NULL; }
-    /* Store rtwdev (= hw->priv) at wiphy offset 0 so that
-     * wiphy_to_ieee80211_hw can return (ieee80211_hw*)wiphy
-     * and callers reading hw->priv (offset 0) get rtwdev. */
-    hw->wiphy->_dev = hw->priv;
-    hw->ops = ops;
-    hw->conf.chandef.chan   = &s_default_chan;
-    hw->conf.chandef.width  = NL80211_CHAN_WIDTH_20_NOHT;
-    rtw88_register_hw(hw);     /* belt: global fallback */
-    return hw;
-}
+/* Real definition lives in src/compat/rtlwifi_compat.c — it uses
+ * g_rtlwifi_hw / rtlwifi_get_hw() as its "belt: global fallback"
+ * mechanism, not rtw88_register_hw() (which is declared but never
+ * defined anywhere in this port; calling it here would fail at link
+ * time). Kept as a declaration only so every other user of this
+ * header still compiles against the same signature. */
+struct ieee80211_hw *ieee80211_alloc_hw(size_t priv_data_len,
+                                         const struct ieee80211_ops *ops);
 
 static inline void ieee80211_free_hw(struct ieee80211_hw *hw)
 {

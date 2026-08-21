@@ -5108,4 +5108,152 @@ the `kextutil`/real-hardware step in §72.7's remaining items.
 
 ------------------------------------------------------------------------
 
+# 72.9 §67.8 workqueue gap closed — real thread_call-backed implementation
+
+Investigated what §67.8/§72.7 actually meant by "no real workqueue
+implementation." `src/compat/linux/workqueue.h` declares the full
+Linux workqueue API but its own comments already say every function
+is unimplemented — confirmed genuinely true, not stale: `grep` on
+`rtlwifi_compat.c` found zero bodies, and `nm` on the built kext
+(from §72/§72.8's successful build) showed 6 undefined symbols
+(`_alloc_workqueue`, `_destroy_workqueue`, `_schedule_work`,
+`_queue_delayed_work`, `_cancel_work_sync`, `_cancel_delayed_work`)
+actually present in the linked binary. This is possible — and was
+missed until now — because `-Xlinker -kext` produces a relocatable
+kext object, which is allowed to have undefined symbols at build
+time; they're only resolved at `kextutil` load time against the
+kernel and other loaded kexts. **This kext would have failed to load
+as of §72/§72.8**, not just misbehaved at runtime — these are this
+project's own invented compat symbol names, not real kernel API, so
+nothing would ever have resolved them.
+
+Investigating further surfaced a second, equally real gap in the same
+family: `src/compat/linux/timer.h` (`timer_setup`, `mod_timer`,
+`del_timer`, `del_timer_sync`) had the identical problem — declared,
+backed by a real `thread_call_t call` field in `struct timer_list`,
+but never implemented. `nm` confirmed `_mod_timer` and `_timer_setup`
+also undefined in the built kext. Both subsystems were fixed together
+since they share the same `thread_call` machinery.
+
+## Scope of actual usage (confirmed by grep, not assumed)
+
+```
+grep -rln "alloc_workqueue|queue_work|schedule_work|INIT_WORK|..." \
+  rtlwifi/*.c rtlwifi/rtl8188ee/*.c
+```
+found real call sites only in `base.c`, `core.c`, `pci.c`, `ps.c` —
+all four already in `DRIVER_SRCS`/`PCI_SRCS`. Full enumeration: one
+`alloc_workqueue()` call (`base.c`), six `INIT_DELAYED_WORK` items
+(watchdog, ips_nic_off, ps_work, ps_rfon, fwevt, c2hcmd), two
+immediate-work items (`lps_change_work`, `update_beacon_work`), driven
+through `schedule_work`/`queue_delayed_work`/`cancel_delayed_work(_sync)`/
+`cancel_work_sync`. No caller anywhere in the compiled tree uses
+`flush_work()` or `flush_workqueue()` — confirmed by grep before
+deciding those two could be documented no-ops rather than fully
+implemented (see below).
+
+## Design
+
+Rather than real kernel worker threads per `workqueue_struct`
+(the struct's own `.thread`/`.lock`/`.queue` fields exist for that but
+go deliberately unused), each work item is driven by its own
+`thread_call_t`, mirroring the pattern `iokit_shim.h`/`timer.h`
+already established for timers elsewhere in this compat layer. XNU's
+`thread_call` mechanism already runs on dedicated kernel threads, so
+a second manually-managed thread layer underneath `workqueue_struct`
+would only duplicate that, for usage this small (confirmed above).
+`system_wq`/`system_long_wq` are given real (if generic) storage
+rather than `NULL`, since `schedule_work()`/`schedule_delayed_work()`
+target them per real Linux semantics and several call sites use those
+entry points directly.
+
+Delay units needed no new conversion: `jiffies.h` already defines
+`HZ = 1000` (1 jiffy = 1ms) in this compat layer, so `delay` arguments
+map directly onto `clock_interval_to_deadline(delay, kMillisecondScale, ...)`
+with no jiffies math required.
+
+## A correctness bug caught and fixed before shipping, not after
+
+First draft gave `work_struct` no way to retain its own `thread_call_t`
+— only `delayed_work` had one (via its embedded `timer.call`). Writing
+out `cancel_work_sync()` against that draft made the problem concrete:
+once `queue_work()` fires a work item's `thread_call`, there would be
+nothing left to hand to `thread_call_cancel_wait()`. This isn't
+cosmetic — `pci.c` calls `cancel_work_sync(&rtlpriv->works.lps_change_work)`
+specifically at device teardown to *guarantee* the callback can't fire
+after teardown starts; a `cancel_work_sync()` that can't actually
+cancel anything risks a real use-after-free on real hardware, not just
+an incomplete API.
+
+Fixed by adding `thread_call_t call` to `struct work_struct` itself
+(`src/compat/linux/workqueue.h`), mirroring `delayed_work.timer.call`'s
+existing pattern exactly rather than introducing a new idiom, and
+having `INIT_WORK` zero it. `queue_work()` now allocates and retains
+this handle; `cancel_work_sync()` genuinely cancels-and-waits on it via
+`thread_call_cancel_wait()`.
+
+## Implementation summary (`src/compat/rtlwifi_compat.c`, appended)
+
+- **timer.h**: `timer_setup`, `mod_timer`, `del_timer`, `del_timer_sync`
+  — all real, backed by `thread_call_allocate`/`_enter_delayed`/
+  `_cancel`/`_cancel_wait`. `mod_timer` lazily allocates `.call` if a
+  timer only went through the legacy `setup_timer()` path (defensive,
+  not required by any confirmed call site, cheap to include).
+- **workqueue.h**: `alloc_workqueue`/`alloc_ordered_workqueue`/
+  `destroy_workqueue` — real `IOMalloc`/`IOLockAlloc`-backed allocation
+  (variadic `fmt`/`args` handled via existing `vsnprintf`, already
+  available in this compat layer via `types.h`). `queue_work`/
+  `queue_delayed_work` — real `thread_call` dispatch, immediate and
+  delayed items use separate trampolines
+  (`rtlwifi_work_thread_call_trampoline` /
+  `rtlwifi_delayed_work_thread_call_trampoline`) so each calls
+  `work.func()` directly with the right argument, no shared/overloaded
+  timer-callback plumbing. `cancel_work_sync`/`cancel_delayed_work(_sync)`
+  — real cancel/cancel-and-wait against the retained handles.
+  `schedule_work`/`schedule_delayed_work`/`flush_scheduled_work` —
+  thin wrappers onto `system_wq`/`system_long_wq`.
+
+## Known-incomplete pieces, documented rather than silently wrong
+
+- `flush_workqueue()`: no per-queue tracking of every outstanding
+  `thread_call` exists (each work item dispatches independently of
+  which `workqueue_struct` it's nominally on — see Design above), so
+  this can't drain a specific queue. Left as a documented no-op.
+  Confirmed via grep: **no call site anywhere in
+  DRIVER_SRCS/PCI_SRCS/CHIP_SRCS calls `flush_workqueue()`**, so this
+  is currently unreachable, not silently broken under real use.
+- `flush_work()`: implemented as `thread_call_cancel_wait()`, which is
+  stronger than real Linux semantics (real `flush_work()` waits for an
+  in-flight callback without preventing a not-yet-started one from
+  running; this implementation may prevent it from running at all if
+  called before dispatch). Also confirmed via grep: **no call site
+  anywhere in the compiled tree uses `flush_work()`**. Flagged in a
+  code comment at the definition site so this over-strong behavior is
+  visible if a future file ends up calling it.
+
+## Verification
+
+```
+nm build/out/rtl8188ee.kext/.../rtl8188ee | grep -iE "_(mod_timer|...)"
+```
+now returns **zero** `U` (undefined) results — every symbol that was
+undefined before this section is `T` (defined) after. Full clean
+rebuild succeeded:
+```
+OK   build/out/rtl8188ee.kext
+KEXT UUID: D8B43711-411C-39DC-8BDD-66264A8271EF (x86_64)
+```
+UUID differs from §72.8's `AFBA4B62-...`, as expected — binary content
+genuinely changed (real workqueue/timer code added).
+
+**§67.8 is closed.** This does not confirm the `thread_call` dispatch
+is correct under real concurrent load, races, or actual hardware
+interrupt timing — only that it compiles, links with zero undefined
+compat-layer symbols, and was designed against confirmed real call
+sites rather than a guess at what might be needed. That's a
+load-time/runtime-behavior question, same caveat as §72.8's firmware
+embedding.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

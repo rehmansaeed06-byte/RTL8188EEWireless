@@ -5418,4 +5418,75 @@ file.
 
 ------------------------------------------------------------------------
 
+# 75. ELEVENTH UPDATE — §74's pci_name()/wiphy_name() fix reverified by a real rebuild; -Wformat warnings confirmed gone
+
+`rtl8188ee_handover.txt`'s TENTH UPDATE left one explicit open item:
+confirm by an actual `make` that §74's `pci_name()`/`wiphy_name()` fix
+clears the two `-Wformat` warnings §73.3 found, rather than assuming it
+from a source read. That confirmation happened this session.
+
+## 75.1 What was run
+
+A full `make -f Makefile.rtl8188ee clean && make -f Makefile.rtl8188ee
+kext` was run on the real build machine, from the tree as committed
+(commit `bacfdd4`, "fix -Wformat warnings"). Every translation unit
+compiled and the link succeeded:
+
+```
+LD   rtl8188ee
+SYNC build/out/rtl8188ee.kext
+KEXT UUID: 3A873C87-4E56-35AA-9593-3C4907C20B66 (x86_64)
+OK   build/out/rtl8188ee.kext
+```
+
+This UUID is new — distinct from §72 (`A57A961E-...`), §72.8
+(`AFBA4B62-...`), §72.9 (`D8B43711-...`), and §73
+(`080768F8-...`) — confirming an independent build, not a stale
+repeat.
+
+## 75.2 -Wformat result
+
+`grep -n "Wformat" /tmp/build.log` against the full captured build
+output returned **no matches**. `pci.c`'s two `WARN_ONCE(..., "%s",
+pci_name(pdev))`-style call sites and the `wiphy_name(hw->wiphy)`
+call site that produced the warnings in §73.3 are absent from this
+build's warning output entirely. `pci.c` itself produced its usual
+54 warnings this run — sign-conversion and implicit-int-conversion
+noise consistent with every prior build section — with no
+`-Wformat` among them.
+
+This closes the one item §74.3 had explicitly left open ("not yet
+re-verified by an actual rebuild"). §74's implementation
+(`pci_name()` as a direct port in `src/compat/linux/pci.h`,
+`wiphy_name()` backed by the appended `wiphy->name[32]` field and
+implemented in `src/compat/net/cfg80211.h`) is now confirmed correct
+against the real toolchain, not just plausible from a source read.
+
+## 75.3 Correcting the record on commit `bacfdd4`
+
+The commit titled "fix -Wformat warnings" (`bacfdd4`) has **no
+source diff at all** — `git show --stat bacfdd4` shows only two
+changed files, both binary build artifacts
+(`build/driver/pci.o`, `build/out/rtl8188ee.kext/.../rtl8188ee`).
+The actual source fix was committed one commit earlier, in `ceac763`
+("fix pci_name() and wiphy_name()"), which is where §74's real
+changes to `pci.h`/`cfg80211.h`/`mac80211.h` live. `bacfdd4` is best
+understood as a rebuild-and-recommit of already-fixed source — its
+message is accurate in effect (the warnings are in fact fixed) but
+misleading about where the fix happened. Future sessions should
+attribute the actual `pci_name()`/`wiphy_name()` source changes to
+`ceac763`, not `bacfdd4`, if tracing history.
+
+## 75.4 Status
+
+**Compile-and-link, including the §73.3/§74 format-string fix, is
+now fully verified end-to-end by a real build with a clean
+`-Wformat` grep — not assumed.** Every item raised through §74 is
+closed. The remaining open items are unchanged from every prior
+update: runtime/hardware behavior (`kextutil` load, PCI bind, radio
+bring-up, real traffic) is still entirely untested and still
+requires physical hardware access. That is the next real milestone.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

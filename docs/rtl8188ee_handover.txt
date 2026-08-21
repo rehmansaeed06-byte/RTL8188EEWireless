@@ -1,6 +1,53 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## TENTH UPDATE (read this first) — real clean build reconfirmed; EIGHTH UPDATE's "not fixed" claim was wrong
+## ELEVENTH UPDATE (read this first) — pci_name()/wiphy_name() fix reverified by a real rebuild, -Wformat confirmed gone
+
+The TENTH UPDATE below left one explicit open item: confirm by an
+actual `make` that the `pci_name()`/`wiphy_name()` fix (findings.md
+Section 74) actually clears the two `-Wformat` warnings Section 73.3
+found, rather than trusting the source read alone. That confirmation
+happened this session — see findings.md Section 75 for full detail.
+
+**A fresh `make -f Makefile.rtl8188ee clean && make -f
+Makefile.rtl8188ee kext` was run on the real build machine, from the
+committed tree (commit `bacfdd4`).** Full success:
+```
+KEXT UUID: 3A873C87-4E56-35AA-9593-3C4907C20B66 (x86_64)
+OK   build/out/rtl8188ee.kext
+```
+`grep -n "Wformat" /tmp/build.log` against the captured build output
+returned **no matches** — the two `-Wformat` call sites in `pci.c`
+(`pci_name()`/`wiphy_name()`) are clean. This closes the "not yet
+re-verified" caveat that findings.md Section 74.3 and the TENTH
+UPDATE both explicitly left open.
+
+**One documentation correction:** commit `bacfdd4` ("fix -Wformat
+warnings") has no source diff at all — it only recommits rebuilt
+binary artifacts. The real source fix is in the prior commit,
+`ceac763` ("fix pci_name() and wiphy_name()"). If tracing history,
+attribute the actual fix to `ceac763`, not `bacfdd4`.
+
+### What is still open (real, not superseded)
+
+- **Runtime/hardware behavior is still entirely untested.** Every
+  build section through this one, including this session's, only
+  confirms compile-and-link. Nothing yet confirms the kext loads via
+  `kextutil`, binds to the PCI device, brings up the radio, or passes
+  traffic. This is unchanged from every prior update and remains the
+  real next milestone — it requires physical hardware access.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/` before the pattern rule needs it) —
+  still only "worked around, not fixed" per the current Makefile's
+  own prerequisite handling; not revisited this session.
+
+### Correct next step
+
+Attempt `kextutil` loading on the built kext (via the USB EFI test
+environment per this project's original goal notes, not the stable
+internal EFI). Nothing left in the compile/link pipeline is blocking
+this — it is now purely a hardware bring-up question.
+
+## TENTH UPDATE (historical; superseded by ELEVENTH UPDATE above) — real clean build reconfirmed; EIGHTH UPDATE's "not fixed" claim was wrong
 
 This handover file had fallen behind `findings.md`, which already
 recorded a first clean end-to-end build at §72 (UUID

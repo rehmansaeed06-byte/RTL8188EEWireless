@@ -731,3 +731,338 @@ const struct rate_control_ops *rtlwifi_get_rate_control_ops(void)
  *   access) per Section 47.2 — deferred to whichever compat header
  *   ends up hosting rtlwifi's linux/* shim headers, not this .c file.
  */
+
+/* ------------------------------------------------------------------ */
+/* timer_list — real thread_call-backed implementation                 */
+/* (findings.md Section 72.9 — closes the §67.8/§72.7 workqueue gap,   */
+/* which turned out to include an equally-unimplemented timer.h too)   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * XNU thread_call callbacks take two opaque params; Linux timer
+ * callbacks take one (struct timer_list *). The timer is passed as
+ * param0; param1 is unused.
+ */
+static void rtlwifi_timer_thread_call_trampoline(thread_call_param_t param0,
+                                                   thread_call_param_t param1)
+{
+    struct timer_list *t = (struct timer_list *)param0;
+    (void)param1;
+    if (t && t->function)
+        t->function(t);
+}
+
+void timer_setup(struct timer_list *timer,
+                 void (*func)(struct timer_list *t),
+                 unsigned int flags)
+{
+    (void)flags;
+    timer->function = func;
+    timer->data     = 0;
+    timer->expires  = 0;
+    timer->active   = 0;
+    timer->call     = thread_call_allocate(rtlwifi_timer_thread_call_trampoline,
+                                            (thread_call_param_t)timer);
+}
+
+int mod_timer(struct timer_list *timer, unsigned long expires)
+{
+    uint64_t deadline;
+    unsigned long now = jiffies;
+    long delay_ms = (long)expires - (long)now;
+
+    if (!timer->call) {
+        /* Defensive: some rtlwifi paths may call mod_timer() on a
+         * timer that only went through the legacy setup_timer() path
+         * (which doesn't allocate .call). Lazily allocate here so
+         * mod_timer still works rather than silently no-op'ing. */
+        timer->call = thread_call_allocate(rtlwifi_timer_thread_call_trampoline,
+                                            (thread_call_param_t)timer);
+        if (!timer->call)
+            return 0;
+    }
+
+    if (delay_ms < 0)
+        delay_ms = 0;
+
+    clock_interval_to_deadline((uint32_t)delay_ms, kMillisecondScale, &deadline);
+
+    timer->expires = expires;
+    timer->active  = 1;
+
+    /* thread_call_enter_delayed re-arms if already pending, matching
+     * mod_timer()'s real "reschedule, don't duplicate" semantics. */
+    return thread_call_enter_delayed(timer->call, deadline) ? 1 : 0;
+}
+
+int del_timer(struct timer_list *timer)
+{
+    int was_pending;
+
+    if (!timer->call) {
+        timer->active = 0;
+        return 0;
+    }
+
+    was_pending   = thread_call_cancel(timer->call) ? 1 : 0;
+    timer->active = 0;
+    return was_pending;
+}
+
+int del_timer_sync(struct timer_list *timer)
+{
+    int was_pending;
+
+    if (!timer->call) {
+        timer->active = 0;
+        return 0;
+    }
+
+    /* _wait variant blocks until any in-flight callback finishes —
+     * required by *_sync's real contract, and relied on by callers
+     * (driver teardown) to guarantee the callback can't fire after
+     * this returns. */
+    was_pending   = thread_call_cancel_wait(timer->call) ? 1 : 0;
+    timer->active = 0;
+    return was_pending;
+}
+
+/* ------------------------------------------------------------------ */
+/* workqueue — real thread_call-backed implementation                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Design: rather than a real kernel thread per workqueue (struct
+ * workqueue_struct's .thread field is intentionally left unused —
+ * see below), each work item's execution is driven by its own
+ * thread_call, same idiom as timer_list above. XNU's thread_call
+ * mechanism already runs on its own dedicated kernel threads, so a
+ * second layer of manually-managed worker threads underneath
+ * workqueue_struct would only duplicate what thread_call already
+ * does, for the actual usage this driver has: exactly one
+ * alloc_workqueue() call, 6 delayed-work items, 2 immediate-work
+ * items (confirmed by full grep of DRIVER_SRCS/PCI_SRCS this
+ * session — base.c, core.c, pci.c, ps.c). If true single-worker-
+ * thread FIFO ordering is ever needed, workqueue_struct's
+ * .thread/.lock/.queue fields are already there to build that out;
+ * not required for current usage.
+ *
+ * Immediate (non-delayed) work items use work_struct.call directly.
+ * Delayed work items use delayed_work.timer.call via a dedicated
+ * trampoline below (kept separate from the generic timer trampoline
+ * above so it can call work.func() with the right argument type
+ * directly, rather than needing timer_list to carry a second,
+ * work-flavored function pointer).
+ */
+
+static void rtlwifi_work_thread_call_trampoline(thread_call_param_t param0,
+                                                  thread_call_param_t param1)
+{
+    struct work_struct *w = (struct work_struct *)param0;
+    (void)param1;
+    if (w) {
+        w->pending = 0;
+        if (w->func)
+            w->func(w);
+    }
+}
+
+static void rtlwifi_delayed_work_thread_call_trampoline(thread_call_param_t param0,
+                                                          thread_call_param_t param1)
+{
+    struct delayed_work *dw = (struct delayed_work *)param0;
+    (void)param1;
+    if (dw) {
+        dw->work.pending = 0;
+        dw->timer.active = 0;
+        if (dw->work.func)
+            dw->work.func(&dw->work);
+    }
+}
+
+/* system_wq / system_long_wq: real Linux code (and schedule_work()/
+ * schedule_delayed_work() below, per real Linux semantics) targets
+ * these globals directly rather than a driver-owned workqueue. Given
+ * true per-queue ordering isn't implemented (each work item's
+ * thread_call is independently scheduled regardless of which
+ * workqueue_struct it's nominally queued on — see design note above),
+ * these just need to be real, non-NULL, distinguishable pointers. */
+static struct workqueue_struct rtlwifi_system_wq_storage;
+static struct workqueue_struct rtlwifi_system_long_wq_storage;
+struct workqueue_struct *system_wq      = &rtlwifi_system_wq_storage;
+struct workqueue_struct *system_long_wq = &rtlwifi_system_long_wq_storage;
+
+struct workqueue_struct *alloc_workqueue(const char *fmt, unsigned int flags,
+                                          int max_active, ...)
+{
+    struct workqueue_struct *wq;
+    va_list args;
+
+    (void)flags;
+    (void)max_active;
+
+    wq = (struct workqueue_struct *)IOMalloc(sizeof(*wq));
+    if (!wq)
+        return NULL;
+
+    wq->thread  = NULL;   /* deliberately unused — see design note above */
+    wq->lock    = IOLockAlloc();
+    INIT_LIST_HEAD(&wq->queue);
+    wq->running = 1;
+    wq->done    = 0;
+
+    va_start(args, max_active);
+    vsnprintf(wq->name, sizeof(wq->name), fmt, args);
+    va_end(args);
+
+    return wq;
+}
+
+struct workqueue_struct *alloc_ordered_workqueue(const char *name,
+                                                  unsigned int flags)
+{
+    return alloc_workqueue("%s", flags, 1, name);
+}
+
+void destroy_workqueue(struct workqueue_struct *wq)
+{
+    if (!wq || wq == system_wq || wq == system_long_wq)
+        return; /* never free the static globals */
+
+    if (wq->lock)
+        IOLockFree(wq->lock);
+    IOFree(wq, sizeof(*wq));
+}
+
+bool queue_work(struct workqueue_struct *wq, struct work_struct *work)
+{
+    (void)wq; /* see design note above: dispatch is per-work-item */
+
+    if (!work || !work->func)
+        return false;
+
+    if (work->pending)
+        return true; /* already queued — matches real queue_work() */
+
+    if (!work->call) {
+        work->call = thread_call_allocate(rtlwifi_work_thread_call_trampoline,
+                                           (thread_call_param_t)work);
+        if (!work->call)
+            return false;
+    }
+
+    work->pending = 1;
+    thread_call_enter(work->call);
+    return true;
+}
+
+bool queue_delayed_work(struct workqueue_struct *wq,
+                        struct delayed_work *dwork, unsigned long delay)
+{
+    uint64_t deadline;
+
+    (void)wq;
+
+    if (!dwork || !dwork->work.func)
+        return false;
+
+    if (dwork->work.pending)
+        return true; /* already queued */
+
+    if (!dwork->timer.call) {
+        dwork->timer.call = thread_call_allocate(
+            rtlwifi_delayed_work_thread_call_trampoline,
+            (thread_call_param_t)dwork);
+        if (!dwork->timer.call)
+            return false;
+    }
+
+    clock_interval_to_deadline((uint32_t)delay, kMillisecondScale, &deadline);
+
+    dwork->work.pending  = 1;
+    dwork->timer.active  = 1;
+
+    return thread_call_enter_delayed(dwork->timer.call, deadline) ? true : false;
+}
+
+void flush_workqueue(struct workqueue_struct *wq)
+{
+    (void)wq;
+    /* No per-queue tracking of outstanding thread_calls exists (see
+     * design note above) — a full implementation would need every
+     * work item ever queued on this wq recorded and
+     * thread_call_cancel_wait()'d here. Not needed by any call site
+     * in DRIVER_SRCS/PCI_SRCS (confirmed by grep — nothing calls
+     * flush_workqueue()); documented no-op rather than silently wrong
+     * behavior under a caller that doesn't exist yet. */
+}
+
+bool cancel_work_sync(struct work_struct *work)
+{
+    bool was_pending;
+
+    if (!work || !work->call) {
+        if (work)
+            work->pending = 0;
+        return false;
+    }
+
+    was_pending   = thread_call_cancel_wait(work->call) ? true : false;
+    work->pending = 0;
+    return was_pending;
+}
+
+bool cancel_delayed_work(struct delayed_work *dwork)
+{
+    bool was_pending;
+
+    if (!dwork || !dwork->timer.call)
+        return false;
+
+    was_pending          = thread_call_cancel(dwork->timer.call) ? true : false;
+    dwork->work.pending  = 0;
+    dwork->timer.active  = 0;
+    return was_pending;
+}
+
+bool cancel_delayed_work_sync(struct delayed_work *dwork)
+{
+    bool was_pending;
+
+    if (!dwork || !dwork->timer.call)
+        return false;
+
+    was_pending          = thread_call_cancel_wait(dwork->timer.call) ? true : false;
+    dwork->work.pending  = 0;
+    dwork->timer.active  = 0;
+    return was_pending;
+}
+
+void flush_work(struct work_struct *work)
+{
+    if (work && work->call)
+        thread_call_cancel_wait(work->call);
+    /* Real flush_work() waits for in-flight execution without
+     * cancelling a not-yet-run item; thread_call_cancel_wait() both
+     * cancels *and* waits, which is stronger than real semantics if
+     * the item hasn't started yet (it'll be prevented from running
+     * rather than run-then-waited-on). No call site in
+     * DRIVER_SRCS/PCI_SRCS uses flush_work() (confirmed by grep), so
+     * this over-strong behavior is currently unreachable — flagged
+     * here rather than left silently wrong for whenever it is used. */
+}
+
+bool schedule_work(struct work_struct *work)
+{
+    return queue_work(system_wq, work);
+}
+
+bool schedule_delayed_work(struct delayed_work *dwork, unsigned long delay)
+{
+    return queue_delayed_work(system_long_wq, dwork, delay);
+}
+
+void flush_scheduled_work(void)
+{
+    flush_workqueue(system_wq);
+}

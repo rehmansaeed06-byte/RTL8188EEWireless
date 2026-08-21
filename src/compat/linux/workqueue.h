@@ -16,6 +16,10 @@ struct work_struct {
     work_func_t      func;
     struct list_head entry;
     unsigned long    pending;
+    thread_call_t    call;   /* XNU thread_call backing this work item;
+                               * mirrors delayed_work's timer.call so
+                               * cancel_work_sync()/flush_work() have
+                               * something real to cancel/wait on. */
 };
 
 struct delayed_work {
@@ -35,7 +39,8 @@ struct workqueue_struct {
 #define INIT_WORK(_work, _func) \
     do { (_work)->func = (_func); \
          INIT_LIST_HEAD(&(_work)->entry); \
-         (_work)->pending = 0; } while (0)
+         (_work)->pending = 0; \
+         (_work)->call    = NULL; } while (0)
 
 #define INIT_DELAYED_WORK(_dwork, _func) \
     INIT_WORK(&(_dwork)->work, _func)

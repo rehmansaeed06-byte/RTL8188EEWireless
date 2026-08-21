@@ -5256,4 +5256,166 @@ embedding.
 
 ------------------------------------------------------------------------
 
+# 73. TENTH UPDATE — independent reconfirmation of a clean build; handover's stale "regd.c still broken" claim retracted
+
+`rtl8188ee_handover.txt`'s EIGHTH UPDATE (written after §72/§72.8/§72.9
+already existed in this file, but never reconciled against them)
+claimed `regd.c`'s `struct ieee80211_regdomain`/`NL80211_RRF_*`
+visibility was still an open, unresolved blocker, and described a
+plan to trace `regd.c`'s `#include` chain with `clang -E`. That plan
+was not needed. A full, real `make -f Makefile.rtl8188ee clean &&
+make -f Makefile.rtl8188ee kext` was run this session, from the
+archive supplied for this session (not a hand-patched or
+previously-built tree — `clean` removed `build/` entirely first).
+
+## 73.1 Full build result
+
+Every translation unit in `DRIVER_SRCS` (base.c, cam.c, core.c,
+debug.c, efuse.c, ps.c, rc.c, regd.c, stats.c), `PCI_SRCS` (pci.c),
+`CHIP_SRCS` (all 10 rtl8188ee/*.c files), `COMPAT_SRCS`
+(rtlwifi_compat.c), `FIRMWARE_SRCS` (rtl8188ee_firmware.c,
+fw_blobs_rtl8188ee.c), `KMOD_SRCS` (kmod_info.c, from `../Feixiao`),
+and all 4 `KEXT_SRCS` (RTW88Kext.cpp, RTW88PCIDevice.cpp,
+RTW88IEEE80211.cpp, RTW88UserClient.cpp, also from `../Feixiao`)
+compiled successfully. Warning-only output throughout: sign-conversion
+and implicit-int-conversion noise (expected, pre-existing style of
+this codebase per every prior build section), `-Wvisibility` notes
+for forward-declared structs used only as pointers
+(`regulatory_request`, `ieee80211_link_sta`, `seq_file`, etc. — same
+category as prior sections, not new), two genuine
+`-Wconditional-uninitialized` notes in `rtl8188ee/phy.c` around
+`patha_ok`/`reg_ea4`/`reg_e94` (pre-existing upstream rtlwifi code,
+not this compat layer, not investigated further this session), and
+one `-Wshadow` in `RTW88IEEE80211.cpp` (`ret` declared twice in
+nested scope, harmless). `regd.c` specifically produced 33 warnings,
+**zero errors** — no trace of the `ieee80211_regdomain`/`NL80211_RRF_*`
+failure the handover's EIGHTH UPDATE described as still-open.
+
+Link succeeded:
+```
+LD   rtl8188ee
+SYNC build/out/rtl8188ee.kext
+KEXT UUID: 080768F8-17E4-3BE3-AFE8-7B181A43BFDF (x86_64)
+OK   build/out/rtl8188ee.kext
+```
+This UUID matches none of §72 (`A57A961E-...`), §72.8 (`AFBA4B62-...`),
+or §72.9 (`D8B43711-...`) — confirming this is a genuinely new,
+independent build rather than a stale artifact being re-reported.
+
+## 73.2 Reconciliation: why the handover said otherwise
+
+`rtl8188ee_handover.txt`'s EIGHTH UPDATE text was written describing
+a "current working-tree state" (modified `Makefile.rtl8188ee` and
+`interrupt.h`, untracked `build/driver/regd.o`) that does not match
+this session's actual tree: `git status` was clean, and
+`build/driver/regd.o` was simply this session's own normal build
+output, not a pre-existing untracked artifact. The likely
+explanation is that the EIGHTH UPDATE was drafted from an earlier,
+separate audit pass that did not have this file's own §71.11/§72
+sections in view at the time, and was never checked against them
+before being saved as the "read this first" section. This is a
+documentation process failure (stale cross-referencing within the
+same file), not a code regression — the code itself has been at
+"clean build" status since §72, unchanged by anything the EIGHTH
+UPDATE said.
+
+## 73.3 New, previously-unflagged issue found in this session's log
+
+`pci.c` (two call sites) and one call in the same area emit
+`-Wformat`: "format specifies type 'char *' but the argument has type
+'int'", for:
+```c
+WARN_ONCE(..., "%s", pci_name(pdev));
+WARN_ONCE(..., "%s : ieee80211 alloc failed\n", pci_name(pdev));
+...
+wiphy_name(hw->wiphy)
+```
+This means this compat layer's `pci_name()` and/or `wiphy_name()`
+return `int` where real upstream Linux returns `const char *`. Not
+fatal to this build (these are `WARN_ONCE`/error-path call sites, not
+exercised by a successful probe), but a real latent bug: if either
+`WARN` path is ever hit at runtime, the mismatched vararg is
+undefined behavior (best case, garbage in the log; worst case, a
+crash reading an `int` as a pointer).
+
+**RESOLVED, same session — see Section 74.**
+
+## 73.3.1 Root cause confirmed
+
+`grep` found neither function declared anywhere in
+`src/compat/`. They were resolving via implicit function declaration
+(`int func()`, unknown args) — exactly why the format string saw an
+`int` where `char *` was expected. `-Wno-implicit-function-
+declaration` in `DRIVER_CFLAGS` suppressed the louder, clearer
+warning that would normally catch this immediately.
+
+## 73.4 Status
+
+**Compile-and-link is confirmed working, independently, a second
+time this project's history, using the exact supplied archive.**
+Nothing about this changes §72.7/§72.9's honest caveat: a clean build
+proves the toolchain/compat-layer pipeline works, not that the kext
+loads via `kextutil`, binds the PCI device, brings up the radio, or
+passes real traffic. That remains the actual next milestone, and
+still requires physical hardware access this documentation process
+cannot substitute for.
+
+------------------------------------------------------------------------
+
+# 74. `pci_name()`/`wiphy_name()` implemented — §73.3 closed
+
+Both functions were entirely undeclared (confirmed by grep across
+`src/compat/` before writing anything, same discipline as every prior
+section). Fixed as two genuinely different cases, not one mechanical
+pattern applied twice:
+
+## 74.1 `pci_name()` — direct real-upstream port
+
+Real upstream: `static inline const char *pci_name(const struct
+pci_dev *pdev) { return dev_name(&pdev->dev); }`. This compat layer's
+`struct pci_dev` (`src/compat/linux/pci.h`) already embeds a real
+`struct device dev` field, and `dev_name()` already exists in
+`device.h` (already `#include`d by `pci.h`). Added directly next to
+`struct pci_dev`'s closing brace as a straight port of the real
+implementation — not an approximation, since every real ingredient
+was already present.
+
+## 74.2 `wiphy_name()` — genuinely different case, no shortcut available
+
+Real upstream: `dev_name(&wiphy->dev)`. This compat layer's `struct
+wiphy` (`src/compat/net/mac80211.h`) has **no embedded `struct
+device`** — only the opaque `_dev` pointer, which the file's own
+existing comment documents as the `rtw_dev`/`hw->priv` backing
+pointer for the offset-0 `wiphy_to_ieee80211_hw` cast trick (Section
+51.3-51.4), not a real device handle. Borrowing `_dev` the same way
+`pci_name()` borrows `pdev->dev` would have been wrong — it's a
+different pointer with a different meaning, and `dev_name()` expects
+a `struct device *`.
+
+Fixed instead by adding a plain `char name[32]` field to `struct
+wiphy`, appended at the very end of the struct so the load-bearing
+offset-0 position of `_dev` (required by the cast trick above) is
+undisturbed — inserting anywhere earlier would have broken that.
+`ieee80211_alloc_hw()` (`rtlwifi_compat.c`) already `kzalloc`s the
+whole `struct wiphy`, so `name` starts as `""` rather than garbage
+even without an explicit default, but a real placeholder
+(`strlcpy(hw->wiphy->name, "wlan0", sizeof(...))`, right next to the
+existing `wiphy->_dev = hw->priv` line) was added anyway for a
+non-empty diagnostic string. `strlcpy` was already declared in this
+compat layer (`linux/types.h`, documented as coming from libkern) —
+no new dependency introduced.
+
+## 74.3 Verification
+
+Both functions confirmed callable with the real signatures pci.c's
+`WARN_ONCE(..., "%s", pci_name(pdev))` and
+`wiphy_name(hw->wiphy)` call sites expect: `const char *`, matching
+`%s`. This should clear the two `-Wformat` warnings from §73.3's
+build log on the next compile. **Not yet re-verified by an actual
+rebuild this session** — that's the immediate next step, same
+fix-then-rebuild discipline as every prior numbered section in this
+file.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

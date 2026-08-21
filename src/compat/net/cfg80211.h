@@ -138,6 +138,25 @@ static inline void *wiphy_dev(struct wiphy *wiphy)
 }
 
 /*
+ * wiphy_name() — real signature: const char *wiphy_name(const struct wiphy *wiphy).
+ * Real upstream is dev_name(&wiphy->dev). This compat struct wiphy has
+ * no embedded struct device (only the opaque _dev rtw_dev pointer used
+ * for the hw->priv offset-0 trick — see mac80211.h's comment on _dev),
+ * so wiphy->name (a plain char[32], appended at the end of struct wiphy
+ * so as not to disturb the offset-0 layout _dev depends on) is used
+ * directly instead. Previously entirely undeclared: every call site
+ * (pci.c's wiphy_name(hw->wiphy) in its own WARN_ONCE-style logging,
+ * findings.md Section 73.3) fell through -Wno-implicit-function-
+ * declaration as an implicitly-int-returning function, producing a
+ * -Wformat "char* expected, got int" warning and, if ever hit at
+ * runtime, undefined behavior reading an int as a pointer.
+ */
+static inline const char *wiphy_name(const struct wiphy *wiphy)
+{
+    return wiphy ? wiphy->name : "(null)";
+}
+
+/*
  * Real signature:
  *   enum nl80211_chan_width cfg80211_get_chandef_type(const struct cfg80211_chan_def *chandef);
  * mac80211.h already defines a real enum nl80211_chan_width

@@ -126,6 +126,17 @@ struct ieee80211_hw *ieee80211_alloc_hw(size_t priv_data_len,
      */
     hw->wiphy->_dev = hw->priv;
 
+    /*
+     * wiphy->name default (findings.md Section 73.3): kzalloc above
+     * already zeroes struct wiphy, so wiphy->name starts as "" rather
+     * than garbage — safe, but a poor diagnostic string for
+     * wiphy_name()'s callers (currently pci.c's WARN_ONCE probe-failure
+     * logging). "wlan0" mirrors the placeholder rtw88_compat.c's
+     * equivalent init path uses; the kext driving layer may overwrite
+     * this with the real assigned interface name later.
+     */
+    strlcpy(hw->wiphy->name, "wlan0", sizeof(hw->wiphy->name));
+
     hw->ops = ops;
 
     /*

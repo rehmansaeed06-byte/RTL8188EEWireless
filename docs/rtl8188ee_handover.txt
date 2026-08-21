@@ -1,6 +1,95 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## EIGHTH UPDATE (read this first) — repository/code audit reconciled with the documentation
+## TENTH UPDATE (read this first) — real clean build reconfirmed; EIGHTH UPDATE's "not fixed" claim was wrong
+
+This handover file had fallen behind `findings.md`, which already
+recorded a first clean end-to-end build at §72 (UUID
+`A57A961E-5D14-3C9C-B8EC-FC5F1CBA3B18`), firmware embedding at §72.8
+(UUID `AFBA4B62-...`), and the workqueue/timer implementation gap
+closed at §72.9 (UUID `D8B43711-...`). The EIGHTH UPDATE below,
+still the top of this file until now, never got the memo — it
+claimed `regd.c`'s `ieee80211_regdomain`/`NL80211_RRF_*` visibility
+problem was still unresolved and blocking. That claim is now directly
+falsified by an actual run.
+
+**A fresh `make -f Makefile.rtl8188ee clean && make -f
+Makefile.rtl8188ee kext` was executed on the real build machine this
+session, from the archive exactly as supplied (not a hand-patched
+tree).** Every one of `DRIVER_SRCS`, `PCI_SRCS`, `CHIP_SRCS`,
+`COMPAT_SRCS`, `FIRMWARE_SRCS`, `KMOD_SRCS`, and all 4 `KEXT_SRCS`
+`.cpp` files compiled with warnings only (sign-conversion,
+implicit-int-conversion, `-Wvisibility` notices on forward-declared
+structs, two "may be uninitialized" notes in `rtl8188ee/phy.c`, one
+`-Wshadow` in `RTW88IEEE80211.cpp` — none fatal). `regd.c` itself
+compiled clean: 33 warnings, zero errors, no trace of the
+`ieee80211_regdomain`/`NL80211_RRF_*` failure the EIGHTH UPDATE
+described. The link step against `libkmod.a`/`libkmodc++.a`
+succeeded and produced:
+```
+OK   build/out/rtl8188ee.kext
+KEXT UUID: 080768F8-17E4-3BE3-AFE8-7B181A43BFDF (x86_64)
+```
+This UUID is new — it doesn't match any of §72/§72.8/§72.9's builds,
+confirming this is an independent, later build rather than a stale
+repeat. See `findings.md` new Section 73 for the full log-level
+detail of this run.
+
+### What this closes
+
+- The EIGHTH UPDATE's "What is NOT fixed" section (`regd.c`
+  visibility) is superseded. It was already stale by the time it was
+  written — `findings.md` §71.11/§72 had resolved this in the same
+  session that produced the EIGHTH UPDATE's text, but the EIGHTH
+  UPDATE was written from an older snapshot and never reconciled
+  against those later findings sections. Do not resurrect the
+  `cfg80211.h` diagnosis effort described there.
+- The EIGHTH UPDATE's item 3 ("current working-tree state": modified
+  `Makefile.rtl8188ee`/`interrupt.h`, untracked `build/driver/regd.o`)
+  does not match this session's tree either: `git status` is clean,
+  and `build/driver/regd.o` is a normal build artifact of a normal
+  build, not a suspicious untracked leftover.
+
+### What is still open (real, not superseded)
+
+- **Runtime/hardware behavior is untested.** A clean compile-and-link
+  is necessary but not sufficient — nothing in this session or in
+  §72/§72.8/§72.9 confirms the kext loads via `kextutil`, binds to
+  the PCI device, brings up the radio, or passes traffic.
+- **`pci_name()`/`wiphy_name()` format-string bug — fixed this
+  session, NOT YET REBUILT/VERIFIED.** Both were entirely undeclared
+  (silently implicit-int via `-Wno-implicit-function-declaration`),
+  which is why `%s` call sites in `pci.c` saw an `int` argument.
+  `pci_name()` was a direct port of the real upstream implementation
+  (`struct pci_dev` already has a real embedded `struct device`).
+  `wiphy_name()` needed a different fix: `struct wiphy` has no
+  embedded `struct device` (only the unrelated `_dev` offset-0
+  rtw_dev pointer), so a dedicated `name[32]` field was appended to
+  `struct wiphy` (at the end, so as not to disturb `_dev`'s
+  load-bearing offset-0 position) and defaulted to `"wlan0"` in
+  `ieee80211_alloc_hw()`. See findings.md Section 74 for full detail.
+  **The next build must confirm this actually compiles clean and
+  clears the two `-Wformat` warnings** — not assumed done until a
+  real `make` confirms it.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/` before the pattern rule needs it) — marked
+  "worked around, not fixed" in findings.md. Not hit as a problem in
+  this session's `clean && build` (the directory-creation prerequisite
+  in the current Makefile handled it), so it may already be fixed;
+  not independently re-verified line-by-line against §72.1's exact
+  complaint.
+- Code-signing / SIP / `kextutil` loading, firmware runtime
+  correctness, and real-hardware bring-up remain entirely untested,
+  same as every prior update has said.
+
+### Correct next step
+
+Attempt `kextutil` loading on the built kext (via the USB EFI test
+environment per this project's original goal notes, not the stable
+internal EFI), and/or fix the `pci_name()`/`wiphy_name()` format-arg
+type mismatch first since it's cheap and currently masked by never
+being hit.
+
+## EIGHTH UPDATE (historical; superseded by TENTH UPDATE above) — repository/code audit reconciled with the documentation
 
 A direct audit of the supplied project archive was performed against both
 `docs/findings.md` and this handover, with the actual source files and

@@ -99,6 +99,24 @@ struct pci_dev {
     unsigned int devfn;
 };
 
+/*
+ * pci_name() — real signature: const char *pci_name(const struct pci_dev *pdev).
+ * Real upstream implements this as dev_name(&pdev->dev). struct pci_dev
+ * here already embeds a real `struct device dev` (see above), so this is
+ * a direct, non-approximate port of the real implementation, not a stub.
+ * Previously entirely undeclared in this compat layer — every call site
+ * (pci.c's WARN_ONCE probe-failure logging, confirmed via build log,
+ * findings.md Section 73.3) fell through -Wno-implicit-function-declaration
+ * as an implicitly-int-returning function, which silently produced a
+ * -Wformat "char* expected, got int" warning at every %s call site and
+ * would read an int as a pointer if any of those WARN paths ever fired
+ * at runtime.
+ */
+static inline const char *pci_name(const struct pci_dev *pdev)
+{
+    return pdev ? dev_name(&pdev->dev) : "(null)";
+}
+
 /* Real upstream include/uapi/linux/pci.h macros (verified) */
 #define PCI_DEVFN(slot, func)  ((((slot) & 0x1f) << 3) | ((func) & 0x07))
 #define PCI_SLOT(devfn)        (((devfn) >> 3) & 0x1f)

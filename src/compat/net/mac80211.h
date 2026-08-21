@@ -406,6 +406,18 @@ struct wiphy {
     void (*reg_notifier)(struct wiphy *wiphy, struct regulatory_request *request);
     /* ext features bitmap — one bit per enum nl80211_ext_feature_index */
     u8    ext_features[(NUM_NL80211_EXT_FEATURES + 7) / 8];
+
+    /* Backing name for wiphy_name() below. Real upstream wiphy_name()
+     * is dev_name(&wiphy->dev) — this struct has no embedded
+     * `struct device` (only the opaque `_dev` rtw_dev pointer used for
+     * the hw->priv cast, see the comment on _dev above), so a plain
+     * name buffer is added instead of fabricating a fake struct device.
+     * Appended at the end of the struct deliberately: _dev must stay
+     * at offset 0 for wiphy_to_ieee80211_hw's cast to keep working, so
+     * nothing may be inserted before it. Defaults to "wlan0"-style
+     * placeholder if never set; the kext driving layer may overwrite
+     * this with the real interface name once assigned. */
+    char  name[32];
 };
 
 static inline void wiphy_ext_feature_set(struct wiphy *wiphy,

@@ -4868,4 +4868,244 @@ completes end-to-end, not just `regd.c`/`stats.c`.
 
 ------------------------------------------------------------------------
 
+# 72. NINTH UPDATE — first confirmed clean end-to-end build
+
+Following on directly from §71.6/§71.11, a full `make -f
+Makefile.rtl8188ee clean && make -f Makefile.rtl8188ee` was run to
+completion on the real build machine. **Result: full success.** Every
+translation unit compiled, the link step completed, and a kext was
+produced:
+
+```
+OK   build/out/rtl8188ee.kext
+KEXT UUID: A57A961E-5D14-3C9C-B8EC-FC5F1CBA3B18 (x86_64)
+```
+
+This is the first confirmed clean build in this project's documented
+history. `build/driver/regd.o` existing was explicitly flagged in
+§71.7.3/§71.9 as *not* proof of a working build — this section is that
+proof, for the whole tree, not one file.
+
+Getting there required fixing a sequence of small, real, previously
+undocumented bugs, none of which were in the `cfg80211`/`mac80211`
+area §71 spent so long on. Each is recorded below so a future session
+doesn't re-discover them from scratch.
+
+## 72.1 Missing output directories (Makefile bug, worked around, not fixed)
+
+First build attempt failed immediately on `rtl8188ee/dm.c`:
+```
+error: unable to open output file '.../build/driver/rtl8188ee/dm.o':
+'No such file or directory'
+```
+`regd.c`/`stats.c` write straight to `build/driver/`, which `make`
+does create — but nothing creates `build/driver/rtl8188ee/` before
+`clang -c` is invoked for files under that subdirectory. Worked around
+by `mkdir -p build/driver/rtl8188ee` by hand. **Not yet fixed in the
+Makefile itself** — the proper fix is an order-only prerequisite on
+each object rule (or a single `$(shell mkdir -p ...)` at the top) so
+`make -f Makefile.rtl8188ee clean && make -f Makefile.rtl8188ee` works
+unattended from a clean tree. Low priority since it's a one-line
+workaround, but will bite again on the next `make clean`.
+
+## 72.2 `noinline_for_stack` undefined (`rtl8188ee/hw.c`)
+
+```
+hw.c:1741:8: error: unknown type name 'noinline_for_stack'
+```
+Real upstream Linux macro (`#define noinline_for_stack noinline` in
+`linux/compiler_types.h`) — a kernel-stack-usage compiler hint with no
+semantic effect on macOS. Not previously defined anywhere in this
+compat layer (no `compiler.h` exists at all). Fixed by adding to
+`src/compat/linux/kernel.h`, next to the existing `likely`/`unlikely`
+macros:
+```c
+#define noinline_for_stack
+#define __always_inline inline __attribute__((always_inline))
+```
+(`__always_inline` added preemptively as the same category of gap.)
+
+## 72.3 `SIMPLE_DEV_PM_OPS` — `rtl_pci_suspend`/`rtl_pci_resume` undeclared (`rtl8188ee/sw.c`)
+
+```
+sw.c:380: error: use of undeclared identifier 'rtl_pci_suspend'
+sw.c:380: error: use of undeclared identifier 'rtl_pci_resume'
+```
+Confirmed **not** a compat-layer gap: both functions are genuinely
+declared in the real external `rtlwifi/pci.h` and defined in
+`rtlwifi/pci.c` — but gated behind `#ifdef CONFIG_PM_SLEEP`, a Linux
+Kconfig macro this build never defines (macOS uses IOKit power
+management instead, not Linux's suspend/resume model). Fixed by
+patching the external tree's own
+`rtl8188ee/sw.c` (not a compat header) to gate both the
+`SIMPLE_DEV_PM_OPS(...)` definition and its one use site
+(`.driver.pm = &rtlwifi_pm_ops`) behind the same `#ifdef
+CONFIG_PM_SLEEP`, mirroring how upstream itself gates the two
+functions in `pci.h`. This is a deliberate, permanent deviation from
+stock rtlwifi source — same category as `regd.c` never being vendored
+into this repo, i.e. expected and fine for this port.
+
+## 72.4 `IEEE80211_SCTL_FRAG` missing (`rtl8188ee/trx.c`)
+
+```
+trx.c:494:20: error: use of undeclared identifier 'IEEE80211_SCTL_FRAG'
+```
+`src/compat/net/mac80211.h` already had `IEEE80211_SCTL_SEQ` (0xFFF0)
+but not its sibling mask. Confirmed via web search: this is a stable,
+unversioned 802.11 spec constant (IEEE 802.11-2020 §9.3.1.1), value
+`0x000F` across every kernel version checked. Added directly next to
+`IEEE80211_SCTL_SEQ`:
+```c
+#define IEEE80211_SCTL_FRAG  0x000F
+#define IEEE80211_SCTL_SEQ   0xFFF0
+```
+
+## 72.5 Duplicate `ieee80211_alloc_hw()` — one real, one dead (`rtlwifi_compat.c` vs `mac80211.h`)
+
+The most involved fix this session. Two errors that looked unrelated
+turned out to be one root cause:
+```
+rtlwifi_compat.c:93: error: redefinition of 'ieee80211_alloc_hw'
+  mac80211.h:1333: note: previous definition is here
+rtlwifi_compat.c:140: error: use of undeclared identifier 's_default_chan'
+```
+`src/compat/net/mac80211.h` had a full `static inline
+ieee80211_alloc_hw()` (with its own locally-scoped `static struct
+ieee80211_channel s_default_chan`) that duplicated
+`rtlwifi_compat.c`'s own already-working, non-inline
+`ieee80211_alloc_hw()` — two definitions of the same external-linkage
+function name.
+
+**Investigated which one to keep, rather than guessing.** The
+header's version called `rtw88_register_hw(hw)` as its "belt: global
+fallback" step; `rtlwifi_compat.c`'s version instead sets its own
+`g_rtlwifi_hw` global directly, which `rtlwifi_get_hw()` and other
+real code in this file already depend on.
+`grep -rn "rtw88_register_hw" src/` confirmed `rtw88_register_hw` is
+**declared but never defined anywhere in this repo** — the header's
+version would have failed at link time even if it had compiled. It
+was dead code, almost certainly a leftover from whatever rtw88/Feixiao
+shim this `mac80211.h` was adapted from, never actually ported.
+
+Fix, in order:
+1. `mac80211.h`: replaced the full inline definition (and its
+   locally-scoped `s_default_chan`) with a plain declaration:
+   ```c
+   struct ieee80211_hw *ieee80211_alloc_hw(size_t priv_data_len,
+                                            const struct ieee80211_ops *ops);
+   ```
+   Also deleted the now-unreachable `void rtw88_register_hw(struct
+   ieee80211_hw *hw);` declaration.
+2. This surfaced a second latent bug: `rtlwifi_compat.c` had `static
+   struct ieee80211_hw *g_rtlwifi_hw;` declared **twice** at file
+   scope (once before `ieee80211_alloc_hw`, again right after it,
+   mislabeled "defining declaration with initializer" — not a valid
+   C pattern for a `static` variable, which is already a full
+   definition on first appearance). Deleted the second declaration.
+3. This surfaced the original `s_default_chan` error in its pure
+   form: `rtlwifi_compat.c`'s (now sole) `ieee80211_alloc_hw` still
+   referenced `s_default_chan`, but that struct no longer existed
+   anywhere after step 1 removed the header's copy. Added a local
+   copy directly in `rtlwifi_compat.c`, at the point of use, matching
+   the header's original definition byte-for-byte (2.4GHz, CH1/2412MHz).
+
+Net result: one real implementation of `ieee80211_alloc_hw()` survives
+(in `rtlwifi_compat.c`), matching what the rest of this port actually
+uses (`g_rtlwifi_hw`), with no dependency on the never-implemented
+`rtw88_register_hw`.
+
+## 72.6 `rtl8188ee_fw_blobs.h` missing (`fw_blobs_rtl8188ee.c`)
+
+```
+fatal error: 'rtl8188ee_fw_blobs.h' file not found
+```
+Not a code bug — a naming mismatch between the fork of
+`gen_fw_blobs.py` (`scripts/gen_fw_blobs_rtl8188ee.py`, which emits
+`#include "rtl8188ee_fw_blobs.h"`) and the actual hand-written struct
+header that already exists in this repo,
+`src/compat/fw_blobs_rtl8188ee.h` (reversed word order). Confirmed via
+the Makefile (`grep -n "fw_dir\|firmware"`) that no rule generates an
+`.h` at all — only the `.c` is generated; the `.h` was always meant to
+be hand-written, and simply never was under the name the script
+expects. Fixed with a one-line alias header,
+`src/compat/rtl8188ee_fw_blobs.h`:
+```c
+#include "fw_blobs_rtl8188ee.h"
+```
+rather than duplicating the struct definition in two files that could
+drift apart.
+
+Separately confirmed via the script's own `if not bins:` branch and
+comments, and an empty `firmware-rtl8188ee/` directory, that
+**`rtl8188efw.bin` is still not present anywhere in this repo** — this
+is a known, already-documented gap (not new), and the build currently
+links with an empty firmware blob table. Real firmware (from
+`linux-firmware`'s `rtlwifi/rtl8188efw.bin`) still needs to be added
+to `firmware-rtl8188ee/` before this kext can actually talk to
+hardware — the successful build in this section proves the *code*
+builds and links, not that it's firmware-complete.
+
+## 72.7 Confirmed real open items going forward
+
+- §67.8: no real workqueue implementation — still unaddressed, not
+  touched this session.
+- §72.1: Makefile doesn't create output subdirectories — worked
+  around by hand, not fixed at the source.
+- ~~§72.6: `rtl8188efw.bin` still needs to be sourced~~ — **done, see
+  §72.8.**
+- Nothing in this session touched kext loading/`kextutil`,
+  code-signing, or runtime behavior on real hardware — a clean build
+  and link is necessary but not sufficient for that.
+
+------------------------------------------------------------------------
+
+# 72.8 Real firmware sourced and embedded — §72.6 closed
+
+`rtl8188efw.bin` fetched from kernel.org's canonical `linux-firmware`
+tree:
+```
+curl -fSL -o firmware-rtl8188ee/rtl8188efw.bin \
+  https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/rtlwifi/rtl8188efw.bin
+```
+Result: 11,216 bytes, `file` reports "data" (confirmed not an HTML
+error page — a real risk with git blob-viewer URLs). Matches the
+~11KB size independently confirmed via web search across multiple
+`linux-firmware` mirrors (Arch package listings, buildroot's
+`linux-firmware.mk`, a firmware-analysis blog post that put the exact
+file at 11K on a real Ubuntu install) before the download, so the
+fetched file's size isn't just self-consistent — it matches external
+expectations too.
+
+After forcing regeneration (`rm build/compat/fw_blobs_rtl8188ee.c`,
+since the Makefile's wildcard-based dependency tracking doesn't
+reliably notice a new `.bin` file existing where none did before) and
+rebuilding:
+```
+GEN  fw_blobs_rtl8188ee.c: 1 blobs, 10KB -> 6KB compressed
+```
+— confirms `gen_fw_blobs_rtl8188ee.py` picked up the real binary
+(1 blob, not the empty-table fallback) and compressed it via zlib as
+designed. Full rebuild succeeded:
+```
+OK   build/out/rtl8188ee.kext
+KEXT UUID: AFBA4B62-76B7-31B9-BD6E-6CF761A74066 (x86_64)
+```
+This UUID differs from §72's `A57A961E-5D14-3C9C-B8EC-FC5F1CBA3B18` —
+expected and itself a good sanity check, since the binary's content
+genuinely changed (empty firmware table → real embedded firmware) and
+kext UUIDs are content-derived.
+
+**§72.6 is closed.** `firmware-rtl8188ee/rtl8188efw.bin` is in place,
+the generator embeds it, and the kext builds and links with real
+firmware data rather than the placeholder `{ 0, 0, 0, 0 }` table.
+
+This does **not** confirm the firmware loads correctly at runtime, is
+the right version/revision for this exact card, or that `fw.c`'s
+parsing of it succeeds — only that the byte-embedding pipeline
+(fetch → generate → compile → link) now works end-to-end with real
+data instead of a stub. Loading behavior is untested and belongs to
+the `kextutil`/real-hardware step in §72.7's remaining items.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

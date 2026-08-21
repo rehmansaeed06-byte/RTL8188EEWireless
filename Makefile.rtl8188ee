@@ -286,15 +286,25 @@ $(OUT_KEXT_BIN): $(ALL_OBJS) | $(OUT_KEXT)/Contents/MacOS
 	@echo "  NOTE  run 'sudo chown -R root:wheel $(OUT_KEXT)' for kextutil"
 	@echo "  KEXT $$(dwarfdump --uuid $(OUT_KEXT_BIN) 2>/dev/null)"
 	@echo "  OK   build/out/rtl8188ee.kext"
+# Compile rtl8188ee chip-specific C files with compat headers
+# NOTE: this rule MUST come before the shared-core rule below. Both
+# rules can match build/driver/rtl8188ee/%.o (GNU Make's % spans '/',
+# and $(LINUX_SRC)/rtl8188ee/%.c genuinely exists since rtl8188ee/ is
+# a real subdirectory of $(LINUX_SRC)) — Make picks the first matching
+# pattern rule it finds, so rule order here is load-bearing, not
+# cosmetic. Defining this one first was the actual fix for the
+# "unable to open output file .../rtl8188ee/dm.o" class of error seen
+# repeatedly on `make clean && make`: the shared-core rule was winning
+# the match, pulling in only `| $(BUILD_DIR)/driver` as its order-only
+# prerequisite (not the rtl8188ee subdirectory), so the subdirectory
+# was never created before clang tried to write into it.
+$(BUILD_DIR)/driver/rtl8188ee/%.o: $(CHIP_SRC)/%.c | $(BUILD_DIR)/driver/rtl8188ee
+	@echo "  CC   rtl8188ee/$(notdir $<)"
+	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
 
 # Compile rtlwifi shared-core C files with compat headers
 $(BUILD_DIR)/driver/%.o: $(LINUX_SRC)/%.c | $(BUILD_DIR)/driver
 	@echo "  CC   $(notdir $<)"
-	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
-
-# Compile rtl8188ee chip-specific C files with compat headers
-$(BUILD_DIR)/driver/rtl8188ee/%.o: $(CHIP_SRC)/%.c | $(BUILD_DIR)/driver/rtl8188ee
-	@echo "  CC   rtl8188ee/$(notdir $<)"
 	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
 
 # Compile compat C file (with Linux compat headers)

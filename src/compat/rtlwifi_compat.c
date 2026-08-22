@@ -559,6 +559,72 @@ bool rtlwifi_is_scanning(void)
     return rtl_mac(rtlpriv)->act_scanning;
 }
 
+/* ------------------------------------------------------------------ */
+/* rtlwifi_get_fw_version() / rtlwifi_get_stats() — Bucket E            */
+/* (findings.md Section 81.2/83.2)                                      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * fw_version/fw_subversion: struct rtl_hal fields, wifi.h:1613-1614,
+ * reached via rtl_hal(rtlpriv) (wifi.h:2756) — same cast/macro pattern
+ * as rtlwifi_is_scanning() above, just a different sub-struct.
+ *
+ * Output fw_subversion is u8 (matching RTW88StateResult's actual field
+ * width, RTW88UserClient.hpp), narrowed here from wifi.h's real u16
+ * fw_subversion — an explicit, visible truncation, not a raw pointer of
+ * the wrong width handed across the call site.
+ */
+void rtlwifi_get_fw_version(u16 *fw_version, u8 *fw_subversion)
+{
+    if (fw_version)
+        *fw_version = 0;
+    if (fw_subversion)
+        *fw_subversion = 0;
+
+    if (!g_rtlwifi_hw || !g_rtlwifi_hw->priv)
+        return;
+
+    struct rtl_priv *rtlpriv = (struct rtl_priv *)g_rtlwifi_hw->priv;
+
+    if (fw_version)
+        *fw_version = rtl_hal(rtlpriv)->fw_version;
+    if (fw_subversion)
+        *fw_subversion = (u8)rtl_hal(rtlpriv)->fw_subversion;
+}
+
+/*
+ * tx_bytes/rx_bytes: struct wireless_stats's txbytesunicast/
+ * rxbytesunicast fields (wifi.h:~1096-1099), reached via the plain
+ * rtlpriv->stats field (wifi.h:2680 — struct wireless_stats stats;
+ * no accessor macro exists for this one, unlike mac80211/rtlhal/efuse).
+ * Unicast-only, matching what the struct actually separates out;
+ * multicast/broadcast counters exist too but no existing call site
+ * asks for them.
+ *
+ * Output width is u32 (matching RTW88StateResult's actual field width,
+ * RTW88UserClient.hpp), narrowed here from wifi.h's real u64 counters —
+ * an explicit, visible truncation, not a raw pointer of the wrong width
+ * handed across the call site. Wraps past ~4GB of unicast traffic; this
+ * is a diagnostics counter, not a byte-accurate accounting field.
+ */
+void rtlwifi_get_stats(u32 *tx_bytes, u32 *rx_bytes)
+{
+    if (tx_bytes)
+        *tx_bytes = 0;
+    if (rx_bytes)
+        *rx_bytes = 0;
+
+    if (!g_rtlwifi_hw || !g_rtlwifi_hw->priv)
+        return;
+
+    struct rtl_priv *rtlpriv = (struct rtl_priv *)g_rtlwifi_hw->priv;
+
+    if (tx_bytes)
+        *tx_bytes = (u32)rtlpriv->stats.txbytesunicast;
+    if (rx_bytes)
+        *rx_bytes = (u32)rtlpriv->stats.rxbytesunicast;
+}
+
 /*
  * Expected call site, mirroring rtw88's doAuthenticate() bounded wait
  * (findings.md Section 53.3): a 100 x 50ms IOSleep loop, 5s ceiling,

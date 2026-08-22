@@ -119,6 +119,30 @@ void rtlwifi_set_hw_callbacks(struct rtlwifi_hw_callbacks *cbs, void *kext_hw);
 bool rtlwifi_is_scanning(void);
 
 /*
+ * Diagnostics accessors for RTW88IEEE80211.cpp's cmdGetState() — Bucket E,
+ * findings.md Section 81.2/83.2. Same pattern as rtlwifi_is_scanning():
+ * cast g_rtlwifi_hw->priv to struct rtl_priv* (real type, from the vendored
+ * wifi.h, confirmed via rtl_hal()/rtl_efuse() macros at wifi.h:2755-2757)
+ * and read the real fields, no invented layout.
+ *
+ * Signatures match RTW88StateResult's actual field widths (RTW88UserClient.hpp)
+ * rather than wifi.h's native widths, to avoid a pointer-width mismatch at
+ * the call site: fw_version is u16 both sides, but fw_sub_version is only
+ * u8 in RTW88StateResult (wifi.h's fw_subversion is u16) and tx/rx_byte_count
+ * are u32 (wifi.h's txbytesunicast/rxbytesunicast are u64) — both narrowed
+ * explicitly inside the .c function body, not via a raw pointer of the
+ * wrong width handed across the call site.
+ *
+ * rtlwifi_get_chip_name() intentionally does NOT exist: wifi.h's struct
+ * rtl_priv/rtl_hal/rtl_efuse carry no chip-name string anywhere (confirmed
+ * by direct grep of the real header — only a read_chip_version() callback
+ * and an hw_type enum, neither of which is a name string). The call site
+ * fix drops this field rather than fabricate a value for it.
+ */
+void rtlwifi_get_fw_version(u16 *fw_version, u8 *fw_subversion);
+void rtlwifi_get_stats(u32 *tx_bytes, u32 *rx_bytes);
+
+/*
  * rtlwifi-side equivalents of rtw88_sw_scan_start/_switch_channel/
  * _complete() — findings.md Section 59.4/59 (this session). See the
  * corresponding block comment in rtlwifi_compat.c for the full

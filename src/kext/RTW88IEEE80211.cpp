@@ -750,7 +750,7 @@ IOReturn RTW88IEEE80211::start()
     /* rtwdev is hw->priv (allocated contiguously after ieee80211_hw in alloc_hw).
      * Note: rtw_pci_probe stores hw (not rtwdev) in pdev->driver_data via pci_set_drvdata(). */
     if (_hw) {
-        _rtwdev = (struct rtw_dev *)_hw->priv;
+        _rtwdev = (struct rtl_priv *)_hw->priv;
     } else {
         _rtwdev = nullptr;
     }
@@ -1870,7 +1870,13 @@ void RTW88IEEE80211::runManualScan()
         count = 256;
     bool connectedScan = (_scanReturnState == RTW88_STATE_CONNECTED);
 
-    rtlwifi_sw_scan_start(_hw, _vif);
+    /* mac_addr NULL: this port does not do randomized-MAC probe
+     * scanning, so there is no per-scan MAC to hand rtl_ops-
+     * >sw_scan_start(); rtlwifi_sw_scan_start() passes it straight
+     * through to hw->ops->sw_scan_start() unchanged (rtlwifi_compat.c),
+     * and real rtl_op_sw_scan_start() only consults it for that
+     * randomization path — Bucket D, findings.md Section 81.2/83.2. */
+    rtlwifi_sw_scan_start(_hw, _vif, NULL);
 
     for (uint32_t i = 0; i < count && !_manualScanAbort; i++) {
         struct ieee80211_channel *chan = _manualScanChannels[i];
@@ -3080,9 +3086,14 @@ IOReturn RTW88IEEE80211::cmdGetState(struct RTW88StateResult *result)
     
     memcpy(result->mac_addr, _macAddr, 6);
 
-    rtw88_get_fw_version(_rtwdev, &result->fw_version, &result->fw_sub_version);
-    rtw88_get_chip_name(_rtwdev, result->chip_name, sizeof(result->chip_name));
-    rtw88_get_stats(_rtwdev, &result->tx_byte_count, &result->rx_byte_count);
+    rtlwifi_get_fw_version(&result->fw_version, &result->fw_sub_version);
+    /* No rtw88_get_chip_name() call here: wifi.h's struct rtl_priv/rtl_hal/
+     * rtl_efuse carry no chip-name string anywhere (confirmed by direct
+     * grep of the real vendored header — Bucket E, findings.md Section
+     * 81.2/83.2/rtlwifi_compat.h comment above rtlwifi_get_fw_version()).
+     * result->chip_name keeps whatever RTW88UserClient.cpp already
+     * defaulted it to ("Uninitialized") rather than fabricate a value. */
+    rtlwifi_get_stats(&result->tx_byte_count, &result->rx_byte_count);
     result->scan_offload_supported =
         (_hw && _hw->ops && _hw->ops->hw_scan &&
          rtw88_hw_scan_supported(_hw)) ? 1 : 0;

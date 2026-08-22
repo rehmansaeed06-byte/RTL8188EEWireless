@@ -19,7 +19,7 @@
 #include <kern/thread_call.h>
 
 /* Opaque C driver handle */
-struct rtw_dev;
+struct rtl_priv;
 struct pci_dev;
 struct ieee80211_hw;
 struct ieee80211_vif;
@@ -178,7 +178,7 @@ private:
 
     /* ---------------------------------------------------------------- */
     RTW88PCIDevice    *_parent        = nullptr;
-    struct rtw_dev    *_rtwdev        = nullptr;
+    struct rtl_priv   *_rtwdev        = nullptr;
     struct ieee80211_hw *_hw          = nullptr;
     struct ieee80211_vif *_vif        = nullptr;
     struct ieee80211_sta *_sta        = nullptr;

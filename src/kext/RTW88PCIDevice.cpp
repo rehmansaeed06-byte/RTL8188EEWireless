@@ -12,7 +12,7 @@
 
 /* The Linux-compat pci_ops that route through this class */
 extern "C" {
-#include "../compat/rtw88_compat.h"
+#include "../compat/rtlwifi_compat.h"
 }
 
 extern "C" void rtw88_trigger_interrupt(void);

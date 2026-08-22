@@ -5646,4 +5646,70 @@ fixed. The three header bugs in 76.5-76.7 are a prerequisite for
 
 ------------------------------------------------------------------------
 
+# 77. `RTW88PCIDevice.cpp` include swap applied; full undeclared-symbol
+     surface enumerated — much larger than `RTW88IEEE80211.cpp`'s
+
+## 77.1 The swap itself
+
+`RTW88PCIDevice.cpp` line 15 still read
+`#include "../compat/rtw88_compat.h"` — the one §76.8 flagged as
+"not yet applied to `RTW88PCIDevice.cpp`". That file does not exist
+in this project (confirmed: `ls src/compat/rtw88_compat.h` →
+no such file). Swapped to `#include "../compat/rtlwifi_compat.h"`,
+matching `RTW88IEEE80211.cpp` line 21's existing pattern exactly.
+This clears the file-not-found failure but, as expected, does not
+make the file compile — see 77.2.
+
+## 77.2 Full symbol audit — this file's gap is bigger than `RTW88IEEE80211.cpp`'s
+
+Grepped every `rtw88_*`/`rtw_*` identifier actually referenced in
+`RTW88PCIDevice.cpp` (17 distinct names) against everything
+`rtlwifi_compat.h` declares. Result: **zero overlap**. None of the
+17 have any declared equivalent in `rtlwifi_compat.h`:
+
+- `rtw88_be_tx_avail`, `rtw88_compat_exit`, `rtw88_compat_init`,
+  `rtw88_debug_dump_tx_state`, `rtw88_dma_alloc_ops`,
+  `rtw88_dma_ops`, `rtw88_find_fw_dir`, `rtw88_force_wifi_only`,
+  `rtw88_pci_io_ops`, `rtw88_set_tx_resume_cb`,
+  `rtw88_tx_resume_trampoline` — rtw88-specific bridge symbols,
+  no rtlwifi equivalent exists yet.
+- `rtw_core_init`, `rtw_core_start`, `rtw_pci_probe`,
+  `rtw_pci_tx_write_data`, `rtw_power_on`, `rtw_tx` — these are
+  **real rtw88 driver-core entry points**, not compat-layer bridge
+  functions. This project's driver core is rtlwifi-family
+  (`rtl_pci_probe()` etc, per Section 1-30), so these six have no
+  equivalent anywhere in this tree at all, ported or not — porting
+  this file means replacing each call site with the corresponding
+  rtlwifi driver-core call, not just renaming a bridge function.
+- `rtw88_trigger_interrupt` is declared locally in the `.cpp` itself
+  (line 18, `extern "C"`), independent of the compat header either
+  way — not part of this gap.
+
+This is a materially different, larger task than §76.3's
+`RTW88IEEE80211.cpp` work: that file's ~15 remaining unported calls
+were bridge-function renames/ports against an otherwise-matching
+API shape. Six of this file's 17 are direct references to the real
+rtw88 driver core with no rtlwifi bridge layer standing in for them
+yet — those need either new `rtlwifi_compat.c` bridge functions
+written from scratch (mirroring what `rtw88_compat.c` does for its
+six rtw88 calls) or the call sites reworked against the rtlwifi
+driver-core API directly. Not attempted this session — flagging the
+scope rather than guessing at a fix.
+
+## 77.3 Status
+
+`RTW88PCIDevice.cpp`'s include now resolves. The file is otherwise
+unchanged and will not compile — 17 undeclared identifiers pending
+the work in 77.2. `RTW88IEEE80211.cpp` remains the more complete of
+the two Category B files (per §76.8: ~15 pending vs. this file's 17,
+with this file's subset skewing toward driver-core calls rather than
+bridge-function renames). Section 76.7's `noinline`/`kern/assert.h`
+diagnosis was revisited this session and the bare-attribute source
+text (`__attribute__((noinline))`, not the identifier `noinline`)
+does not appear to support the mechanism as written — left as-is
+per current direction, pending a look at real compiler output from
+the build machine rather than source inspection alone.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

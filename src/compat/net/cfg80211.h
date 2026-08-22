@@ -350,7 +350,7 @@ freq_reg_info(struct wiphy *wiphy, u32 center_freq)
      * found" like real cfg80211 returns for an out-of-range
      * frequency, never a NULL that would slip past a caller's
      * IS_ERR() guard. */
-    return ERR_PTR(-ERANGE);
+    return (const struct ieee80211_reg_rule *)ERR_PTR(-ERANGE);
 }
 
 #endif /* _RTW88_COMPAT_CFG80211_H */

@@ -991,6 +991,17 @@ struct ieee80211_vif_chanctx_switch {
     struct ieee80211_chanctx_conf   *new_ctx;
 };
 
+/* sta_notify_cmd — CONFIRMED against real rtl_op_sta_notify's switch
+ * (core.c:1354-1361): only these two cases used, matching real
+ * upstream mac80211's enum (a third value, STA_NOTIFY_SLEEP/AWAKE are
+ * the only two rtlwifi ever references, so only those two are added
+ * here rather than the full upstream set, consistent with this compat
+ * layer's existing minimal-superset approach elsewhere in the file). */
+enum sta_notify_cmd {
+    STA_NOTIFY_SLEEP,
+    STA_NOTIFY_AWAKE,
+};
+
 struct ieee80211_ops {
     void (*tx)(struct ieee80211_hw *hw,
                struct ieee80211_tx_control *control,
@@ -1103,17 +1114,6 @@ struct ieee80211_ops {
     void (*sta_notify)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
                         enum sta_notify_cmd cmd, struct ieee80211_sta *sta);
     void (*rfkill_poll)(struct ieee80211_hw *hw);
-};
-
-/* sta_notify_cmd — CONFIRMED against real rtl_op_sta_notify's switch
- * (core.c:1354-1361): only these two cases used, matching real
- * upstream mac80211's enum (a third value, STA_NOTIFY_SLEEP/AWAKE are
- * the only two rtlwifi ever references, so only those two are added
- * here rather than the full upstream set, consistent with this compat
- * layer's existing minimal-superset approach elsewhere in the file). */
-enum sta_notify_cmd {
-    STA_NOTIFY_SLEEP,
-    STA_NOTIFY_AWAKE,
 };
 
 /* ieee80211_link_sta — per-link station (deflink is the only link for non-MLO) */

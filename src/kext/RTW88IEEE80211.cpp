@@ -18,7 +18,7 @@
 static mbuf_t rtw88_make_packet_mbuf(const void *src, uint32_t len);
 
 extern "C" {
-#include "../compat/rtw88_compat.h"
+#include "../compat/rtlwifi_compat.h"
 
 /* Linux driver public API */
 int  rtw_core_init(struct rtw_dev *rtwdev);
@@ -31,9 +31,6 @@ void rtw_tx(struct rtw_dev *rtwdev, struct ieee80211_tx_control *control,
 /* PCI probe shim declared in pci.c */
 int  rtw_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 void rtw_pci_remove(struct pci_dev *pdev);
-
-/* Exported from the compat layer for hooking */
-void rtw88_set_hw_callbacks(struct rtw88_hw_callbacks *cbs, void *kext_hw);
 
 /* chip hw_spec structs — driver_data for rtw_pci_probe */
 extern const struct rtw_chip_info rtw8822b_hw_spec;
@@ -494,13 +491,6 @@ static const struct rtw88_pci_id_entry rtw88_pci_chip_table[] = {
     { 0, nullptr }
 };
 
-/* Forward declaration of hw_callbacks struct from compat.c */
-struct rtw88_hw_callbacks {
-    void (*rx_frame)(void *kext_hw, struct sk_buff *skb);
-    void (*tx_status)(void *kext_hw, struct sk_buff *skb);
-    void (*scan_done)(void *kext_hw, bool aborted);
-};
-
 #define super OSObject
 OSDefineMetaClassAndStructors(RTW88IEEE80211, OSObject)
 
@@ -557,12 +547,12 @@ bool RTW88IEEE80211::init(RTW88PCIDevice *dev, struct pci_dev *pci)
                                           (thread_call_param_t)this);
 
     /* Install callbacks into compat layer */
-    static struct rtw88_hw_callbacks cbs = {
+    static struct rtlwifi_hw_callbacks cbs = {
         .rx_frame  = RTW88IEEE80211::compat_rx_frame,
         .tx_status = RTW88IEEE80211::compat_tx_status,
         .scan_done = RTW88IEEE80211::compat_scan_done,
     };
-    rtw88_set_hw_callbacks(&cbs, this);
+    rtlwifi_set_hw_callbacks(&cbs, this);
 
     /* Set up workloop / timer for state machine */
     _wl = IOWorkLoop::workLoop();
@@ -769,7 +759,7 @@ IOReturn RTW88IEEE80211::start()
      * accessor for the static g_rtw88_hw variable — avoids both the fragile
      * *(ieee80211_hw **)rtwdev double-dereference and the UB of declaring
      * 'extern' on a static variable from another TU. */
-    _hw = rtw88_get_hw();
+    _hw = rtlwifi_get_hw();
 
     /* rtwdev is hw->priv (allocated contiguously after ieee80211_hw in alloc_hw).
      * Note: rtw_pci_probe stores hw (not rtwdev) in pdev->driver_data via pci_set_drvdata(). */
@@ -1894,7 +1884,7 @@ void RTW88IEEE80211::runManualScan()
         count = 256;
     bool connectedScan = (_scanReturnState == RTW88_STATE_CONNECTED);
 
-    rtw88_sw_scan_start(_hw, _vif);
+    rtlwifi_sw_scan_start(_hw, _vif);
 
     for (uint32_t i = 0; i < count && !_manualScanAbort; i++) {
         struct ieee80211_channel *chan = _manualScanChannels[i];
@@ -1913,7 +1903,7 @@ void RTW88IEEE80211::runManualScan()
         _hw->conf.chandef.width = NL80211_CHAN_WIDTH_20_NOHT;
         _hw->conf.chandef.center_freq1 = chan->center_freq;
 
-        rtw88_sw_scan_switch_channel(_hw);
+        rtlwifi_sw_scan_switch_channel(_hw);
 
         bool passiveOnly = (chan->flags &
             (IEEE80211_CHAN_NO_IR | IEEE80211_CHAN_RADAR)) != 0;
@@ -1933,7 +1923,7 @@ void RTW88IEEE80211::runManualScan()
     }
 
     _manualScanOnHomeChannel = false;
-    rtw88_sw_scan_complete(_hw, _vif);
+    rtlwifi_sw_scan_complete(_hw, _vif);
     if (connectedScan) {
         restoreConnectedChannel();
         txNullFunc(false);
@@ -2003,7 +1993,7 @@ void RTW88IEEE80211::doAuthenticate()
      * The flag is cleared inside rtw_core_scan_complete() which runs under
      * rtwdev->mutex in the c2h_work thread. */
     for (int i = 0; i < 100; i++) {
-        if (!rtw88_is_scanning()) break;
+        if (!rtlwifi_is_scanning()) break;
         IOSleep(50);
     }
     IOLog("rtw88: doAuthenticate: scan flag clear\n");

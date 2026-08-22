@@ -244,10 +244,10 @@ KMOD_SRCS := \
 # still be wrong at runtime (wrong struct offsets, wrong assumptions
 # about mac80211 bypass shape, etc.).
 KEXT_SRCS := \
-    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88Kext.cpp \
-    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88PCIDevice.cpp \
-    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88IEEE80211.cpp \
-    $(PROJ_ROOT)/../Feixiao/src/kext/RTW88UserClient.cpp
+    $(KEXT_SRC)/RTW88Kext.cpp \
+    $(KEXT_SRC)/RTW88PCIDevice.cpp \
+    $(KEXT_SRC)/RTW88IEEE80211.cpp \
+    $(KEXT_SRC)/RTW88UserClient.cpp
 
 # ------------------------------------------------------------------ #
 # Object files                                                         #
@@ -349,7 +349,7 @@ $(BUILD_DIR)/kext/kmod_info.o: $(KEXT_SRC)/kmod_info.c | $(BUILD_DIR)/kext
 
 # Compile kext C++ wrapper files (reused from Feixiao — see KEXT_SRCS
 # TODO above; this rule does not imply the reuse is confirmed correct)
-$(BUILD_DIR)/kext/%.o: $(PROJ_ROOT)/../Feixiao/src/kext/%.cpp | $(BUILD_DIR)/kext
+$(BUILD_DIR)/kext/%.o: $(KEXT_SRC)/%.cpp | $(BUILD_DIR)/kext
 	@echo "  CXX  $(notdir $<)"
 	$(CXX) $(KEXT_CXXFLAGS) -c $< -o $@
 

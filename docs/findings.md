@@ -5489,4 +5489,161 @@ requires physical hardware access. That is the next real milestone.
 
 ------------------------------------------------------------------------
 
+# 76. Fork RTW88*.cpp Wrapper Files Out of Feixiao; First Real Compile Attempt Surfaces Pre-Existing mac80211.h/cfg80211.h Bugs
+
+## 76.1 Makefile repointed away from ../Feixiao
+
+`KEXT_SRCS` and the kext C++ pattern rule in `Makefile.rtl8188ee`
+previously built `RTW88Kext.cpp`/`RTW88PCIDevice.cpp`/
+`RTW88IEEE80211.cpp`/`RTW88UserClient.cpp` directly from
+`$(PROJ_ROOT)/../Feixiao/src/kext/`. Both now point at
+`$(KEXT_SRC)` (= `$(PROJ_ROOT)/src/kext`), matching the precedent
+already set for `kmod_info.c`. The four files (plus their `.hpp`
+headers) were copied unmodified into `src/kext/` first and committed
+as a clean baseline before any content changes, so the fork itself
+is isolated from the fixes that follow. This repo no longer depends
+on `../Feixiao` existing as a sibling folder for the kext wrapper
+sources, matching the same independence already achieved for the
+driver/compat/kmod sources.
+
+## 76.2 Root cause of the original `EFI_INVALID_PARAMETER` confirmed at the binary level
+
+Before any of the above, the delivered `rtl8188ee.kext` binary was
+inspected directly (Mach-O symtab parse, since neither Linux `otool`
+nor `nm` can read a macOS Mach-O kext bundle). Result: **607
+undefined symbols**, overwhelmingly `rtw88_*` names
+(`rtw88_module_start`, `rtw_pci_probe`, `rtw8822b_hw_spec`, etc.)
+that the four wrapper files call but which were never linked in —
+because `Makefile.rtl8188ee` links the wrapper files against this
+project's own `rtlwifi`-family driver core, not against the real
+`rtw88` driver files (or `rtw88_compat.c`) those symbols come from.
+This — not a plist, UUID, or Mach-O structural problem, all of which
+were independently re-verified and are fine — is what OpenCore's
+`MachoInitializeContext` was rejecting at prelink-injection time: the
+kext parses fine but can't be resolved against the kernel collection
+at link time.
+
+Separately, the `_rtwdev = (struct rtw_dev *)_hw->priv;` cast at
+`RTW88IEEE80211.cpp` (struct-layout risk flagged as unconfirmed in
+Section 59) is confirmed **not** fully inert as Section 59 concluded:
+three call sites (`rtw88_get_fw_version`/`get_chip_name`/`get_stats`,
+originally ~line 3107-3109) do pass `_rtwdev` through as a typed
+argument. This is a real, separate bug from the link-failure, latent
+until Section 76.1's repoint gets far enough to reach these call
+sites at all.
+
+## 76.3 Five confirmed clean `rtw88_* → rtlwifi_*` renames
+
+Cross-referencing the 607 undefined symbols against
+`rtlwifi_compat.h`'s existing declarations found five call sites with
+an exact, struct-compatible existing equivalent — safe mechanical
+renames, no new logic needed:
+
+- `rtw88_get_hw()` → `rtlwifi_get_hw()`
+- `rtw88_set_hw_callbacks(&cbs, this)` → `rtlwifi_set_hw_callbacks(&cbs, this)`
+  (confirmed field-for-field identical struct shape between the
+  file-local `rtw88_hw_callbacks` and `rtlwifi_compat.h`'s
+  `rtlwifi_hw_callbacks` — `rx_frame`/`tx_status`/`scan_done`, same
+  signatures — so the local duplicate struct and its forward
+  declaration were deleted rather than kept as a shadow type)
+- `rtw88_sw_scan_start/_switch_channel/_complete()` → `rtlwifi_sw_scan_*()`
+- `rtw88_is_scanning()` → `rtlwifi_is_scanning()`
+
+Applied in `RTW88IEEE80211.cpp` only (the only wrapper file that
+called any of these five). The remaining ~15 `rtw88_*` call sites
+(`module_start/stop`, `connect_hw_setup`, `register_vif`, TX/DMA
+plumbing, logging, stats) have no `rtlwifi_compat.c` equivalent yet
+and are unchanged — deliberately left as-is pending a stub-first
+pass (Section 76.5 below covers why stub-first was chosen).
+
+The six `rtw8812a_hw_spec`/`rtw8814a_hw_spec`/.../`rtw88_pci_chip_table`
+symbols were **not** renamed or stubbed — per Section 55.7/59's
+existing conclusion that RTL8188EE needs no chip-ID lookup table at
+all, this whole block (chip-info externs, the table itself, and its
+lookup loop) is flagged for deletion, not porting, in a future pass.
+
+## 76.4 First-ever standalone syntax check of `RTW88IEEE80211.cpp`
+
+`KEXT_SRCS` order is `RTW88Kext.cpp`, `RTW88PCIDevice.cpp`,
+`RTW88IEEE80211.cpp`, `RTW88UserClient.cpp`. Every prior full `make`
+run died at `RTW88PCIDevice.cpp`'s `#include "../compat/rtw88_compat.h"`
+(a file that only ever existed in Feixiao's tree) before ever
+reaching `RTW88IEEE80211.cpp`. Running `-fsyntax-only` directly on
+`RTW88IEEE80211.cpp` post-repoint is therefore this file's first real
+compile attempt by anyone, not a regression check on Section 76.3's
+edits. Confirmed 20 errors, split into two categories:
+
+- **Expected/already-tracked**: `rtw88_register_vif`/`_unregister_vif`/
+  `_restore_connected_hw`/`_hw_scan_supported` undeclared (the ~15
+  not-yet-ported functions from Section 76.3), plus the chip-table/
+  `pci_dev` incomplete-type errors (the block flagged for deletion in
+  76.3).
+- **New, genuinely pre-existing, unrelated to this session's edits**:
+  three separate bugs inside this project's own `mac80211.h`/
+  `cfg80211.h` compat headers, detailed in 76.5-76.7.
+
+## 76.5 Bug: `enum sta_notify_cmd` forward-referenced in `mac80211.h`
+
+`struct ieee80211_ops`'s `.sta_notify` member (line ~1104, added per
+Section 74/75's `rtl_ops` struct-literal cross-check) used
+`enum sta_notify_cmd` as a parameter type ten lines before the enum
+itself was defined. C tolerates this via implicit tentative
+declaration; C++ (all four wrapper files are `.cpp`) does not allow
+forward references to unscoped enum types — hard error. Not
+introduced by this session; the enum and the struct member referencing
+it were both added correctly per Section 74/75's confirmed
+`rtl_ops`/`sta_notify` cross-check, just in the wrong order relative
+to each other. Fixed by relocating the enum block (including its
+existing confirmation comment) to immediately above
+`struct ieee80211_ops`'s definition, rather than after it.
+
+## 76.6 Bug: `ERR_PTR(-ERANGE)` return-type mismatch in `cfg80211.h`
+
+`freq_reg_info()` (Section 65-ish era, per its own inline comment)
+returns `ERR_PTR(-ERANGE)` from a function declared to return
+`const struct ieee80211_reg_rule *`. `ERR_PTR`/`PTR_ERR`/`IS_ERR`
+themselves are present and correct in `linux/kernel.h` (not missing,
+as first suspected) — the real issue is C++'s stricter typing: `void
+*` (ERR_PTR's return type) does not implicitly convert to a typed
+pointer the way C allows. Fixed with an explicit cast at the return
+site: `return (const struct ieee80211_reg_rule *)ERR_PTR(-ERANGE);`.
+No behavior change — `IS_ERR()` callers still see the same encoded
+pointer value.
+
+## 76.7 Bug (found, not yet fixed): `noinline` macro collision with real kernel `assert.h`
+
+Syntax-checking `rtlwifi_compat.h` standalone (as a `-fapple-kext`
+compile, pulling in the full IOKit header chain via
+`compat/linux/slab.h` → `iokit_shim.h` → `IOKit/IOLocks.h` →
+`IOKit/system.h` → `IOKit/assert.h` → the **real**, Apple-supplied
+`kern/assert.h`) hits a parse error inside Apple's own
+`kern/assert.h:80`, which declares an `__attribute__((noinline))`
+function. This project's own `linux/types.h:99` defines
+`#define noinline __attribute__((noinline))` — a normal, reasonable
+Linux-compat shim — but once that macro exists, expanding it inside
+Apple's own declaration produces a malformed token sequence
+(`error: use of undeclared identifier 'noinline'`, then cascading
+`expected expression` errors). Not previously visible: no prior
+`-fsyntax-only` check exercised this exact include chain
+(`slab.h`→IOKit→`kern/assert.h`) until this session's per-header
+checks. **Not yet fixed** — next step identified as `#undef noinline`
+before the IOKit include chain in `slab.h`/`iokit_shim.h`, keeping
+the macro defined for the rest of the Linux-compat code, but the
+exact insertion point needs confirming against `slab.h`'s real
+include order before editing.
+
+## 76.8 Status
+
+`RTW88Kext.cpp` and `RTW88UserClient.cpp` compile clean from the new
+`src/kext/` location (they don't reference `rtw88_compat.h` at all).
+`RTW88PCIDevice.cpp` and `RTW88IEEE80211.cpp` do not yet compile —
+blocked first by the `rtw88_compat.h`-vs-`rtlwifi_compat.h` include
+swap (not yet applied to `RTW88PCIDevice.cpp`), and by the remaining
+~15 real ports plus the chip-table deletion once the include is
+fixed. The three header bugs in 76.5-76.7 are a prerequisite for
+*any* of the four wrapper files compiling cleanly, independent of the
+`rtw88_*` porting work — two are now fixed, one (76.7) is open.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

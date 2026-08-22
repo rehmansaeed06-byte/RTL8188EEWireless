@@ -162,4 +162,78 @@ void rtlwifi_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *vif
  */
 const struct rate_control_ops *rtlwifi_get_rate_control_ops(void);
 
+/*
+ * Bucket A (findings.md Section 81.2/85.4, handover THIRTEENTH UPDATE) —
+ * the five rtw88_* names RTW88IEEE80211.cpp calls that were never ported
+ * to this rtlwifi-based tree. Each renamed rtlwifi_* below, confirmed
+ * against a live read of the real rtlwifi core.c (see block comments in
+ * rtlwifi_compat.c for the exact line numbers/evidence per function).
+ */
+
+/*
+ * rtlwifi_register_vif() / rtlwifi_unregister_vif() — CONFIRMED no-ops.
+ * Real rtl_op_add_interface()/rtl_op_remove_interface() (core.c:199-341)
+ * already do 100% of rtlwifi's own vif-registration bookkeeping
+ * (mac->vif assignment, set_network_type, HW_VAR_ETHER_ADDR, retry
+ * limits) as a direct, unconditional part of their bodies — there is no
+ * separate rtlwifi-side registration step left over for these to bridge
+ * to. Kept as named stubs (not deleted) so the call sites in
+ * RTW88IEEE80211.cpp don't need restructuring, and so this reasoning is
+ * visible at both ends rather than silently dropped.
+ */
+void rtlwifi_register_vif(struct ieee80211_vif *vif);
+void rtlwifi_unregister_vif(void);
+
+/*
+ * rtlwifi_hw_scan_supported() — CONFIRMED always false. rtlwifi's
+ * rtl_ops table (core.c, the .add_interface/.remove_interface table
+ * dump at core.c:1888-1889 and surrounding members) has no hw_scan/
+ * cancel_hw_scan entries anywhere — rtlwifi is sw_scan-only
+ * (rtl_op_sw_scan_start/_complete, core.c:1410/1444), a genuine
+ * architectural difference from rtw88's firmware-offload scan
+ * (handover item 28). Not a per-hw runtime query; a static fact about
+ * this driver family.
+ */
+bool rtlwifi_hw_scan_supported(struct ieee80211_hw *hw);
+
+/*
+ * rtlwifi_connect_hw_setup() / rtlwifi_restore_connected_hw() —
+ * rtlwifi-side equivalents of rtw88_connect_hw_setup()/
+ * _restore_connected_hw(). Per RTW88IEEE80211.cpp's own existing
+ * comments (doAuthenticate(), restoreConnectedChannel()), these
+ * exist specifically to set channel + BSSID WITHOUT going through
+ * hw->ops->config()/bss_info_changed() — CONFIRMED via live core.c
+ * read that the normal mac80211-ops path risks exactly the stall
+ * these were written to avoid: rtl_op_bss_info_changed()'s
+ * BSS_CHANGED_BSSID branch (core.c:~1246) sits in the same function
+ * that calls rtl_lps_leave(hw, true) (core.c:1143) when the link goes
+ * down — a polling-read wake sequence, same hazard class already
+ * documented for other MMIO-read paths in this project.
+ *
+ * Both functions instead call directly into rtlpriv->cfg->ops
+ * (rtl_hal_ops) — switch_channel() and set_hw_reg(HW_VAR_BSSID) —
+ * the same per-chip internal calls rtl_op_config()/
+ * rtl_op_bss_info_changed() make internally, just without the
+ * surrounding mac80211-ops-layer logic that carries the stall risk.
+ * This is a deliberate, narrow exception to this file's general rule
+ * of not reaching into rtlpriv->cfg->ops directly (see
+ * rtlwifi_sw_scan_switch_channel()'s comment for the general rule) —
+ * here it's the entire point, not a shortcut.
+ *
+ * Known simplification, flagged not hidden: real core.c's channel-
+ * switch branch (core.c:625-753) also derives 20/40/80MHz bandwidth
+ * state (mac->bw_40/bw_80, cur_40_prime_sc, etc.) from
+ * hw->conf.chandef before calling switch_channel(). Neither function
+ * below replicates that — they call switch_channel() using whatever
+ * rtlphy->current_channel/bandwidth state is already set (this port
+ * has no 40/80MHz negotiation path elsewhere either, so this matches
+ * the existing scope, not a new gap).
+ */
+void rtlwifi_connect_hw_setup(struct ieee80211_hw *hw,
+                               struct ieee80211_vif *vif,
+                               const u8 *bssid);
+void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
+                                   struct ieee80211_vif *vif,
+                                   const u8 *bssid);
+
 #endif /* RTLWIFI_COMPAT_H */

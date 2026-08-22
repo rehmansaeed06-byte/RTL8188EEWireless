@@ -6390,4 +6390,141 @@ as Sections 82-85.
 
 ------------------------------------------------------------------------
 
+# 86. Bucket A fixed and CONFIRMED against a real compile: 7 -> 0.
+     `RTW88IEEE80211.cpp` now compiles clean. `rtlwifi_compat.c`
+     isolation-compiled for the first time, also clean.
+
+## 86.1 Research: real rtlwifi source grepped for all 5 names before
+     writing anything, same discipline as Sections 82-85
+
+Live `core.c` reads (not guessed), evidence per name:
+
+- **`rtw88_register_vif`/`_unregister_vif`** — CONFIRMED no-ops needed.
+  `rtl_op_add_interface()`/`rtl_op_remove_interface()` (core.c:199-341)
+  already do 100% of rtlwifi's own vif-registration bookkeeping
+  (`mac->vif` assignment, `set_network_type`, `HW_VAR_ETHER_ADDR`,
+  retry limits) unconditionally inside their own bodies. There is no
+  separate rtlwifi-side registration step left over for a bridge
+  function to call into.
+- **`rtw88_hw_scan_supported`** — CONFIRMED always false. `rtl_ops`
+  (core.c:1888-1889 and surrounding table) has no `hw_scan`/
+  `cancel_hw_scan` members anywhere; rtlwifi is sw_scan-only
+  (`rtl_op_sw_scan_start`/`_complete`, core.c:1410/1444) for every chip
+  in this driver family. Confirms handover item 28's earlier finding,
+  now with a direct second read.
+- **`rtw88_connect_hw_setup`/`_restore_connected_hw`** — both exist,
+  per `RTW88IEEE80211.cpp`'s own pre-existing comments, specifically to
+  set channel + BSSID *without* going through `hw->ops->config()`/
+  `bss_info_changed()`, to avoid an LPS-wake MMIO-poll stall. CONFIRMED
+  the real hazard this describes: `rtl_op_bss_info_changed()`'s
+  `BSS_CHANGED_BSSID` branch (core.c:~1246, `set_hw_reg(hw,
+  HW_VAR_BSSID, ...)`) lives in the same function that calls
+  `rtl_lps_leave(hw, true)` (core.c:1143) when the link drops — the
+  same stall-risk class already documented elsewhere in this project.
+  `grep -n "set_bssid"` across `core.c`/`base.c`/`*.h` returned **zero
+  hits** — rtlwifi has no dedicated BSSID-set function; BSSID is set
+  purely through the generic `set_hw_reg(hw, HW_VAR_BSSID, u8*)`
+  register-write mechanism (confirmed real value `HW_VAR_BSSID = 0x3`,
+  `wifi.h:420`; real handler `rtl8188ee/hw.c:383`). Channel switch is
+  `rtlpriv->cfg->ops->switch_channel(hw)` (core.c:754, inside
+  `rtl_op_config`'s `IEEE80211_CONF_CHANGE_CHANNEL` branch,
+  core.c:625-756, full body read). Both are members of `rtl_hal_ops`
+  (`wifi.h:2160`, dumped in full) — the same per-chip internal vtable
+  already treated as a boundary this compat layer doesn't normally
+  reach into directly (per the `rtlwifi_sw_scan_switch_channel()`
+  comment, Section 59) — here that's the deliberate point, not a
+  shortcut around it.
+
+## 86.2 The fix
+
+`rtlwifi_compat.h`/`.c`: four new functions, `rtlwifi_register_vif()`/
+`rtlwifi_unregister_vif()` (confirmed no-op stubs, kept named rather
+than deleted so call sites don't need restructuring),
+`rtlwifi_hw_scan_supported()` (confirmed constant `false`), and
+`rtlwifi_connect_hw_setup()`/`rtlwifi_restore_connected_hw()` (share
+one static implementation — both call sites do the identical
+channel+BSSID job at two different lifecycle points — that takes
+`rtlpriv->locks.conf_mutex` (the same mutex `rtl_op_config`/
+`rtl_op_add_interface`/`_remove_interface` all take around their own
+hardware-touching bodies, core.c:579/216/305), calls
+`rtlpriv->cfg->ops->switch_channel(hw)` and `->set_hw_reg(hw,
+HW_VAR_BSSID, bssid)` directly, and mirrors the real
+`BSS_CHANGED_BSSID` branch's own `memcpy(mac->bssid, ...)` so any other
+real rtlwifi code reading `mac->bssid` directly stays consistent.
+
+Known, flagged-not-hidden simplification: real core.c's channel-switch
+branch also derives 20/40/80MHz bandwidth state
+(`mac->bw_40`/`bw_80`/`cur_40_prime_sc` etc.) from `hw->conf.chandef`
+before calling `switch_channel()`. Neither new function replicates
+that — this port has no 40/80MHz negotiation path anywhere else
+either, so this matches existing scope rather than opening a new gap.
+
+`RTW88IEEE80211.cpp`: all 5 names renamed at their 9 real reference
+points (7 call sites + 2 in-comment mentions) from `rtw88_*` to
+`rtlwifi_*` via `sed`, diff-verified 1:1, no logic changes. The two
+comment blocks describing the connect/restore rationale (lines
+2006-2016) were also corrected to describe the real rtlwifi mechanism
+(`rtlpriv->cfg->ops->switch_channel`/`set_hw_reg`) instead of the
+stale rtw88-internal names (`rtw_set_channel`, `rtw_vif_port_config`,
+`rtwdev->mutex`) the original port comments referenced — same
+stall-avoidance rationale, now naming what's actually called.
+
+## 86.3 The rerun
+
+Same real per-file command pattern as Sections 84-85 (`make -n kext`
+dry-run, `-c .../-o ...` swapped for `-fsyntax-only -ferror-limit=0`).
+Two files checked:
+
+- `RTW88IEEE80211.cpp`: **13 warnings (identical pre-existing set), 0
+  errors** — down from Section 85's 7. First-ever clean isolated
+  compile of this file.
+- `rtlwifi_compat.c`: isolation-compiled for the first time in this
+  project's history (previous sessions only ever checked it as part of
+  the full link). Real command required two `-I` paths this session
+  hadn't previously needed for a standalone check
+  (`$LINUX_SRC`/`$LINUX_SRC/rtl8188ee`, for `wifi.h` itself) — obtained
+  via `make -n kext | grep -B1 -A1 rtlwifi_compat` after direct
+  single-target dry-runs (`make -n build/compat/rtlwifi_compat.o`, with
+  and without `-B`/`touch`-forcing) all returned "Nothing to be done",
+  a real methodology dead-end worth recording: this project's
+  pattern-rule target matching didn't respond to any of the standard
+  single-target forcing tricks, only a full-target dry-run after
+  removing the stale `.o` did. Result: **25 warnings, 0 errors** — all
+  pre-existing categories (block-comment nesting, sign-conversion,
+  `-Wvisibility` on forward-declared structs in `mac80211.h`,
+  `usb.h`/`wifi.h` narrowing), none introduced by the four new
+  functions.
+
+## 86.4 Status
+
+| Bucket | Count | Status |
+|---|---|---|
+| A (unported bridge fns) | 0 | **CLOSED this session** |
+| B (pci_dev incomplete type) | 0 | CLOSED (Section 85) |
+| C (WLAN_EID_*/ACTION_*/REASON_*) | 0 | CLOSED (Section 82/83) |
+| D (sw_scan_start arg count) | 0 | CLOSED (Section 84) |
+| E (rtw88_get_* undeclared) | 0 | CLOSED (Section 84) |
+
+**`RTW88IEEE80211.cpp` has zero known compiler-confirmed errors left.**
+Every bucket tracked since Section 80/81 is closed. What's left, real
+and not superseded:
+
+- **`RTW88PCIDevice.cpp`'s own separate 17-name unported-symbol gap**
+  (Section 77) — untouched, never brought to a clean isolated compile.
+  Section 85.1's side finding (possible incidental `pci_dev`-
+  completeness fix via `RTW88IEEE80211.hpp`'s include, which
+  `RTW88PCIDevice.cpp` also pulls in) still not checked — worth
+  confirming before assuming that piece still needs a separate fix.
+- **A fresh full `make clean && make kext`** — not run since before
+  this session. The dry-run `LD` line captured this session lists both
+  `RTW88IEEE80211.o` and `rtlwifi_compat.o` in the expected position,
+  which is a good sign, but that's a dry-run, not a real link — worth
+  confirming for real once `RTW88PCIDevice.cpp` is also addressed, so
+  it's one link attempt against a fully-clean tree rather than two.
+- **Runtime/hardware behavior is still completely untested** —
+  unchanged from every prior session. Nothing this session touched
+  changes that.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

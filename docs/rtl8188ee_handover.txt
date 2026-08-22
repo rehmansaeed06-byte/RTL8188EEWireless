@@ -1,6 +1,88 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## THIRTEENTH UPDATE (read this first) — Bucket B fixed and confirmed (plus one self-inflicted regression caught and fixed); 12 -> 7 errors, only Bucket A remains
+## FOURTEENTH UPDATE (read this first) — Bucket A closed; RTW88IEEE80211.cpp
+## now compiles with ZERO errors; rtlwifi_compat.c isolation-compiled clean
+## for the first time. Every bucket tracked since Section 80/81 is closed.
+
+The THIRTEENTH UPDATE below closed Bucket B (12 -> 7 errors), leaving
+Bucket A — the 5 unported `rtw88_*` bridge-function names — as the
+only remaining bucket in `RTW88IEEE80211.cpp`. This update closes it.
+See `docs/findings.md` Section 86 for full detail.
+
+**The fix, one name at a time, each grepped against real rtlwifi
+`core.c` before writing anything (same discipline as Sections 82-85):**
+
+- `rtw88_register_vif`/`_unregister_vif` -> `rtlwifi_register_vif`/
+  `_unregister_vif`, confirmed no-ops. `rtl_op_add_interface()`/
+  `rtl_op_remove_interface()` already do all of rtlwifi's own vif
+  bookkeeping unconditionally inside their own bodies — no separate
+  step was ever left to bridge to.
+- `rtw88_hw_scan_supported` -> `rtlwifi_hw_scan_supported`, confirmed
+  always `false`. rtlwifi's `rtl_ops` table has no `hw_scan`/
+  `cancel_hw_scan` members anywhere — sw_scan-only for the whole
+  driver family, confirming handover item 28's earlier finding with a
+  direct second read.
+- `rtw88_connect_hw_setup`/`rtw88_restore_connected_hw` ->
+  `rtlwifi_connect_hw_setup`/`rtlwifi_restore_connected_hw`, one shared
+  implementation backing both names. Confirmed the real stall hazard
+  the original port comments described (bypass `ops->config`/
+  `bss_info_changed` to avoid an LPS-wake MMIO-poll stall) is real on
+  the rtlwifi side too: `rtl_op_bss_info_changed()`'s `BSS_CHANGED_
+  BSSID` branch sits in the same function that calls `rtl_lps_leave()`
+  on disconnect. The new functions instead take `rtlpriv->locks.
+  conf_mutex` and call `rtlpriv->cfg->ops->switch_channel(hw)` +
+  `->set_hw_reg(hw, HW_VAR_BSSID, bssid)` directly — the real
+  mechanism, confirmed via live grep (real BSSID set is the generic
+  `HW_VAR_BSSID` register-write path; `grep -n "set_bssid"` returned
+  zero hits, there is no dedicated function).
+
+**Real compile confirmation** (`docs/findings.md` Section 86.3): same
+per-file syntax-only command pattern as every prior confirmation.
+`RTW88IEEE80211.cpp`: **13 warnings (unchanged), 0 errors** — down
+from 7. First-ever clean isolated compile of this file.
+`rtlwifi_compat.c` was also isolation-compiled for the first time ever
+this session (previously only checked as part of a full link) — **25
+warnings (all pre-existing categories), 0 errors**. Getting that
+file's real standalone compile command took a genuine methodology
+detour worth remembering: direct single-target dry-runs (`make -n
+build/compat/rtlwifi_compat.o`, with `-B`, with a `touch` to force
+staleness) all returned "Nothing to be done" — only a full `make -n
+kext` dry-run after deleting the stale `.o` surfaced the real recipe.
+
+### What is still open (real, not superseded)
+
+- **`RTW88PCIDevice.cpp`'s own, separate, larger unported-symbol gap**
+  (Section 77, 17 distinct names) — untouched, still not brought to a
+  clean isolated compile. This is now the only file in the kext with a
+  known compiler-confirmed error backlog.
+- **A fresh full `make clean && make kext`** — not run since before
+  this session's changes. This session's dry-run `LD` line lists both
+  new/changed objects (`RTW88IEEE80211.o`, `rtlwifi_compat.o`) in the
+  expected position, a good sign, but that's still a dry-run, not a
+  real link — best done once `RTW88PCIDevice.cpp` is also clean, one
+  link attempt against a fully-clean tree rather than two.
+- **Runtime/hardware behavior is still entirely untested** — unchanged
+  from every prior update. Nothing about this session's fix changes
+  that; `RTW88IEEE80211.cpp` compiling clean is a real, meaningful
+  milestone but says nothing about correctness at runtime.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/`) — still only "worked around, not fixed";
+  not revisited this session.
+
+### Correct next step
+
+Tackle `RTW88PCIDevice.cpp`'s 17-name gap (Section 77) — the only
+remaining file with a known compiler-confirmed error backlog. Section
+85.1 flagged a specific thing worth checking first, before assuming
+all 17 still need separate fixes: whether `RTW88PCIDevice.cpp`'s own
+`struct pci_dev sizeof()` usage (line 328) is now incidentally fixed
+by `RTW88IEEE80211.hpp`'s `pci.h` include, since `RTW88PCIDevice.cpp`
+already pulls that header in too. Same grep-before-write discipline as
+every bucket closed so far — check each of the 17 names against real
+rtlwifi source individually before writing anything, don't infer from
+rtw88 naming alone.
+
+## THIRTEENTH UPDATE (historical; superseded by FOURTEENTH UPDATE above) — Bucket B fixed and confirmed (plus one self-inflicted regression caught and fixed); 12 -> 7 errors, only Bucket A remains
 
 The TWELFTH UPDATE below closed Buckets D and E (20 -> 12 errors).
 This update closes **Bucket B** (`pci_dev`/`pci_device_id` incomplete
@@ -1458,12 +1540,12 @@ further errors on the next attempt; this is a normal fix-and-rebuild
 loop, not a sign the architecture above is wrong.
 
 ## Next immediate step
-Sixth real `make -f Makefile.rtl8188ee` build attempt (run `clean`
-first, same as every round so far — Section 68.2's dependency-tracking
-gap is still unfixed), to confirm Section 69's 4 SMPS/DELBA constants
-resolve cleanly. If a struct-field error reappears for something
-already added, check for an undefined macro wrapping the access FIRST
-(see Section 68.3) before touching the struct again.
+`RTW88PCIDevice.cpp`'s 17-name unported-symbol gap (Section 77) — see
+the FOURTEENTH UPDATE's "Correct next step" above for the specific
+starting point (check the possible incidental `pci_dev`-completeness
+fix first). This is now the only file in the kext with a known
+compiler-confirmed error backlog; `RTW88IEEE80211.cpp` and
+`rtlwifi_compat.c` both compile clean as of this update.
 
 Use the accompanying findings.md as the detailed technical record —
 see Section 45 for the first-correction audit trail, Section 55 for
@@ -1476,8 +1558,17 @@ the first real build attempt and its fixes, Section 66 for the second
 real build attempt and its fixes, Section 67 for the third real build
 attempt and its fixes, Section 68 for the fourth build attempt (a
 comment-bug regression, a build-cache trap, and the real lesson: two
-rounds spent fixing a struct that was never broken), and Section 69
-for the fifth build attempt, which confirmed Section 68's diagnosis
-was correct and added the last 4 missing SMPS/DELBA constants. This
-handover is the concise context a new Claude should read first.
+rounds spent fixing a struct that was never broken), Section 69 for
+the fifth build attempt (last 4 SMPS/DELBA constants), Sections 80-81
+for the first isolated `RTW88IEEE80211.cpp` compile and its full
+36-error categorization into Buckets A-E, Section 82-83 for Bucket C
+(802.11 constants), Section 84 for Buckets D/E (scan-start arg count,
+rtw88_get_* diagnostics), Section 85 for Bucket B (pci_dev incomplete
+type) plus a self-inflicted EOPNOTSUPP regression caught in the same
+session, and Section 86 for Bucket A (the last bucket: vif
+registration, hw_scan capability, and channel/BSSID connect-setup,
+each bridged to real rtlwifi core.c behavior) — closing every tracked
+bucket and giving `RTW88IEEE80211.cpp` its first-ever clean isolated
+compile. This handover is the concise context a new Claude should read
+first.
 

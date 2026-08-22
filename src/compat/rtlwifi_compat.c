@@ -496,6 +496,119 @@ void rtlwifi_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *vif
     hw->ops->sw_scan_complete(hw, vif);
 }
 
+/* ------------------------------------------------------------------ */
+/* Bucket A — rtlwifi_register_vif/_unregister_vif/_hw_scan_supported/ */
+/* _connect_hw_setup/_restore_connected_hw()                           */
+/* (findings.md Section 81.2, handover THIRTEENTH UPDATE)              */
+/* ------------------------------------------------------------------ */
+
+/*
+ * CONFIRMED no-ops — see rtlwifi_compat.h's block comment for the full
+ * rationale. rtl_op_add_interface()/rtl_op_remove_interface() (real
+ * core.c, live-read this session) already do everything rtlwifi itself
+ * needs for vif registration as a direct part of their own bodies;
+ * there is no separate step left over to bridge to. Not deleted outright
+ * so the call sites in RTW88IEEE80211.cpp (right after
+ * ops->add_interface / right before ops->remove_interface) don't need
+ * restructuring, and so a future reader sees this was checked, not
+ * missed.
+ */
+void rtlwifi_register_vif(struct ieee80211_vif *vif)
+{
+    (void)vif;
+}
+
+void rtlwifi_unregister_vif(void)
+{
+}
+
+/*
+ * CONFIRMED always false — rtlwifi's rtl_ops vtable has no hw_scan/
+ * cancel_hw_scan members (live core.c read, this session and handover
+ * item 28 previously); rtlwifi is sw_scan-only for every chip in this
+ * driver family, not just RTL8188EE. A static architectural fact, not
+ * a per-hw runtime property, but takes hw for call-site-signature
+ * symmetry with the rest of this bridge layer.
+ */
+bool rtlwifi_hw_scan_supported(struct ieee80211_hw *hw)
+{
+    (void)hw;
+    return false;
+}
+
+/*
+ * Shared implementation for rtlwifi_connect_hw_setup() and
+ * rtlwifi_restore_connected_hw() — both call sites in
+ * RTW88IEEE80211.cpp do the identical job (set channel + BSSID,
+ * bypassing the mac80211-ops path) at two different points in the
+ * connection lifecycle (initial auth vs. post-scan restore), so one
+ * real implementation backs both public names rather than duplicating
+ * the mutex/mmio-call sequence twice.
+ *
+ * CONFIRMED sequence, live core.c read:
+ *   - rtlpriv->locks.conf_mutex: the same mutex rtl_op_config() and
+ *     rtl_op_add_interface()/_remove_interface() all take around their
+ *     hardware-touching bodies (core.c:579, 216, 305) — held here for
+ *     the same reason, not a new invented lock.
+ *   - rtlpriv->cfg->ops->switch_channel(hw): the real per-chip channel
+ *     switch (core.c:754, inside rtl_op_config's
+ *     IEEE80211_CONF_CHANGE_CHANNEL branch) — called directly, skipping
+ *     the rest of rtl_op_config's body (LPS/IDLE handling, bw40/80
+ *     derivation — see header comment for the bandwidth-derivation
+ *     simplification this drops).
+ *   - rtlpriv->cfg->ops->set_hw_reg(hw, HW_VAR_BSSID, bssid): the real
+ *     BSSID register write (core.c:1246, inside rtl_op_bss_info_changed's
+ *     BSS_CHANGED_BSSID branch) — called directly, skipping the rest of
+ *     that branch (rtl_lps_leave() on disconnect, sta lookup/RCU
+ *     section) which is exactly the stall-risk path these functions
+ *     exist to avoid.
+ *   - mac->bssid updated via rtl_mac(rtlpriv), mirroring the real
+ *     branch's own `memcpy(mac->bssid, bss_conf->bssid, ETH_ALEN);`
+ *     (core.c, same BSS_CHANGED_BSSID branch) — kept so any other real
+ *     rtlwifi code that reads mac->bssid directly (not just the
+ *     hardware register) stays consistent.
+ */
+static void _rtlwifi_set_channel_and_bssid(struct ieee80211_hw *hw,
+                                            struct ieee80211_vif *vif,
+                                            const u8 *bssid)
+{
+    (void)vif;
+
+    if (!hw || !hw->priv || !bssid)
+        return;
+
+    struct rtl_priv *rtlpriv = (struct rtl_priv *)hw->priv;
+
+    if (!rtlpriv->cfg || !rtlpriv->cfg->ops)
+        return;
+
+    mutex_lock(&rtlpriv->locks.conf_mutex);
+
+    if (hw->conf.chandef.chan && rtlpriv->cfg->ops->switch_channel)
+        rtlpriv->cfg->ops->switch_channel(hw);
+
+    if (rtlpriv->cfg->ops->set_hw_reg)
+        rtlpriv->cfg->ops->set_hw_reg(hw, HW_VAR_BSSID, (u8 *)bssid);
+
+    memcpy(rtl_mac(rtlpriv)->bssid, bssid, ETH_ALEN);
+
+    mutex_unlock(&rtlpriv->locks.conf_mutex);
+}
+
+void rtlwifi_connect_hw_setup(struct ieee80211_hw *hw,
+                               struct ieee80211_vif *vif,
+                               const u8 *bssid)
+{
+    _rtlwifi_set_channel_and_bssid(hw, vif, bssid);
+}
+
+void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
+                                   struct ieee80211_vif *vif,
+                                   const u8 *bssid)
+{
+    _rtlwifi_set_channel_and_bssid(hw, vif, bssid);
+}
+
 /*
  * Queue-control no-ops — CONFIRMED, src/compat/rtw88_compat.c:546-548:
  *   void ieee80211_stop_queues(struct ieee80211_hw *hw)  {}

@@ -781,7 +781,7 @@ IOReturn RTW88IEEE80211::start()
             _vif->bss_conf.bssid = _vif->bss_conf.bssid_buf;
             if (_hw->ops && _hw->ops->add_interface)
                 _hw->ops->add_interface(_hw, _vif);
-            rtw88_register_vif(_vif);
+            rtlwifi_register_vif(_vif);
         }
         RTW88_STAGE("add_interface done");
 
@@ -822,7 +822,7 @@ void RTW88IEEE80211::stop()
             _hw->ops->stop(_hw, false);
             _powered = false;
         }
-        rtw88_unregister_vif();
+        rtlwifi_unregister_vif();
         if (_hw->ops->remove_interface) {
             _hw->ops->remove_interface(_hw, _vif);
         }
@@ -1659,7 +1659,7 @@ void RTW88IEEE80211::restoreConnectedChannel()
               _targetBSS.channel);
     }
 
-    rtw88_restore_connected_hw(_hw, _vif, _targetBSS.bssid);
+    rtlwifi_restore_connected_hw(_hw, _vif, _targetBSS.bssid);
 
     struct ieee80211_bss_conf *bss = &_vif->bss_conf;
     bss->bssid = bss->bssid_buf;
@@ -1788,7 +1788,7 @@ IOReturn RTW88IEEE80211::cmdScan()
         return kIOReturnNotReady;
     }
 
-    if (!_hw->ops->hw_scan || !rtw88_hw_scan_supported(_hw)) {
+    if (!_hw->ops->hw_scan || !rtlwifi_hw_scan_supported(_hw)) {
         if (!_manualScanTC) {
             _state = returnState;
             _scanReturnState = RTW88_STATE_IDLE;
@@ -2005,15 +2005,18 @@ void RTW88IEEE80211::doAuthenticate()
 
     /* ----- 1. Channel switch + BSSID (single mutex section) ----- *
      *
-     * We call rtw88_connect_hw_setup() instead of ops->config +
-     * ops->bss_info_changed because both of those call rtw_leave_lps_deep()
-     * → __rtw_fw_leave_lps_check_reg() → polling MMIO reads on REG_TCR.
-     * If the chip is slow to respond, those reads stall the calling CPU core
-     * indefinitely (PCIe timeout → system freeze).
+     * We call rtlwifi_connect_hw_setup() instead of ops->config +
+     * ops->bss_info_changed because rtl_op_bss_info_changed()'s
+     * BSS_CHANGED_BSSID branch calls rtl_lps_leave() on disconnect,
+     * a polling-read wake sequence. If the chip is slow to respond,
+     * those reads stall the calling CPU core indefinitely (PCIe
+     * timeout → system freeze). Confirmed via live rtlwifi core.c
+     * read, findings.md Section 81.2/85.4 follow-up.
      *
-     * rtw88_connect_hw_setup() holds rtwdev->mutex, calls rtw_set_channel()
-     * (MMIO writes) and rtw_vif_port_config(PORT_SET_BSSID) — no reads that
-     * can stall, and no LPS wake sequence. */
+     * rtlwifi_connect_hw_setup() holds rtlpriv->locks.conf_mutex, calls
+     * rtlpriv->cfg->ops->switch_channel() (MMIO writes) and
+     * rtlpriv->cfg->ops->set_hw_reg(HW_VAR_BSSID) directly — no reads
+     * that can stall, and no LPS wake sequence. */
     struct ieee80211_channel *chan = nullptr;
     for (int b = 0; b < NL80211_NUM_BANDS && !chan; b++) {
         struct ieee80211_supported_band *band =
@@ -2036,14 +2039,14 @@ void RTW88IEEE80211::doAuthenticate()
         setConnectedChandef(chan);
         IOLog("rtw88: doAuthenticate: calling connect_hw_setup ch=%u\n",
               _targetBSS.channel);
-        rtw88_connect_hw_setup(_hw, _vif, _targetBSS.bssid);
+        rtlwifi_connect_hw_setup(_hw, _vif, _targetBSS.bssid);
         IOLog("rtw88: doAuthenticate: connect_hw_setup done\n");
     } else {
         IOLog("rtw88: doAuthenticate: ch=%u not in band table — "
               "skipping channel switch, sending auth anyway\n",
               _targetBSS.channel);
         /* Still set BSSID even if channel is unknown */
-        rtw88_connect_hw_setup(_hw, _vif, _targetBSS.bssid);
+        rtlwifi_connect_hw_setup(_hw, _vif, _targetBSS.bssid);
     }
 
     /* Also update the vif bss_conf bssid so any driver-internal code
@@ -3096,7 +3099,7 @@ IOReturn RTW88IEEE80211::cmdGetState(struct RTW88StateResult *result)
     rtlwifi_get_stats(&result->tx_byte_count, &result->rx_byte_count);
     result->scan_offload_supported =
         (_hw && _hw->ops && _hw->ops->hw_scan &&
-         rtw88_hw_scan_supported(_hw)) ? 1 : 0;
+         rtlwifi_hw_scan_supported(_hw)) ? 1 : 0;
     result->powered = _powered ? 1 : 0;
 
     return kIOReturnSuccess;

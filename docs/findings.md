@@ -5712,4 +5712,179 @@ the build machine rather than source inspection alone.
 
 ------------------------------------------------------------------------
 
+# 78. Chip-ID lookup table deleted from `RTW88IEEE80211.cpp`, replaced
+     with direct single-chip `rtl88ee_hal_cfg` reference
+
+## 78.1 What was removed
+
+Deleted the rtw88-multi-chip scaffold this file had carried over
+unmodified from Feixiao:
+- `struct rtw88_pci_id_entry` (device → `rtw_chip_info*` pair)
+- `static const struct rtw88_pci_id_entry rtw88_pci_chip_table[]`,
+  8 entries (RTL8822BE/CE, RTL8821AE/CE, RTL8812AE, RTL8814AE)
+- The 6 `extern const struct rtw_chip_info rtw88xx_hw_spec` forward
+  declarations feeding that table
+- `start()`'s linear-scan lookup loop over the table
+
+This is exactly the block Section 76.3 flagged for deletion (citing
+55.7/59's conclusion that RTL8188EE, as a single-chip target, needs
+no PCI-ID lookup at all) but had not actually been removed until now.
+
+## 78.2 What replaced it
+
+A direct reference to `rtl88ee_hal_cfg` — rtlwifi's single
+`struct rtl_hal_cfg` for this chip, already fully confirmed by prior
+source reads and not newly guessed at:
+- Section 40.11: read directly from `rtl8188ee/sw.c`, `bar_id = 2`,
+  `.name = "rtl88e_pci"`, `.write_readback = true`.
+- Section 40.11.3: `rtl88ee_pci_ids[]` ties PCI ID `0x8179` to
+  `rtl88ee_hal_cfg` via `RTL_PCI_DEVICE()`.
+
+`start()` now checks `_pcidev->device == 0x8179` directly (named
+`RTL8188EE_PCI_DEVICE_ID`) instead of scanning a table, and points
+`chip`/`fake_id.driver_data` at `&rtl88ee_hal_cfg`. The `fake_id`
+construction and the `rtw_pci_probe()` call immediately after are
+otherwise untouched — `driver_data` is only ever consumed as an
+opaque `unsigned long`-cast pointer, so retyping what it points to
+(`rtw_chip_info*` -> `rtl_hal_cfg*`) needed no other change at this
+call site.
+
+## 78.3 What this does NOT fix — scope boundary
+
+`rtl88ee_hal_cfg` itself is declared `extern` here, matching the
+existing pattern this file already used for the six now-deleted
+`rtw_chip_info` externs — it is NOT defined in this project's
+vendored tree. Confirmed: no `sw.c` or any other `rtl8188ee/*.c`
+exists under `src/`; `Makefile.rtl8188ee`'s `LINUX_SRC` points at
+`../linux-kernel/drivers/net/wireless/realtek/rtlwifi`, a sibling
+directory outside this archive, by the same intentional-non-vendoring
+pattern already documented for the rest of the real upstream Linux
+source. This mirrors exactly how the deleted `rtw8822b_hw_spec` etc.
+externs were never defined in this tree either — nothing new is
+missing that wasn't already missing before this change, and nothing
+here was verified against a real compile (no Apple toolchain
+available in this session's sandbox; see Section 77's same caveat).
+
+`rtw_pci_probe()`, called immediately after this block, remains an
+unbridged real-rtw88-driver-core symbol — the same gap Section 77.2
+already flagged for `RTW88PCIDevice.cpp`'s `rtw_core_init`/
+`rtw_pci_probe`/etc. This section does not touch that; it only
+removes the dead multi-chip table and points the surviving
+single-chip path at the correct, already-confirmed struct.
+
+------------------------------------------------------------------------
+
+# 79. Section 76.7's `noinline`/`kern/assert.h` bug — CONFIRMED and
+     FIXED against a real `-fapple-kext` compile
+
+## 79.1 The prior back-and-forth this session, for the record
+
+This session first re-read `kern/assert.h:80` by eye and concluded
+Section 76.7's diagnosis didn't hold, on the reasoning that the bare
+identifier `noinline` never appears standalone in
+`__attribute__((noinline))` — only inside another attribute's own
+parens — so a `#define noinline __attribute__((noinline))` macro
+couldn't reach it. That reasoning was wrong, and a real compiler run
+disproved it directly (79.2 below): the preprocessor matches the
+bare token `noinline` anywhere it occurs, parens or no parens, and
+macro-expands it in place. Section 76.7's original diagnosis was
+correct all along. Recorded here so the mistaken intermediate
+conclusion isn't mistaken for the final one by a future reader
+skimming this file.
+
+## 79.2 Confirmed error, real build machine, real `-fapple-kext` clang++
+
+```
+clang++ -fsyntax-only -x c++ -std=c++17 \
+  -DKERNEL=1 -D__APPLE__ -D__MACH__ \
+  -mkernel -fapple-kext \
+  -I src/compat -I MacKernelSDK/Headers \
+  src/compat/rtlwifi_compat.h
+```
+
+Produced exactly the three errors 76.7 described:
+
+```
+MacKernelSDK/Headers/kern/assert.h:80:46: error: use of undeclared
+  identifier 'noinline'; did you mean 'inline'?
+        const char      *expression) __attribute__((noinline));
+                                                    ^
+src/compat/net/../linux/types.h:99:41: note: expanded from macro 'noinline'
+#define noinline         __attribute__((noinline))
+                                        ^
+```
+plus "type name does not allow function specifier to be specified"
+and "expected expression", both likewise pointing at the same
+macro-expansion site. Full include chain confirmed exactly as 76.7
+described: `rtlwifi_compat.h` -> `net/mac80211.h` ->
+`linux/skbuff.h` -> `linux/slab.h` -> `iokit_shim.h` (KERNEL branch)
+-> `IOKit/IOLocks.h` -> `IOKit/system.h` -> `IOKit/assert.h` ->
+`kern/assert.h`.
+
+**Mechanism, precisely stated:** `linux/types.h:99` defines
+`#define noinline __attribute__((noinline))`. `kern/assert.h:80`
+separately writes `__attribute__((noinline))` as a real GCC/Clang
+attribute on `Assert()`. The preprocessor does not distinguish "the
+attribute keyword `noinline`" from "the macro-object named
+`noinline`" — it substitutes the macro wherever the bare token
+`noinline` appears in the token stream, including nested inside
+another attribute's argument list. So Apple's
+`__attribute__((noinline))` expands to
+`__attribute__((__attribute__((noinline))))` before the compiler
+ever parses it as an attribute — malformed syntax, hence the three
+cascading errors.
+
+## 79.3 Fix applied and confirmed
+
+`src/compat/iokit_shim.h`'s `#else /* KERNEL defined */` branch (the
+one that includes `IOKit/IOLocks.h`, `kern/thread_call.h`,
+`mach/thread_act.h` — the real-XNU-header path, only taken during
+the actual kext C++ build) now wraps that include block:
+
+```c
+#ifdef noinline
+#define _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#undef noinline
+#endif
+
+#include <IOKit/IOLocks.h>
+#include <kern/thread_call.h>
+#include <mach/thread_act.h>
+
+#ifdef _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#define noinline __attribute__((noinline))
+#undef _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#endif
+```
+
+Placed here rather than in each individual compat header that
+transitively includes `iokit_shim.h` (`slab.h`, `mutex.h`,
+`spinlock.h`, `timer.h`, `workqueue.h`, `completion.h`, `delay.h`,
+`jiffies.h`, `kernel.h` all do) because this file's `KERNEL` branch
+is the single common choke point every one of those inclusion paths
+funnels through — one guard here covers all of them.
+
+**Reverified with the identical command, same build machine, same
+`-fapple-kext`/`-mkernel` flags, after only this file changed:**
+result is **0 errors**, 10 warnings — the same pre-existing
+sign-conversion/implicit-conversion warning set from
+`linux/skbuff.h`, `net/mac80211.h`, `linux/bitops.h`,
+`net/cfg80211.h` that was already present and non-fatal before this
+fix; none of the three `noinline` errors remain. This closes Section
+76.7's "not yet fixed" status — confirmed by an actual compiler run,
+not source inspection.
+
+## 79.4 Scope note
+
+This fixes the standalone syntax-check of `rtlwifi_compat.h` only
+(the same scope 76.7 itself was diagnosed under). It does not by
+itself confirm the four `src/kext/*.cpp` wrapper files compile —
+`RTW88PCIDevice.cpp` and `RTW88IEEE80211.cpp` still have their own
+separate, already-documented gaps (Sections 77, 76.3/76.8) unrelated
+to this bug. This was, however, the prerequisite Section 76.8 named
+as blocking *any* of the four files from compiling cleanly — that
+blocker is now cleared.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

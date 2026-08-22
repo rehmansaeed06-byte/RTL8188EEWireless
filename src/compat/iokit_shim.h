@@ -74,9 +74,42 @@ extern void          thread_terminate(thread_t thread);
 
 #else /* KERNEL defined — use real XNU types from MacKernelSDK */
 
+/*
+ * linux/types.h (included by every compat header before this one, per
+ * their common `#include "types.h"` then `#include "../iokit_shim.h"`
+ * pattern) defines `noinline` as a function-like-looking object macro:
+ * `#define noinline __attribute__((noinline))`. The C preprocessor
+ * matches that bare token anywhere it appears — including nested inside
+ * another attribute's own argument list — so Apple's kern/assert.h
+ * (pulled in transitively below via IOKit/IOLocks.h -> IOKit/system.h ->
+ * IOKit/assert.h -> kern/assert.h), which declares
+ * `Assert(...) __attribute__((noinline));`, gets that inner `noinline`
+ * macro-substituted too: `__attribute__((noinline))` becomes
+ * `__attribute__((__attribute__((noinline))))`, which is not valid
+ * syntax. Confirmed against a real clang++ -fapple-kext run (build
+ * machine, findings.md Section 76.7/79): "use of undeclared identifier
+ * 'noinline'", "type name does not allow function specifier to be
+ * specified", "expected expression", all three pointing at this exact
+ * expansion. Undef the macro across this real-XNU-header include block
+ * and restore it immediately after, so Linux-compat code elsewhere
+ * (which legitimately wants the macro) is unaffected. This guard lives
+ * here, not in each individual compat header that includes this file,
+ * because iokit_shim.h's KERNEL branch is the single common point every
+ * one of those inclusion paths funnels through.
+ */
+#ifdef noinline
+#define _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#undef noinline
+#endif
+
 #include <IOKit/IOLocks.h>
 #include <kern/thread_call.h>
 #include <mach/thread_act.h>
+
+#ifdef _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#define noinline __attribute__((noinline))
+#undef _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#endif
 
 #ifndef THREAD_INTERRUPTIBLE
 #define THREAD_INTERRUPTIBLE 0

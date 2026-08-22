@@ -32,13 +32,16 @@ void rtw_tx(struct rtw_dev *rtwdev, struct ieee80211_tx_control *control,
 int  rtw_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 void rtw_pci_remove(struct pci_dev *pdev);
 
-/* chip hw_spec structs — driver_data for rtw_pci_probe */
-extern const struct rtw_chip_info rtw8822b_hw_spec;
-extern const struct rtw_chip_info rtw8822c_hw_spec;
-extern const struct rtw_chip_info rtw8821c_hw_spec;
-extern const struct rtw_chip_info rtw8821a_hw_spec;
-extern const struct rtw_chip_info rtw8812a_hw_spec;
-extern const struct rtw_chip_info rtw8814a_hw_spec;
+/* RTL8188EE is a single-chip target (PCI ID 0x8179) — no chip-ID lookup
+ * table is needed. rtl88ee_hal_cfg is rtlwifi's single struct rtl_hal_cfg
+ * for this chip, confirmed via direct source read of rtl8188ee/sw.c
+ * (findings.md Section 40.11: bar_id = 2, name = "rtl88e_pci",
+ * write_readback = true; Section 40.11.3: tied to PCI ID 0x8179 via
+ * RTL_PCI_DEVICE() in rtl88ee_pci_ids[]). This replaces the multi-chip
+ * rtw88_pci_chip_table[] lookup this file previously carried over
+ * unmodified from Feixiao — flagged as dead weight for a single-chip
+ * target since Section 55.7/59, deleted per Section 78. */
+extern const struct rtl_hal_cfg rtl88ee_hal_cfg;
 
 } /* extern "C" */
 
@@ -473,23 +476,10 @@ static bool extract_gtk_from_kde(const uint8_t *key_data, uint16_t key_data_len,
 #undef r3
 #undef r4
 
-/* PCI device-ID → chip_info lookup (PCIe chips only) */
-struct rtw88_pci_id_entry {
-    uint16_t device;
-    const struct rtw_chip_info *chip;
-};
-
-static const struct rtw88_pci_id_entry rtw88_pci_chip_table[] = {
-    { 0xB822, &rtw8822b_hw_spec },  /* RTL8822BE */
-    { 0xC822, &rtw8822c_hw_spec },  /* RTL8822CE */
-    { 0xC82F, &rtw8822c_hw_spec },  /* RTL8822CE variant */
-    { 0xC821, &rtw8821c_hw_spec },  /* RTL8821CE */
-    { 0xB821, &rtw8821c_hw_spec },  /* RTL8821CE variant */
-    { 0x8821, &rtw8821a_hw_spec },  /* RTL8821AE */
-    { 0x8812, &rtw8812a_hw_spec },  /* RTL8812AE */
-    { 0x8813, &rtw8814a_hw_spec },  /* RTL8814AE */
-    { 0, nullptr }
-};
+/* RTL8188EE PCI ID, confirmed findings.md Section 1/40.11.3: 10EC:8179.
+ * No chip-ID lookup table needed for a single-chip target — see the
+ * rtl88ee_hal_cfg extern declaration above (Section 78). */
+#define RTL8188EE_PCI_DEVICE_ID 0x8179
 
 #define super OSObject
 OSDefineMetaClassAndStructors(RTW88IEEE80211, OSObject)
@@ -724,18 +714,14 @@ IOReturn RTW88IEEE80211::start()
 {
     RTW88_STAGE("IEEE80211::start entered");
 
-    /* Look up chip info from PCI device ID */
-    const struct rtw_chip_info *chip = nullptr;
-    for (int i = 0; rtw88_pci_chip_table[i].device != 0; i++) {
-        if (rtw88_pci_chip_table[i].device == _pcidev->device) {
-            chip = rtw88_pci_chip_table[i].chip;
-            break;
-        }
-    }
-    if (!chip) {
-        IOLog("rtw88: unknown PCI device %04x — cannot probe\n", _pcidev->device);
+    /* RTL8188EE is a single-chip target — no lookup table, just confirm
+     * the PCI device ID matches and use rtl88ee_hal_cfg directly. */
+    if (_pcidev->device != RTL8188EE_PCI_DEVICE_ID) {
+        IOLog("rtw88: unexpected PCI device %04x (expected %04x) — cannot probe\n",
+              _pcidev->device, RTL8188EE_PCI_DEVICE_ID);
         return kIOReturnUnsupported;
     }
+    const struct rtl_hal_cfg *chip = &rtl88ee_hal_cfg;
     RTW88_STAGE("chip matched: device=%04x", _pcidev->device);
 
     const struct pci_device_id fake_id = {

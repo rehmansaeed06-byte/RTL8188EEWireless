@@ -1,6 +1,79 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## ELEVENTH UPDATE (read this first) — pci_name()/wiphy_name() fix reverified by a real rebuild, -Wformat confirmed gone
+## TWELFTH UPDATE (read this first) — Buckets D and E fixed and confirmed; 20 -> 12 errors in RTW88IEEE80211.cpp
+
+The ELEVENTH UPDATE below confirmed a full clean build (compile AND
+link) at commit `bacfdd4`/`ceac763`. Separately, `docs/findings.md`
+Sections 80-83 (not yet reflected in this handover until now) found
+and fixed a real, larger-than-estimated error backlog specifically in
+`RTW88IEEE80211.cpp` when compiled in isolation with `-ferror-limit=0`
+(36 errors found, then Bucket C's 16 `WLAN_EID_*`/etc. constants fixed
+and confirmed down to 20). This update closes two more of the five
+buckets Section 81.2 catalogued.
+
+**Bucket D** (`rtlwifi_sw_scan_start()` called with 2 args, needs 3)
+and **Bucket E** (three `rtw88_get_*` diagnostic accessors undeclared,
+called on `_rtwdev` which was wrongly typed `struct rtw_dev*` — the
+rtw88 type, never defined in this tree — instead of the `struct
+rtl_priv*` this rtlwifi-based port actually uses) are both fixed. Two
+new bridge functions, `rtlwifi_get_fw_version()` and
+`rtlwifi_get_stats()`, were added to `rtlwifi_compat.c`/`.h`, built
+from real fields confirmed via live `grep`/`sed` against the actual
+vendored `wifi.h` on the build machine — not guessed. No
+`rtlwifi_get_chip_name()` exists: the real driver struct has no
+chip-name string field anywhere, confirmed by direct grep; the call
+site was dropped rather than fabricate a value.
+
+**Real compile confirmation** (`docs/findings.md` Section 84.3): the
+exact real Makefile command for `RTW88IEEE80211.cpp` (obtained via
+`make -f Makefile.rtl8188ee -n kext | grep RTW88IEEE80211`, `-c`/`-o`
+swapped for `-fsyntax-only -ferror-limit=0`) now produces **13
+warnings (unchanged) and 12 errors**, down from 20. Every Bucket D and
+E error is confirmed gone; the 12 remaining are exactly Bucket A (7
+sites, unported `rtw88_register_vif`/`_unregister_vif`/
+`_restore_connected_hw`/`_hw_scan_supported`/`_connect_hw_setup`) and
+Bucket B (5, `pci_dev`/`pci_device_id` incomplete-type errors at lines
+719-728) — unchanged, not attempted this session.
+
+**Methodology note worth carrying forward:** an early hand-typed test
+of `rtlwifi_compat.c` with `-x c++` produced 7 false errors (`void*`->
+typed-pointer conversions, illegal in forced C++ but legal under the
+real `DRIVER_CFLAGS` plain-C compile). Always obtain the real
+per-file compile command via `make -n` and adapt it, rather than
+hand-reconstructing flags — this was the second time in this
+project's history that approach would have produced a false read (see
+also Section 74/75's `-Wformat` re-verification requirement).
+
+### What is still open (real, not superseded)
+
+- **Bucket A (7 sites/5 names) and Bucket B (5) in
+  `RTW88IEEE80211.cpp`** — 12 real, compiler-confirmed errors
+  remaining. Bucket B likely cheaper (needs real `struct pci_dev`/
+  `struct pci_device_id` definitions/headers, not new logic); Bucket A
+  needs either 5 new `rtlwifi_compat.c` bridge functions or reworking
+  the call sites against real rtlwifi driver-core calls directly.
+- **Runtime/hardware behavior is still entirely untested** — unchanged
+  from every prior update. This remains true independent of the
+  per-file error count above; the ELEVENTH UPDATE's full clean
+  build/link was a snapshot before this session's `RTW88IEEE80211.cpp`
+  work, so a fresh full `make clean && make kext` has NOT been
+  reconfirmed against the current tree state — worth doing before
+  further per-file work, to make sure these fixes compose cleanly with
+  everything else rather than just passing in isolation.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/`) — still only "worked around, not fixed";
+  not revisited this session.
+
+### Correct next step
+
+Either (1) tackle Bucket B (`pci_dev`/`pci_device_id` incomplete
+type, lines 719-728 — likely the cheaper of the two remaining
+buckets), or (2) run a fresh full `make -f Makefile.rtl8188ee clean &&
+make -f Makefile.rtl8188ee kext` to reconfirm the whole project still
+links cleanly with these changes in place, before going further into
+Bucket A's larger port work.
+
+## ELEVENTH UPDATE (historical; superseded by TWELFTH UPDATE above) — pci_name()/wiphy_name() fix reverified by a real rebuild, -Wformat confirmed gone
 
 The TENTH UPDATE below left one explicit open item: confirm by an
 actual `make` that the `pci_name()`/`wiphy_name()` fix (findings.md

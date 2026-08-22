@@ -6197,4 +6197,108 @@ this file -- not an estimate.
 
 ------------------------------------------------------------------------
 
+# 84. Buckets D and E fixed and CONFIRMED against a real compile: 20 -> 12
+
+## 84.1 The fixes
+
+**Bucket D**: `rtlwifi_sw_scan_start(_hw, _vif)` call site
+(`RTW88IEEE80211.cpp:1873`) was missing the third `mac_addr` argument
+`rtlwifi_compat.h:128` declares. Fixed by passing `NULL` — this port
+does not do randomized-MAC probe scanning, and `rtlwifi_sw_scan_start()`
+passes the arg straight through to `hw->ops->sw_scan_start()`
+unchanged (real `rtl_op_sw_scan_start()` only consults it for that
+randomization path).
+
+**Bucket E**: `_rtwdev` (`RTW88IEEE80211.hpp`) was typed `struct
+rtw_dev *` — the rtw88 type, never actually defined anywhere in this
+tree (only forward-declared) — despite this whole port being built on
+rtlwifi, where `hw->priv` is documented (`rtlwifi_compat.c`'s own
+`ieee80211_alloc_hw()` comment block) to resolve to `struct rtl_priv *`.
+Retyped `_rtwdev` to `struct rtl_priv *` (confirmed safe: grepped every
+use in `RTW88IEEE80211.cpp` — only an opaque non-null check, logging,
+and the three Bucket E call sites; the file's four `rtw_core_*`/
+`rtw_tx()` extern decls using `struct rtw_dev*` are pre-existing dead
+code, never called, untouched).
+
+Added two new bridge functions to `rtlwifi_compat.c`/`.h`, same
+cast-and-read pattern as the existing `rtlwifi_is_scanning()`:
+- `rtlwifi_get_fw_version(u16 *fw_version, u8 *fw_subversion)` — reads
+  `rtl_hal(rtlpriv)->fw_version`/`->fw_subversion` (real fields,
+  confirmed via live grep of the vendored `wifi.h:1613-1614`, macro
+  `wifi.h:2756`). Note the output `fw_subversion` is `u8`, narrowed
+  from wifi.h's real `u16` field — matches `RTW88StateResult`'s actual
+  field width (`RTW88UserClient.hpp`), caught by checking the struct
+  before wiring the call site rather than assuming pointer-width
+  compatibility.
+- `rtlwifi_get_stats(u32 *tx_bytes, u32 *rx_bytes)` — reads
+  `rtlpriv->stats.txbytesunicast`/`.rxbytesunicast` (`struct
+  wireless_stats`, confirmed via live grep, `wifi.h:2680` for the
+  field, `wifi.h:~1096-1099` for the struct body; no accessor macro
+  exists for this one, unlike `rtl_mac()`/`rtl_hal()`/`rtl_efuse()`).
+  Output width is `u32`, narrowed from wifi.h's real `u64` fields —
+  same `RTW88StateResult`-width-matching reasoning as above; wraps
+  past ~4GB of unicast traffic, acceptable for a diagnostics counter.
+- **No `rtlwifi_get_chip_name()` was written.** Live grep of the real
+  vendored `wifi.h` found no chip-name string field anywhere in
+  `rtl_priv`/`rtl_hal`/`rtl_efuse` — only a `read_chip_version()`
+  callback and an `hw_type` enum, neither a name string. The
+  `cmdGetState()` call site simply no longer calls anything for this
+  field; `result->chip_name` keeps whatever `RTW88UserClient.cpp`
+  already defaults it to (`"Uninitialized"`) rather than fabricate a
+  value for a field the real driver doesn't track.
+
+## 84.2 Verification methodology note
+
+Before trusting either fix, `rtlwifi_compat.c` was first re-tested in
+isolation against the *exact* real Makefile command (obtained via
+`make -f Makefile.rtl8188ee -n kext | grep rtlwifi_compat`, not
+hand-reconstructed flags) — an earlier hand-typed `-x c++` test had
+produced 7 false errors (`void*`->typed-pointer conversions illegal in
+C++ but legal under `DRIVER_CFLAGS`'s real plain-C compile with
+`-Wno-incompatible-pointer-types` etc). The real command compiled
+clean (25 warnings, 0 errors), confirming `struct rtl_priv`,
+`rtl_mac()`/`rtl_hal()`/`rtl_efuse()`, `ieee80211_get_tid()`,
+`ieee80211_find_sta()` all genuinely work as part of the real build —
+the earlier false errors were entirely a self-inflicted test-harness
+mismatch, not a real gap. Real field names/types for the new bridge
+functions (`fw_version`/`fw_subversion` widths, the `wireless_stats`
+struct name and its `rtlpriv->stats` field path) were obtained via
+live `grep`/`sed` against the real vendored `wifi.h` on the build
+machine before writing any code — not guessed from general rtlwifi
+familiarity.
+
+## 84.3 The rerun
+
+Same real command as Section 83.1 (`make -f Makefile.rtl8188ee -n kext
+| grep RTW88IEEE80211`, `-c`/`-o` swapped for `-fsyntax-only
+-ferror-limit=0`), run against the tree with both fixes applied.
+Result: **13 warnings (identical pre-existing set) and 12 errors** —
+down from Section 83's 20. Direct comparison against Section 81.2's
+full bucket list confirms every single Bucket D (1) and Bucket E (3)
+error is gone; all remaining 12 errors are exactly Bucket A (7 sites:
+`rtw88_register_vif`, `rtw88_unregister_vif`, `rtw88_hw_scan_supported`
+x2, `rtw88_connect_hw_setup` x2, `rtw88_restore_connected_hw`) and
+Bucket B (5: `pci_dev`/`pci_device_id` incomplete-type errors, lines
+719-728, unchanged). No new errors introduced by either fix.
+
+## 84.4 Status
+
+| Bucket | Count | Status |
+|---|---|---|
+| A (unported bridge fns) | 7 sites / 5 names | Open — largest remaining |
+| B (pci_dev incomplete type) | 5 | Open — needs real struct defs |
+| C (WLAN_EID_*/ACTION_*/REASON_*) | 0 | CLOSED (Section 82/83) |
+| D (sw_scan_start arg count) | 0 | CLOSED this session |
+| E (rtw88_get_* undeclared) | 3 -> 0 | CLOSED this session |
+
+12 is now the confirmed, real, compiler-verified remaining count for
+`RTW88IEEE80211.cpp` — not an estimate. Only Buckets A and B remain.
+Bucket B is likely the cheaper of the two (needs real `struct pci_dev`/
+`struct pci_device_id` definitions or equivalent real headers on the
+include path, not new logic); Bucket A needs either 5 new
+`rtlwifi_compat.c` bridge functions or the call sites reworked against
+real rtlwifi driver-core calls directly — not yet attempted.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

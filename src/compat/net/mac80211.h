@@ -1324,6 +1324,43 @@ struct ieee80211_ampdu_params {
 #define WLAN_HT_SMPS_CONTROL_DYNAMIC  3
 #define WLAN_REASON_QSTA_TIMEOUT      39
 
+/*
+ * WLAN_EID_SSID / _SUPP_RATES / _DS_PARAMS / _HT_CAPABILITY / _RSN /
+ * _EXT_SUPP_RATES / _HT_OPERATION / _VHT_CAPABILITY / _VHT_OPERATION /
+ * _VENDOR_SPECIFIC — information element IDs, standard 802.11-2020
+ * Table 9-77 values (the same table WLAN_EID_TIM=5 above already comes
+ * from). Confirmed as the missing set via a real -fapple-kext clang++
+ * compile of RTW88IEEE80211.cpp (findings.md Section 81.2, Bucket C):
+ * 13 call sites across information-element parsing
+ * (parseInformationElements-style code) and association-request/
+ * IE-building code, none of which had these defined anywhere in this
+ * compat tree. Only the specific names that compile run identified are
+ * added here, matching this file's existing on-demand pattern (see
+ * WLAN_EID_TIM's own comment above) rather than the full upstream enum.
+ *
+ * WLAN_REASON_DEAUTH_LEAVING — reason code 3 ("Deauthenticated because
+ * sending station is leaving"), standard 802.11 Table 9-49, same
+ * confirmation source as above (deauth-frame body builder call site).
+ *
+ * WLAN_ACTION_ADDBA_REQ / _ADDBA_RESP — Block Ack Action field values
+ * 0/1 (802.11 Table 9-361), i.e. category-WLAN_CATEGORY_BACK action
+ * codes, not top-level WLAN_CATEGORY_* values — same confirmation
+ * source, block-ack negotiation frame building/parsing call sites.
+ */
+#define WLAN_EID_SSID             0
+#define WLAN_EID_SUPP_RATES       1
+#define WLAN_EID_DS_PARAMS        3
+#define WLAN_EID_HT_CAPABILITY    45
+#define WLAN_EID_RSN              48
+#define WLAN_EID_EXT_SUPP_RATES   50
+#define WLAN_EID_HT_OPERATION     61
+#define WLAN_EID_VHT_CAPABILITY   191
+#define WLAN_EID_VHT_OPERATION    192
+#define WLAN_EID_VENDOR_SPECIFIC  221
+#define WLAN_REASON_DEAUTH_LEAVING 3
+#define WLAN_ACTION_ADDBA_REQ     0
+#define WLAN_ACTION_ADDBA_RESP    1
+
 /* ------------------------------------------------------------------ */
 /*  ieee80211_hw alloc / free                                           */
 /* ------------------------------------------------------------------ */

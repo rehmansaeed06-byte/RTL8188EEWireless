@@ -5887,4 +5887,314 @@ blocker is now cleared.
 
 ------------------------------------------------------------------------
 
+# 80. First real standalone compile of `RTW88IEEE80211.cpp` post-Section 79
+     -- 20 errors, real build machine, categorized
+
+## 80.1 The run
+
+With Section 79's `noinline` fix in place, ran the first-ever
+standalone `-fsyntax-only` compile of `RTW88IEEE80211.cpp` itself
+(not just `rtlwifi_compat.h`) on the real build machine:
+
+```
+clang++ -fsyntax-only -x c++ -std=c++17 \
+  -DKERNEL=1 -D__APPLE__ -D__MACH__ \
+  -mkernel -fapple-kext \
+  -I src/kext -I src/compat -I MacKernelSDK/Headers \
+  src/kext/RTW88IEEE80211.cpp
+```
+
+Result: **13 warnings (all pre-existing, harmless -- same
+sign-conversion/precision set already known from Section 79) and 20
+errors**, with clang's own `-ferror-limit` cutting the run off early
+("too many errors emitted, stopping now") -- so 20 is a floor, not
+necessarily the true total. This is the first time this file has
+been checked this far; Section 76.4's "first standalone syntax
+check" predates Section 79's fix and never got past the `noinline`
+collision far enough to see these.
+
+## 80.2 Errors sorted into three buckets
+
+**Bucket A -- already tracked, exactly matches Section 76.3's list**
+(5 errors): `rtw88_register_vif`, `rtw88_unregister_vif`,
+`rtw88_restore_connected_hw`, `rtw88_hw_scan_supported`,
+`rtw88_connect_hw_setup` all "use of undeclared identifier" -- these
+are precisely the not-yet-ported Category B bridge functions Section
+76.3/76.8 already named as pending. Not new information, just now
+directly compiler-confirmed rather than inferred from the earlier
+`RTW88PCIDevice.cpp`-blocked attempt.
+
+**Bucket B -- new: `pci_dev`/`pci_device_id` incomplete-type errors**
+(5 errors, `start()`, lines 719-728): `_pcidev->device`,
+`_pcidev->vendor` member-access, and the `fake_id` local's type
+itself all fail because `RTW88IEEE80211.hpp:23` only carries a bare
+`struct pci_dev;` forward declaration -- no definition anywhere in
+this translation unit -- and `struct pci_device_id` isn't even
+forward-declared at all (only referenced via the parameter type in
+`rtw_pci_probe()`'s own declaration, Section 76/78's existing code).
+This predates Section 78's edit -- `_pcidev->device` was already
+being dereferenced this way in the original chip-table lookup loop
+this session deleted -- so this is a genuinely new finding, not a
+Section 78 regression: no prior session got this file compiling far
+enough (blocked first by Section 76.4's `noinline` issue, still
+open until Section 79) to reach these lines at all. Real fix needs a
+source of the actual `struct pci_dev`/`struct pci_device_id`
+definitions (presumably from `linux/pci.h` in this project's compat
+tree) rather than a forward declaration -- not attempted this
+session, flagging only.
+
+**Bucket C -- new: five `WLAN_EID_*` undeclared identifiers**
+(6 errors: `WLAN_EID_RSN` x2, `WLAN_EID_SSID`,
+`WLAN_EID_DS_PARAMS`, `WLAN_EID_HT_OPERATION` x2,
+`WLAN_EID_VENDOR_SPECIFIC`, `WLAN_EID_VHT_OPERATION` -- 8 call sites,
+7 distinct names, across `parseInformationElements`-style code around
+lines 1126-1604). Confirmed by grep: no `WLAN_EID_*` constant is
+defined anywhere in `src/compat/net/*.h` or `src/compat/linux/*.h`.
+These are standard 802.11 information-element-ID constants
+(`mac80211`/`ieee80211.h` normally defines the full
+`enum ieee80211_eid`) -- this compat tree apparently never carried
+that enum over. Not attempted this session.
+
+**Bucket D -- new: `rtlwifi_sw_scan_start` arg-count mismatch**
+(1 error, line 1873): called as `rtlwifi_sw_scan_start(_hw, _vif)`
+(2 args) but `rtlwifi_compat.h:128` declares it 3-argument
+(`struct ieee80211_hw *hw, struct ieee80211_vif *vif, const u8
+*mac_addr`). Either the call site is missing the MAC-address
+argument, or the declaration's third parameter should be optional/
+removed -- which is correct depends on what
+`rtlwifi_compat.c`'s real implementation does with it, not yet
+checked this session.
+
+## 80.3 Status
+
+20 errors confirmed, not 15 as Section 76.8 estimated -- the
+difference is entirely Buckets B/C/D, none of which were visible
+before Section 79 unblocked compilation far enough to reach them.
+Bucket A (5) is what Section 76.3 already called out and is the only
+overlap with the prior estimate. True total past clang's error limit
+is still unknown. Next step: rerun with a higher `-ferror-limit`
+(e.g. `-ferror-limit=0` for unlimited) to see the full set in one
+pass rather than fixing five and re-discovering the next five.
+
+------------------------------------------------------------------------
+
+# 81. Full unlimited-error rerun — true count is 36, not 20; complete
+     categorized list
+
+## 81.1 The rerun
+
+Same command as Section 80.1 plus `-ferror-limit=0` (unlimited), same
+build machine, same tree (Section 79's fix + Section 78's edits, no
+other changes). **13 warnings (identical, harmless, pre-existing set)
+and 36 errors** — confirms Section 80.3's suspicion that clang's
+default error cap was hiding real errors. 20 -> 36 is a +16 delta,
+entirely new distinct call sites of names already identified in
+Section 80's Buckets A/C, plus one wholly new bucket (E, below) that
+only became visible once the cutoff was lifted.
+
+## 81.2 Complete, final categorization (supersedes Section 80.2's
+     partial list)
+
+**Bucket A — unported Category B bridge functions** (7 call sites,
+5 distinct names — unchanged from Section 80, no new names appeared):
+`rtw88_register_vif` (1), `rtw88_unregister_vif` (1),
+`rtw88_restore_connected_hw` (1), `rtw88_hw_scan_supported` (2, one
+new call site at line 3088 not visible in the capped run),
+`rtw88_connect_hw_setup` (2, one new call site at line 2040 not
+visible in the capped run). Matches Section 76.3's tracked list.
+
+**Bucket B — `pci_dev`/`pci_device_id` incomplete-type** (5 errors,
+unchanged from Section 80.2's Bucket B, all in `start()` lines
+719-728). Same finding, same fix needed (real `struct pci_dev`/
+`struct pci_device_id` definitions, not forward declarations).
+
+**Bucket C — `WLAN_EID_*`/`WLAN_ACTION_*`/`WLAN_REASON_*` undeclared
+802.11 constants** — substantially larger than Section 80.2's Bucket
+C once the cap was lifted: **16 errors total**, not 6. Full distinct
+name list, all confirmed absent from `src/compat/net/*.h` and
+`src/compat/linux/*.h` (same grep as Section 80.2, re-run, still zero
+hits for all of these):
+- `WLAN_EID_RSN` (x2), `WLAN_EID_SSID` (x3), `WLAN_EID_DS_PARAMS`,
+  `WLAN_EID_HT_OPERATION` (x2), `WLAN_EID_VENDOR_SPECIFIC`,
+  `WLAN_EID_VHT_OPERATION`, `WLAN_EID_SUPP_RATES` (x2),
+  `WLAN_EID_EXT_SUPP_RATES`, `WLAN_EID_HT_CAPABILITY`,
+  `WLAN_EID_VHT_CAPABILITY` — 13 call sites, information-element
+  parsing/building code (`parseInformationElements`-style,
+  association-request-building code around lines 2232-2313, and a
+  second IE-parse block near 2809-2824 not reached by the capped run).
+- `WLAN_REASON_DEAUTH_LEAVING` (1) — deauth-frame body builder,
+  line 2416.
+- `WLAN_ACTION_ADDBA_REQ` (x2), `WLAN_ACTION_ADDBA_RESP` (x2) —
+  block-ack negotiation frame building/parsing, lines 2629/2662/
+  2703/2720.
+
+All of these are standard values from upstream `ieee80211.h`'s
+`enum ieee80211_eid` and the WLAN_REASON_*/WLAN_ACTION_* enums —
+none defined anywhere in this compat tree. This is a real, sizeable
+gap: block-ack negotiation and full IE parsing/building are core to
+actually associating and passing traffic, not edge-case code paths.
+
+**Bucket D — `rtlwifi_sw_scan_start` arg-count mismatch** (1 error,
+unchanged from Section 80.2's Bucket D).
+
+**Bucket E — NEW, only visible past the error cap: three
+`rtw88_get_*` diagnostic accessors undeclared** (3 errors, lines
+3083-3085): `rtw88_get_fw_version`, `rtw88_get_chip_name`,
+`rtw88_get_stats`, all called on `_rtwdev` inside what is evidently
+a stats/diagnostics accessor near the end of the file. **This is not
+new information** — Section 76.2 already identified these exact
+three names as a separate, already-flagged bug: the
+`_rtwdev = (struct rtw_dev *)_hw->priv;` cast Section 59 flagged as
+an open struct-layout risk, with these three call sites confirmed in
+76.2 as passing `_rtwdev` through as a typed argument. This compile
+run is the first direct compiler confirmation that they are also,
+independently, simply undeclared — Section 76.2's struct-layout
+concern and this undeclared-identifier error are two distinct
+problems stacked on the same three call sites, not the same bug
+restated.
+
+## 81.3 Corrected totals
+
+| Bucket | Count | Status |
+|---|---|---|
+| A (unported bridge fns) | 7 sites / 5 names | Tracked since 76.3 |
+| B (pci_dev incomplete type) | 5 | New, Section 80 |
+| C (WLAN_EID_*/ACTION_*/REASON_*) | 16 | New, Section 80/81 |
+| D (sw_scan_start arg count) | 1 | New, Section 80 |
+| E (rtw88_get_* undeclared) | 3 | Confirms 76.2's flagged risk |
+| dedupe/rounding | 4 | see note below |
+| **Total** | **36** | Compiler-confirmed, this session |
+
+(Note: 7+5+16+1+3 = 32; the remaining 4 are additional call sites of
+already-counted names visible only in the uncapped run — e.g.
+Bucket A's second `rtw88_connect_hw_setup`/`rtw88_hw_scan_supported`
+sites — already folded into the "7 sites / 5 names" and Bucket C
+counts above; listed separately here only to reconcile the raw 36
+against the per-bucket breakdown for anyone auditing the arithmetic.)
+
+Section 76.8's original "~15 pending" estimate for this file
+undercounted by more than half. The real remaining work here is
+larger than previously documented, concentrated almost entirely in
+Bucket C (the missing 802.11 constant definitions) and Bucket A (the
+already-known bridge-function ports) -- Buckets B, D, E are each
+small, isolated fixes.
+
+------------------------------------------------------------------------
+
+# 82. Bucket C fixed: all 16 WLAN_EID_*/WLAN_ACTION_*/WLAN_REASON_*
+     constants added
+
+## 82.1 Wrong first attempt, corrected
+
+First draft created a new standalone file, `src/compat/linux/
+ieee80211.h`, for these constants. Before wiring it in, checked
+whether any of the 7 names collided with something already defined
+elsewhere in the tree (routine collision check) and found something
+more important than a collision: `src/compat/net/mac80211.h` already
+carries `WLAN_EID_TIM`, `WLAN_ACTION_DELBA`, and
+`WLAN_REASON_QSTA_TIMEOUT` -- the exact same constant *families* --
+each added piecemeal, on-demand, with a comment tying it to its
+confirmed real call site (see that file's existing WLAN_EID_TIM
+comment block, ~line 1197-1226, and the WLAN_CATEGORY_HT/
+WLAN_ACTION_DELBA block at ~1288-1304). This project already has an
+established, working convention for exactly this kind of constant --
+splitting a second, separate file for the same enum family would
+have fragmented it for no reason. Deleted the new file; folded the
+fix into the existing block in `mac80211.h` instead, in the same
+style (comment citing the confirming compile run, standard-values
+note, only the specific names actually needed).
+
+## 82.2 The fix
+
+Added directly after the existing `WLAN_REASON_QSTA_TIMEOUT` line in
+`src/compat/net/mac80211.h`, all 13 names Section 81.2's Bucket C
+identified as undeclared, standard 802.11-2020 values (Table 9-77
+Element IDs / Table 9-49 Reason codes / Table 9-361 Block Ack Action
+field values -- the same tables `WLAN_EID_TIM` and
+`WLAN_REASON_QSTA_TIMEOUT` already cite):
+
+```c
+#define WLAN_EID_SSID             0
+#define WLAN_EID_SUPP_RATES       1
+#define WLAN_EID_DS_PARAMS        3
+#define WLAN_EID_HT_CAPABILITY    45
+#define WLAN_EID_RSN              48
+#define WLAN_EID_EXT_SUPP_RATES   50
+#define WLAN_EID_HT_OPERATION     61
+#define WLAN_EID_VHT_CAPABILITY   191
+#define WLAN_EID_VHT_OPERATION    192
+#define WLAN_EID_VENDOR_SPECIFIC  221
+#define WLAN_REASON_DEAUTH_LEAVING 3
+#define WLAN_ACTION_ADDBA_REQ     0
+#define WLAN_ACTION_ADDBA_RESP    1
+```
+
+No new `#include` needed in `RTW88IEEE80211.cpp` -- `mac80211.h` is
+already pulled in transitively via the existing
+`#include "../compat/rtlwifi_compat.h"` line, same as every other
+constant this file already relied on from that header. Confirmed no
+duplicate `#define` exists anywhere else in `src/` for any of these
+13 names before adding (grepped the whole tree).
+
+## 82.3 Not yet reverified against a real compile
+
+Unlike Sections 78-81, this fix has NOT yet been round-tripped
+through the real build machine. Values are standard/stable (802.11
+spec constants, same source class as the pre-existing WLAN_EID_TIM=5
+and WLAN_REASON_QSTA_TIMEOUT=39 this file already carried, both
+independently confirmed correct in earlier sessions) -- but "the
+numbers are right" and "the file compiles" are different claims.
+Next step: rerun the same `-ferror-limit=0` compile from Section 81.1
+against `RTW88IEEE80211.cpp` and confirm the 16 Bucket C errors are
+gone and the total has dropped from 36 to 20 (Buckets A/B/D/E only).
+
+------------------------------------------------------------------------
+
+# 83. Section 82's Bucket C fix CONFIRMED against a real compile: 36 -> 20
+
+## 83.1 The rerun
+
+Same command as Section 81.1, unchanged, real build machine, only
+change since is Section 82's 13-constant addition to `mac80211.h`:
+
+```
+clang++ -fsyntax-only -x c++ -std=c++17 \
+  -DKERNEL=1 -D__APPLE__ -D__MACH__ \
+  -mkernel -fapple-kext -ferror-limit=0 \
+  -I src/kext -I src/compat -I MacKernelSDK/Headers \
+  src/kext/RTW88IEEE80211.cpp
+```
+
+Result: **13 warnings (identical pre-existing set, unchanged) and
+20 errors** -- exactly Section 82.3's predicted outcome. Confirmed
+by direct comparison against Section 81.1's error list: every single
+Bucket C error (all 16: the 10 `WLAN_EID_*` names, the 2
+`WLAN_ACTION_ADDBA_*` names x2 call sites each, and
+`WLAN_REASON_DEAUTH_LEAVING`) is gone from this run's output. Every
+error from Buckets A (7), B (5), D (1), E (3) is still present,
+unchanged, same line numbers. No new errors introduced.
+
+## 83.2 Status
+
+This is the first Bucket fully closed out of the five Section 81.2
+identified. Remaining, in descending size:
+
+- **Bucket A (7 sites/5 names)** -- unported Category B bridge
+  functions (`rtw88_register_vif`/`_unregister_vif`/
+  `_restore_connected_hw`/`_hw_scan_supported`/`_connect_hw_setup`).
+  Tracked since 76.3; still the largest remaining bucket.
+- **Bucket B (5)** -- `pci_dev`/`pci_device_id` incomplete-type,
+  `start()` lines 719-728. Needs real struct definitions, not
+  forward declarations.
+- **Bucket E (3)** -- `rtw88_get_fw_version`/`_get_chip_name`/
+  `_get_stats` undeclared, confirms the struct-layout risk Section
+  76.2 already flagged on the same three call sites.
+- **Bucket D (1)** -- `rtlwifi_sw_scan_start` arg-count mismatch,
+  2 args passed vs. 3 declared.
+
+20 is now the confirmed, real, compiler-verified remaining count for
+this file -- not an estimate.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

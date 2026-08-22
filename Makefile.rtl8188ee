@@ -219,12 +219,20 @@ FW_BLOBS_C := $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
 
 # kmod_info.c — defines _kmod_info (required by kmutil/kextutil).
 #
-# TODO — NOT YET CONFIRMED: reusing Feixiao's kmod_info.c as-is (it's
-# generic kext boilerplate, likely fine) rather than forking it. Flagged
-# per the same reuse-caution pattern as the rest of this file, even
-# though this one is low-risk.
+# RESOLVED: this WAS reused from Feixiao's kmod_info.c unmodified, and
+# that was a real bug, not a low-risk placeholder — Feixiao's file
+# hardcodes kmod_info.name = "com.rtw88.driver" / version "1.1.0",
+# which doesn't match this project's Info.plist
+# (CFBundleIdentifier com.rtlwifi.rtl8188ee / CFBundleVersion 0.1.0).
+# That mismatch between the binary's self-declared identity and its
+# bundle's Info.plist identity is what produced the real-world
+# "Prelinked injection rtl8188ee.kext () - Invalid Parameter" failure
+# — confirmed by testing the exact build this Makefile produced
+# (UUID 3A873C87-4E56-35AA-9593-3C4907C20B66). Forked into this
+# project's own src/kext/kmod_info.c with corrected identity; no
+# longer depends on ../Feixiao existing.
 KMOD_SRCS := \
-    $(PROJ_ROOT)/../Feixiao/src/kext/kmod_info.c
+    $(KEXT_SRC)/kmod_info.c
 
 # IOKit C++ wrapper — TODO, THE BIG OPEN ITEM (handover item 2 /
 # findings.md Section 55.7 item 6): reusing RTW88PCIDevice.cpp/
@@ -333,8 +341,9 @@ $(BUILD_DIR)/compat/fw_blobs_rtl8188ee.o: $(COMPAT_DIR)/fw_blobs_rtl8188ee.c | $
 	@echo "  CC   fw_blobs_rtl8188ee.c"
 	$(CC) $(FW_CFLAGS) -c $< -o $@
 
-# Compile kmod_info.c (plain C, no compat headers, reused from Feixiao)
-$(BUILD_DIR)/kext/kmod_info.o: $(PROJ_ROOT)/../Feixiao/src/kext/kmod_info.c | $(BUILD_DIR)/kext
+# Compile kmod_info.c (plain C, no compat headers). Forked into this
+# project's own src/kext/ with corrected identity — see KMOD_SRCS note above.
+$(BUILD_DIR)/kext/kmod_info.o: $(KEXT_SRC)/kmod_info.c | $(BUILD_DIR)/kext
 	@echo "  CC   kmod_info.c"
 	$(CC) $(KEXT_FLAGS) -c $< -o $@
 

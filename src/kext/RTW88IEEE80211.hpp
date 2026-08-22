@@ -20,7 +20,19 @@
 
 /* Opaque C driver handle */
 struct rtl_priv;
-struct pci_dev;
+/* struct pci_dev / struct pci_device_id: real, complete definitions —
+ * NOT forward declarations — pulled from src/compat/linux/pci.h.
+ * Bucket B, findings.md Section 81.2/83.2/85: RTW88IEEE80211.cpp::start()
+ * dereferences _pcidev->device/->vendor and builds a real
+ * `const struct pci_device_id fake_id = {...}` designated-initializer
+ * value, both of which need the complete type — a forward declaration
+ * alone (what used to be here) compiles the pointer but not the member
+ * access or the struct literal. No prior file in this project's
+ * `#include` chain actually pulls in linux/pci.h (confirmed by grep —
+ * this project's own rtlwifi_compat.h does not), so this
+ * incomplete-type error was real, not a chain-ordering accident.
+ */
+#include "../compat/linux/pci.h"
 struct ieee80211_hw;
 struct ieee80211_vif;
 struct ieee80211_sta;

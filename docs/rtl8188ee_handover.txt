@@ -1,6 +1,90 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## TWELFTH UPDATE (read this first) — Buckets D and E fixed and confirmed; 20 -> 12 errors in RTW88IEEE80211.cpp
+## THIRTEENTH UPDATE (read this first) — Bucket B fixed and confirmed (plus one self-inflicted regression caught and fixed); 12 -> 7 errors, only Bucket A remains
+
+The TWELFTH UPDATE below closed Buckets D and E (20 -> 12 errors).
+This update closes **Bucket B** (`pci_dev`/`pci_device_id` incomplete
+type, `RTW88IEEE80211.cpp` lines 719-728) — see `docs/findings.md`
+Section 85 for full detail.
+
+**The fix:** `RTW88IEEE80211.hpp` forward-declared `struct pci_dev;`
+(opaque), but `start()` dereferences its members and builds a real
+`struct pci_device_id` value — both need the complete type. A real,
+complete definition of both already existed in this project's own
+`src/compat/linux/pci.h`, just never actually included from this
+file's chain (confirmed: `rtlwifi_compat.h` does not pull in
+`linux/pci.h` at all). Fixed by including it directly.
+
+**A real regression was caught and fixed in the same session, not
+shipped blind:** including `pci.h` this early in the header exposed a
+previously-latent bug — `pci.h` uses `EOPNOTSUPP` (this project's own
+macro, defined in `linux/kernel.h`) without ever including `kernel.h`
+itself; it only worked before because it was never included except
+transitively, after something else had already pulled `kernel.h` in
+first. Caught immediately by a real compile (`error: use of undeclared
+identifier 'EOPNOTSUPP'`) before declaring the fix done. Fixed by
+adding `#include "kernel.h"` to `pci.h`, making it properly
+self-contained (confirmed no circular-include risk).
+
+**Side finding, not fixed, flagged for later:** `RTW88PCIDevice.cpp`
+also treats `struct pci_dev` as complete (`sizeof(struct pci_dev)` at
+line 328) but has no `linux/pci.h` include in its own chain either —
+likely the same bug, just never caught because that file has never
+been run through an isolated syntax-only compile. Not new scope
+(Section 77 already documented that file's own much larger 17-name
+unported-symbol gap) — but worth checking whether this session's
+`RTW88IEEE80211.hpp` include change incidentally already fixes it,
+before assuming a separate fix is still needed.
+
+**Real compile confirmation** (`docs/findings.md` Section 85.3): same
+real per-file command as the TWELFTH UPDATE's, rerun against the tree
+with both fixes applied. Result: **13 warnings (unchanged) and 7
+errors**, down from 12. All 5 Bucket B errors and the 1
+session-introduced `EOPNOTSUPP` error are confirmed gone. The 7
+remaining are exactly Bucket A (`rtw88_register_vif`/
+`_unregister_vif`/`_restore_connected_hw`/`_hw_scan_supported`/
+`_connect_hw_setup`) — **the only bucket left in this file.**
+
+### What is still open (real, not superseded)
+
+- **Bucket A (7 sites/5 names) in `RTW88IEEE80211.cpp`** — the only
+  remaining compiler-confirmed error bucket in this file. Each of the
+  5 names is a call into a function never ported from the original
+  rtw88-based fork to this rtlwifi-based project: vif lifecycle
+  (`_register_vif`/`_unregister_vif`), reconnect channel/hw config
+  (`_restore_connected_hw`/`_connect_hw_setup`), and firmware-offload
+  scan capability (`_hw_scan_supported`). Needs either 5 new
+  `rtlwifi_compat.c` bridge functions backed by real rtlwifi
+  driver-core behavior, or the call sites reworked against the real
+  rtlwifi API directly — not yet attempted. Each name should be
+  checked independently against real rtlwifi source (same
+  grep-before-write discipline as Sections 82-85) before writing
+  anything.
+- **`RTW88PCIDevice.cpp`'s own, separate, larger unported-symbol gap**
+  (Section 77, 17 distinct names) — untouched, still not brought to a
+  clean isolated compile. This session's side finding above (possible
+  incidental `pci_dev` completeness fix) is a small piece of this, not
+  a substitute for the full pass.
+- **Runtime/hardware behavior is still entirely untested** — unchanged
+  from every prior update. A fresh full `make clean && make kext` has
+  still not been reconfirmed against the current tree state since the
+  ELEVENTH UPDATE's snapshot, despite three rounds of per-file fixes
+  since (TWELFTH: Buckets D/E; THIRTEENTH: Bucket B) — worth doing
+  once Bucket A is closed too, to confirm everything composes.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/`) — still only "worked around, not fixed";
+  not revisited this session.
+
+### Correct next step
+
+Tackle Bucket A — the only remaining bucket in `RTW88IEEE80211.cpp`.
+Start by grepping the real rtlwifi source (`../linux-kernel/.../
+rtlwifi/`) for each of the 5 missing names' closest real equivalents,
+the same way Sections 82-85 confirmed every constant/field/macro
+against the real header before writing a single line, rather than
+inferring behavior from the rtw88 naming alone.
+
+## TWELFTH UPDATE (historical; superseded by THIRTEENTH UPDATE above) — Buckets D and E fixed and confirmed; 20 -> 12 errors in RTW88IEEE80211.cpp
 
 The ELEVENTH UPDATE below confirmed a full clean build (compile AND
 link) at commit `bacfdd4`/`ceac763`. Separately, `docs/findings.md`

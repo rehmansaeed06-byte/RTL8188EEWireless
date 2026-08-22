@@ -3,6 +3,14 @@
 #define _RTW88_COMPAT_PCI_H
 
 #include "types.h"
+#include "kernel.h"    /* EOPNOTSUPP — pci.h uses it directly (line ~261)
+                         * but never declared this dependency itself; only
+                         * worked before because every prior include site
+                         * happened to pull in kernel.h first via
+                         * rtlwifi_compat.h's ordering. Surfaced as a real
+                         * "undeclared identifier" error the first time
+                         * pci.h was included on its own (findings.md
+                         * Section 85, RTW88IEEE80211.hpp's Bucket B fix). */
 #include "slab.h"
 #include "dma-mapping.h"
 #include "device.h"

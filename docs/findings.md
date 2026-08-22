@@ -6301,4 +6301,93 @@ real rtlwifi driver-core calls directly — not yet attempted.
 
 ------------------------------------------------------------------------
 
+# 85. Bucket B fixed and CONFIRMED against a real compile: 12 -> 7
+     (one self-inflicted regression found and fixed in the same session)
+
+## 85.1 The bug and the fix
+
+`RTW88IEEE80211.hpp` forward-declared `struct pci_dev;` — an opaque
+declaration — but `RTW88IEEE80211.cpp::start()` (lines 719-728)
+dereferences `_pcidev->device`/`->vendor` and builds a real
+`const struct pci_device_id fake_id = {...}` designated-initializer
+value, both of which need the *complete* type. A real, complete
+definition of both `struct pci_dev` and `struct pci_device_id` already
+exists in this project's own `src/compat/linux/pci.h:21` and `:72` —
+confirmed via live grep — but nothing in `RTW88IEEE80211.cpp`'s
+`#include` chain actually pulled that header in (confirmed:
+`rtlwifi_compat.h` does not include `linux/pci.h` at all). Fix:
+`RTW88IEEE80211.hpp` now `#include`s `"../compat/linux/pci.h"`
+directly in place of the forward declaration.
+
+**Side finding, not fixed this session:** `RTW88PCIDevice.cpp` treats
+`struct pci_dev` as complete too (`IOMallocZero(sizeof(struct
+pci_dev))`, line 328) but *also* has no `linux/pci.h` include anywhere
+in its own chain — meaning that file almost certainly has this exact
+same incomplete-type problem, just never caught because it has never
+been run through an isolated `-ferror-limit=0` syntax check the way
+`RTW88IEEE80211.cpp` has (Sections 76-85). This is not new scope,
+though — Section 77 already documented `RTW88PCIDevice.cpp` as having
+its own separate, larger unported-symbol gap (17 distinct names) that
+was never brought to a clean compile. Flagging here for whoever
+eventually does that file's pass: check whether this project's own
+`RTW88IEEE80211.hpp` include (which `RTW88PCIDevice.cpp` already
+pulls in) now incidentally fixes `RTW88PCIDevice.cpp`'s `pci_dev`
+completeness too, before assuming it still needs a separate fix.
+
+## 85.2 Self-inflicted regression found and fixed in the same session
+
+Including `pci.h` this early in `RTW88IEEE80211.hpp` (before
+`rtlwifi_compat.h`'s own carefully-ordered chain would have reached
+it) surfaced a real, separate, previously-latent bug: `pci.h:261`
+uses `EOPNOTSUPP` — a macro this project defines itself in
+`linux/kernel.h:77`, not a system header — without ever `#include`ing
+`kernel.h` itself. It only ever worked before because `pci.h` was
+never included except transitively, after something else had already
+pulled `kernel.h` in first. The first real compile of this exact fix
+surfaced it immediately as `error: use of undeclared identifier
+'EOPNOTSUPP'` — not guessed, caught by testing before declaring the
+fix done. Fixed by adding `#include "kernel.h"` directly to `pci.h`
+(self-contained, own include guard; confirmed no circular-include risk
+via grep — nothing else in the tree includes `pci.h`), making `pci.h`
+properly self-contained instead of silently depending on caller
+ordering.
+
+## 85.3 The rerun
+
+Same real command as Section 84.3, run against the tree with both the
+`pci.h`-include fix and the `kernel.h` self-containment fix applied.
+Result: **13 warnings (identical pre-existing set) and 7 errors** —
+down from Section 84's 12. Direct comparison confirms all 5 Bucket B
+errors and the 1 session-introduced `EOPNOTSUPP` error are gone; the
+remaining 7 are exactly Bucket A (`rtw88_register_vif`,
+`rtw88_unregister_vif`, `rtw88_hw_scan_supported` x2,
+`rtw88_connect_hw_setup` x2, `rtw88_restore_connected_hw`) —
+unchanged, not attempted this session. No new errors introduced.
+
+## 85.4 Status
+
+| Bucket | Count | Status |
+|---|---|---|
+| A (unported bridge fns) | 7 sites / 5 names | Open — only bucket left |
+| B (pci_dev incomplete type) | 0 | CLOSED this session |
+| C (WLAN_EID_*/ACTION_*/REASON_*) | 0 | CLOSED (Section 82/83) |
+| D (sw_scan_start arg count) | 0 | CLOSED (Section 84) |
+| E (rtw88_get_* undeclared) | 0 | CLOSED (Section 84) |
+
+7 is now the confirmed, real, compiler-verified remaining count for
+`RTW88IEEE80211.cpp` — not an estimate. **Bucket A is the only bucket
+left in this file.** All 5 of its names are calls into functions that
+were never ported from the original rtw88-based fork to this
+rtlwifi-based project: `rtw88_register_vif`/`_unregister_vif` (vif
+lifecycle), `rtw88_restore_connected_hw`/`_connect_hw_setup` (channel/
+hw config on reconnect), `rtw88_hw_scan_supported` (firmware-offload
+scan capability check). Each needs either a new `rtlwifi_compat.c`
+bridge function backed by real rtlwifi driver-core behavior, or the
+call site reworked against the real rtlwifi API directly — not yet
+attempted, and each of the 5 names should be checked independently
+against real rtlwifi source before writing anything, same discipline
+as Sections 82-85.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

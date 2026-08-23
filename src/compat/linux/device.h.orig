@@ -4,18 +4,6 @@
 
 #include "types.h"
 
-/*
- * dev_warn() -- genuinely missing, no existing dev_* logging in this
- * file. Bridges to the same rtw88_printk mechanism kernel.h's
- * pr_err()/pr_info() already use, rather than inventing a second
- * logging path. Real call site: efuse.c. The struct device * arg is
- * accepted for signature compatibility but not used in the message
- * (this compat layer has no per-device log prefix mechanism).
- */
-#include "kernel.h"
-#define dev_warn(dev, fmt, ...) \
-    rtw88_printk(KERN_WARN, fmt, ##__VA_ARGS__)
-
 struct device {
     const char *name;
     void *parent;

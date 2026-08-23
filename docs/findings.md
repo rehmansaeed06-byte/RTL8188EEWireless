@@ -7294,4 +7294,114 @@ compat/linux/device.h for the pattern to match).
 
 ------------------------------------------------------------------------
 
+# 92. Closing the kernel-runtime primitives cluster — 27 -> 22
+
+Continuation of Section 91, next session. Targeted the five easiest
+candidates flagged at the end of Section 91: `_be16_to_cpup`,
+`___skb_dequeue`, `___skb_queue_purge`, `_skb_queue_is_last`,
+`_dev_warn`.
+
+## 92.1 Implementation
+
+- `be16_to_cpup`: added to `src/compat/linux/types.h` as a static
+  inline pointer-dereferencing wrapper around the already-present
+  `be16_to_cpu()`, matching real call sites in base.c
+  (`be16_to_cpup((__be16 *)ether_type_ptr)`).
+- `__skb_dequeue` / `__skb_queue_purge`: added to
+  `src/compat/linux/skbuff.h` directly after the existing
+  `__skb_unlink()`, following that function's established
+  caller-holds-the-lock pattern (confirmed real call sites in core.c,
+  pci.c, rtl8188ee/hw.c are already inside sections holding the
+  queue's own lock, so a locking variant would double-lock).
+- `skb_queue_is_last`: added alongside the above, a standard
+  genuinely-missing upstream helper (list-tail comparison).
+- `dev_warn`: added to `src/compat/linux/device.h`, bridging to the
+  same `rtw88_printk()` mechanism `pr_err()`/`pr_info()` in
+  `kernel.h` already use, rather than inventing a second logging
+  path. Real call site: efuse.c.
+
+All four followed the Section 90/91 process note: real call sites
+checked before writing, existing file conventions matched rather than
+inventing new patterns.
+
+## 92.2 Bug: `KERN_WARNING` vs `KERN_WARN` — compile error, not a link error
+
+The initial `dev_warn` macro used `KERN_WARNING` as the log-level
+constant passed to `rtw88_printk()`:
+
+```c
+#define dev_warn(dev, fmt, ...) \
+    rtw88_printk(KERN_WARNING, fmt, ##__VA_ARGS__)
+```
+
+This assumed the constant name without checking `kernel.h`, where the
+real name is `KERN_WARN` (`kernel.h:14`, and used directly by
+`pr_warn()` at `kernel.h:19`). Macro expansion happens at the call
+site (efuse.c), and `KERN_WARNING` isn't defined anywhere in that
+file's include chain, so the build failed with:
+
+```
+efuse.c:1241:3: error: use of undeclared identifier 'KERN_WARNING'
+```
+
+This surfaced as a **compile error**, not a link/kextutil failure —
+important distinction: it happened before any of the four symbols
+above could be verified as actually closed, since efuse.c never
+finished compiling. Fixed by a one-line correction:
+`KERN_WARNING` -> `KERN_WARN` in `device.h`'s `dev_warn` macro.
+Standalone fix script written and applied
+(`fix_dev_warn.py`) rather than re-running the full cluster-3 script,
+since the other three insertions had already applied cleanly on the
+prior run and were left untouched.
+
+**Process note:** when a helper macro/function references a constant
+by name (as opposed to a value the compiler can check locally), grep
+the actual defining header for the exact identifier before writing
+the reference — `KERN_WARN` vs `KERN_WARNING` is exactly the kind of
+plausible-but-wrong guess that only surfaces at the macro's expansion
+site, potentially in a file compiled much later in the build order.
+
+## 92.3 Result
+
+Clean rebuild after the fix (`rm -rf build && make -f
+Makefile.rtl8188ee kext`) — all driver, compat, and kext object files
+compiled and linked with only the pre-existing warning baseline, no
+new errors.
+
+`check_kext_symbols.sh` re-run: **27 -> 22 unique undefined symbols**,
+zero regressions (every symbol in the new 22 was already present in
+Section 91's list of 27). All five targeted symbols
+(`_be16_to_cpup`, `___skb_dequeue`, `___skb_queue_purge`,
+`_skb_queue_is_last`, `_dev_warn`) confirmed closed.
+
+**Remaining, unresolved (22):**
+
+- ~14 mac80211 API stubs (unchanged from Section 91's list):
+  `_ieee80211_beacon_get`, `_ieee80211_connection_loss`,
+  `_ieee80211_get_tx_rate`, `_ieee80211_has_pm`, `_ieee80211_is_auth`,
+  `_ieee80211_is_pspoll`, `_ieee80211_is_qos_nullfunc`,
+  `_ieee80211_rate_get_vht_mcs`, `_ieee80211_rate_get_vht_nss`,
+  `_ieee80211_rate_set_vht`, `_ieee80211_start_tx_ba_session`,
+  `_ieee80211_stop_tx_ba_cb_irqsafe`,
+  `_ieee80211_tx_info_clear_status`, `_ieee80211_vif_type_p2p`,
+  `__ieee80211_is_robust_mgmt_frame`, `_wiphy_rfkill_start_polling`,
+  `_wiphy_rfkill_stop_polling`
+- PCI compat (2): `_pci_resource_flags`,
+  `_pcie_capability_clear_and_set_word`
+- Kernel/timer compat (2): `_thread_call_cancel_wait`,
+  `_timer_delete_sync`
+- Chip config table (1, still standalone): `_rtl88ee_hal_cfg`
+
+**Next candidates:** per the Section 90 process note, read real call
+sites before assuming stub shape for each. `_rtl88ee_hal_cfg` is
+notably different in kind from the rest — it's a data-table symbol
+(`struct rtl_hal_cfg rtl88ee_hal_cfg`) expected to be defined in
+`rtl8188ee/sw.c` in the untouched real driver source, not a
+compat-layer stub; if it's showing as undefined, check for a
+guarding `#ifdef`/build-config mismatch excluding it from compilation
+or an object-file omission in the Makefile's link line, rather than
+writing a new definition.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

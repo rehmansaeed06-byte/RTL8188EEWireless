@@ -311,42 +311,6 @@ static inline void __skb_unlink(struct sk_buff *skb, struct sk_buff_head *list)
     list->qlen--;
 }
 
-/*
- * __skb_dequeue() / __skb_queue_purge() -- lockless-internal counterparts
- * of the already-existing skb_dequeue()/skb_queue_purge(), same pattern
- * as __skb_queue_tail()/__skb_unlink() immediately above: caller already
- * holds list->lock. Real rtlwifi call sites (core.c, pci.c,
- * rtl8188ee/hw.c -- confirmed via grep against only compiled files) use
- * these inside sections already under the queue's own lock, so a
- * locking variant here would double-lock.
- */
-static inline struct sk_buff *__skb_dequeue(struct sk_buff_head *list)
-{
-    if (list_empty(&list->list))
-        return NULL;
-    struct sk_buff *skb = container_of(list->list.next, struct sk_buff, list);
-    list_del(&skb->list);
-    list->qlen--;
-    return skb;
-}
-
-static inline void __skb_queue_purge(struct sk_buff_head *list)
-{
-    struct sk_buff *skb;
-    while ((skb = __skb_dequeue(list)) != NULL)
-        kfree_skb(skb);
-}
-
-/*
- * skb_queue_is_last() -- real upstream helper, genuinely missing.
- * True if skb is the last element in list.
- */
-static inline bool skb_queue_is_last(const struct sk_buff_head *list,
-                                      const struct sk_buff *skb)
-{
-    return skb->list.next == &list->list;
-}
-
 static inline void skb_queue_head(struct sk_buff_head *list,
                                    struct sk_buff *skb)
 {

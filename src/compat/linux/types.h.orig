@@ -122,15 +122,6 @@ typedef unsigned int   uint;
 #define __cpu_to_le32(x)  cpu_to_le32(x)
 #define __cpu_to_le64(x)  cpu_to_le64(x)
 #define __be16_to_cpu(x)  be16_to_cpu(x)
-
-/* be16_to_cpup: pointer-dereferencing variant, real rtlwifi usage
- * (base.c:1506,1603 -- be16_to_cpup((__be16 *)ether_type_ptr)).
- * Dereferences a big-endian u16 pointer and byteswaps to host order,
- * matching upstream linux/byteorder/generic.h semantics. */
-static inline u16 be16_to_cpup(const __be16 *p)
-{
-    return be16_to_cpu(*p);
-}
 #define __be32_to_cpu(x)  be32_to_cpu(x)
 
 #define BITS_PER_LONG      (sizeof(long) * 8)

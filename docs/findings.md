@@ -6912,4 +6912,145 @@ callers depend on, not just linker satisfaction), then root-cause
 
 ------------------------------------------------------------------------
 
+# 89. Closing bucket-(2) kernel primitives, round 1 — 41 → 36
+
+Continuation of Section 88, same session. Picked off the easiest
+bucket-(2) symbols first, per §88.4's own ordering. Two genuinely
+different root causes found, not one — both real, both now fixed
+and confirmed via rebuild + `kextutil -t` re-run.
+
+## 89.1 udelay/mdelay/usleep_range — real implementations, just unreachable
+
+`src/compat/linux/delay.h` already had correct, complete
+implementations (`IODelay`/`IOSleep` wrappers) — not missing code,
+missing wiring. Grep confirmed nothing `#include`s it except
+`iopoll.h`, and nothing includes `iopoll.h` either. This went
+undetected as a compile error only because `DRIVER_CFLAGS` carries
+`-Wno-implicit-function-declaration` (confirmed by reading the actual
+flag list): real rtlwifi source calling `udelay()` with zero
+declaration in scope got a silent implicit `extern int udelay()`
+instead of an error, which then simply failed to link (and couldn't
+have been satisfied by `delay.h` even if it *had* been in scope late,
+since `delay.h`'s functions are `static inline` — wrong shape for an
+implicit-declaration call site).
+
+**This flag is worth treating as a standing reason to suspect similar
+gaps** — any future "clean build, kext still won't load" symbol
+should first get the same "is there already a correct implementation
+sitting unreached somewhere in `src/compat/`?" check before writing
+new code from scratch.
+
+Fixed by adding `#include <linux/delay.h>` to `rtlwifi_compat.h`'s
+force-included umbrella block, same place/pattern as the existing
+`linux/time.h`/`linux/atomic.h`/`linux/interrupt.h` includes there
+(all of which exist for exactly this reason — pulling something in
+ahead of every driver TU without touching vendored `wifi.h`).
+Confirmed via `kextutil -t` re-run: `_udelay`/`_mdelay`/
+`_usleep_range` all disappeared, no new symbols. 41 → 38.
+
+## 89.2 fls — real declaration exists, doesn't actually export
+
+Different root cause from 89.1, and more subtle. `bitops.h`'s own
+prior comments (written in an earlier session) claimed `fls()` didn't
+need a local definition because MacKernelSDK's `<libkern/libkern.h>`
+declares `extern int fls(unsigned int);` — confirmed that claim is
+literally true (`grep` found the exact declaration). But `kmutil
+load` still reported `_fls` as genuinely unresolved.
+
+First fix attempt (a plain `static inline int fls(...)` redefinition
+in `bitops.h`, same style as its neighbors `__fls`/`fls64`) failed to
+even **compile**: `error: static declaration of 'fls' follows
+non-static declaration` — proving `libkern.h`'s real declaration
+genuinely IS reachable in real driver translation units (`base.c`
+pulls it in transitively before `bitops.h` runs). So the declaration
+exists and is in scope; the shipped kernel binary apparently just
+doesn't export a symbol named `_fls` under that KPI after all,
+despite the header still declaring it and `com.apple.kpi.libkern`
+being a loaded, `Info.plist`-declared dependency — a header/reality
+mismatch, not a reachability problem like 89.1's.
+
+**Real fix:** can't redefine `fls()` itself (would re-collide with
+the real declaration every time). Defined a differently-named
+function (`rtlwifi_fls`, same `__builtin_clz`-based body `__fls`/
+`fls64` already use successfully) and redirected every real call site
+via `#define fls(x) rtlwifi_fls(x)`. This is a macro, so it only
+catches actual call-site usage (`fls(something)`), not `fls` used as
+a bare identifier/function-pointer — confirmed no such usage exists
+in this project by the clean rebuild with no new warnings/errors and
+no new undefined symbols after the change. Confirmed via `kextutil
+-t` re-run: `_fls` disappeared, no regressions. 38 → 37 (folded into
+the combined 38 → 36 in 89.3, since 89.2 and 89.3 were fixed and
+rebuilt together).
+
+## 89.3 get_random_bytes — genuinely new, plus a header self-containedness gap
+
+No implementation existed anywhere under any name (confirmed by grep
+before writing, same as `rtw88_printk`/etc. in §88.3). Real rtlwifi
+source calls `get_random_bytes(buf, len)`. Found the real, working
+model to base this on: `RTW88IEEE80211.cpp` already calls
+MacKernelSDK's `read_random(void *, u_int)` directly (WPA2 4-way-
+handshake SNonce generation, ~line 2471) and that file has built and
+linked clean across every build this session — strong evidence
+`read_random` is genuinely reachable and exported in this build,
+stronger than the theoretical concern that `<sys/random.h>`'s
+declaration is gated behind `__APPLE_API_UNSTABLE` (confirmed that
+macro is NOT defined anywhere in this build — flagged, not chased
+further, since the working call site settles the practical question).
+
+Created `src/compat/linux/random.h`: a thin `get_random_bytes()`
+wrapper around `read_random()`, wired into the force-included
+umbrella the same way as 89.1's `delay.h` fix.
+
+**Hit a real, separate build error on first attempt:** `error:
+unknown type name 'u_int'`, pointing directly at `<sys/random.h>`'s
+own declaration line (`void read_random(void* buffer, u_int
+numBytes);`). The real SDK header uses `u_int` (a BSD typedef from
+`<sys/types.h>`) without pulling in the header that defines it — a
+self-containedness gap in the SDK header itself, not something fixable
+by editing it (it's vendored, read-only). `RTW88IEEE80211.cpp` (the
+proven-working call site) is a `.cpp`/IOKit-context file that
+evidently reaches the typedef some other way; the real rtlwifi driver
+`.c` files compiled with `-D__KERNEL__` don't. Fixed by defining
+`u_int` locally in `random.h`, guarded with the SDK's own `_U_INT`
+macro (`sys/_types/_u_int.h`) so it's a harmless no-op if that real
+header ends up in scope too, in either order — same established
+pattern as `rtlwifi_compat.h`'s own `linux/time.h`/`linux/atomic.h`
+force-includes for `wifi.h`'s otherwise-missing `time64_t`/`atomic_t`.
+Confirmed via `kextutil -t` re-run: `_get_random_bytes` disappeared,
+no regressions.
+
+## 89.4 Result
+
+Undefined-symbol count: 41 → 36 (net -5: `_udelay`, `_mdelay`,
+`_usleep_range`, `_fls`, `_get_random_bytes` all confirmed resolved,
+zero new symbols introduced by either fix, across 3 separate clean
+`rm -rf build && make` runs this round — once after 89.1, once after
+89.2's first failed attempt, once after 89.2+89.3 together once both
+were corrected).
+
+**Remaining, unresolved, real (36):** `_local_irq_enable`,
+`_local_irq_restore`, `_local_save_flags`, `_rcu_read_lock`,
+`_rcu_read_unlock`, `_be16_to_cpup`, `_ether_addr_equal_64bits`,
+`_ether_addr_equal_unaligned`, `_timer_delete_sync`,
+`___skb_dequeue`, `___skb_queue_purge`, `_skb_queue_is_last`,
+`_dev_warn`, `_pci_resource_flags`,
+`_pcie_capability_clear_and_set_word` (13 kernel-primitive symbols
+left, down from 15 — `_fls`/`_get_random_bytes` came out of this
+original bucket); ~21 mac80211 API stubs (unchanged, not yet
+started); `_rtl88ee_hal_cfg` (still standalone, still not
+root-caused); `_thread_call_cancel_wait` (still likely collateral,
+still deprioritized). Kext still cannot load. Given this round found
+TWO distinct root causes behind symbols that looked identical from
+`kextutil -t`'s output alone (89.1's "real code, just unreached" vs
+89.2's "declaration reachable, symbol not actually exported"), the
+next symbols should each get the same two-step check before writing
+anything: (1) does a correct implementation already exist somewhere
+unreached (grep first), and if genuinely absent, (2) does a
+plausible MacKernelSDK/libkern real equivalent exist, and if so, does
+attempting to rely on it directly (rather than reimplementing)
+actually compile without a redeclaration conflict — not just "does
+the header declare it."
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

@@ -1,6 +1,80 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## SIXTEENTH UPDATE (read this first) — first real kextutil/kmutil
+## SEVENTEENTH UPDATE (read this first) — 5 more kextutil/kmutil load
+## symbols closed (udelay/mdelay/usleep_range wiring gap, fls,
+## get_random_bytes). 48 → 36 undefined symbols total across this
+## and the SIXTEENTH UPDATE. Kext still does not load.
+
+Same session as the SIXTEENTH UPDATE below, continued. Picked off
+the easiest remaining symbols per that update's own "likely fastest
+next win" note. Full detail: `docs/findings.md` Section 89.
+
+**Two genuinely different root causes, not one** — worth remembering
+for whatever's tackled next:
+
+1. `udelay`/`mdelay`/`usleep_range` — `compat/linux/delay.h` already
+   had real, correct implementations. Just never `#include`d from
+   anywhere reachable (confirmed: only `iopoll.h` referenced it, and
+   nothing includes `iopoll.h` either). Went undetected as a compile
+   error only because `DRIVER_CFLAGS` carries
+   `-Wno-implicit-function-declaration` — this flag is worth
+   suspecting behind any future "clean build, kext still won't load"
+   symbol. Fixed by wiring `delay.h` into `rtlwifi_compat.h`'s
+   force-included umbrella, same pattern as the existing
+   `linux/time.h`/`linux/atomic.h`/`linux/interrupt.h` includes
+   there.
+
+2. `fls` — a genuinely different, more subtle case. MacKernelSDK's
+   `<libkern/libkern.h>` really does declare `extern int
+   fls(unsigned int);`, and that declaration really is reachable in
+   driver translation units (confirmed the hard way: a first-attempt
+   `static inline fls()` redefinition failed to *compile* with
+   "static declaration follows non-static declaration" — proving the
+   real declaration was in scope). But the shipped kernel apparently
+   doesn't actually export a symbol named `_fls` under that KPI
+   despite the header claiming it — confirmed via `kextutil -t`.
+   **A header declaring something doesn't mean it's actually
+   exported for third-party kexts to link against** — don't trust
+   header presence alone as proof a symbol will bind. Fixed by
+   defining a differently-named function (`rtlwifi_fls`) and
+   redirecting real call sites via `#define fls(x) rtlwifi_fls(x)`,
+   since redefining `fls()` itself would re-collide with the real
+   declaration.
+
+`get_random_bytes` was genuinely new (no implementation existed
+anywhere), modeled on `RTW88IEEE80211.cpp`'s already-working direct
+call to MacKernelSDK's `read_random()` — hit one more real,
+independent bug along the way: `<sys/random.h>` uses the BSD `u_int`
+typedef in its own declaration without pulling in the header that
+defines it, so the real rtlwifi driver `.c` files (compiled with
+`-D__KERNEL__`, unlike `RTW88IEEE80211.cpp`) don't have `u_int` in
+scope. Fixed by defining it locally, guarded with the SDK's own
+`_U_INT` macro so it's harmless if the real header shows up too.
+
+**Net: 41 → 36 undefined symbols**, confirmed via 3 separate clean
+`rm -rf build && make` runs plus `kextutil -t` re-checks, zero
+regressions each time. Kext still doesn't load — 13 kernel-primitive
+symbols left (`_local_irq_*`, `_rcu_read_*`, `_be16_to_cpup`,
+`_ether_addr_equal_*`, `_timer_delete_sync`, `___skb_dequeue`,
+`___skb_queue_purge`, `_skb_queue_is_last`, `_dev_warn`,
+`_pci_resource_flags`, `_pcie_capability_clear_and_set_word`), ~21
+mac80211 API stubs untouched, plus the still-standalone
+`_rtl88ee_hal_cfg` and still-deprioritized `_thread_call_cancel_wait`.
+
+**Process note for next session:** given this round found two
+different root causes behind symbols that looked identical from
+`kextutil -t`'s flat symbol list, check each remaining symbol in two
+steps before writing anything: (1) grep for whether a correct
+implementation already exists somewhere unreached in
+`src/compat/` (like `delay.h` was), and only if genuinely absent,
+(2) check whether a plausible MacKernelSDK/libkern equivalent exists
+— and if so, whether relying on it directly actually compiles
+without a redeclaration conflict, not just whether the header
+declares it (like `fls` needed).
+
+------------------------------------------------------------------------
+
+## SIXTEENTH UPDATE — first real kextutil/kmutil
 ## load attempt made: 48 undefined symbols found, 8 fixed (a real
 ## rtw88-vs-rtlwifi entry-point mixup plus 6 never-defined functions),
 ## 41 remain. Kext still does not load.

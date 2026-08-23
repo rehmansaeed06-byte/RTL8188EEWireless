@@ -61,6 +61,23 @@
 #include <linux/interrupt.h>
 
 /*
+ * udelay/mdelay/usleep_range/msleep/etc. - compat/linux/delay.h already
+ * has real, correct implementations (IODelay/IOSleep wrappers), but
+ * nothing force-included it, and no rtlwifi driver .c file includes
+ * it directly either (confirmed: only iopoll.h references delay.h,
+ * and nothing includes iopoll.h). Went undetected at compile time
+ * only because DRIVER_CFLAGS carries -Wno-implicit-function-
+ * declaration: real rtlwifi source calling udelay()/mdelay() with no
+ * declaration in scope got an implicit int-returning extern-linkage
+ * declaration instead of an error, which then failed to link.
+ * Confirmed via kmutil load: _udelay/_mdelay/_usleep_range all
+ * appeared as genuinely unresolved symbols (findings.md Section
+ * 88.1). Likely masking other similar gaps the same way.
+ */
+#include <linux/delay.h>
+#include <linux/random.h>
+
+/*
  * fallthrough; — a C23/recent-kernel pseudo-keyword core.c uses as a
  * bare statement inside switch cases (real usage: `fallthrough;` on its
  * own line, no arguments). Not a real identifier or function — just a

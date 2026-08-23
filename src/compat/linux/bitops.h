@@ -102,8 +102,22 @@ static inline u32 rtw_set32_mask_helper(u32 val, u32 mask, u32 data)
     return (val & ~mask) | ((data << __ffs(mask)) & mask);
 }
 
-/* fls is declared extern in MacKernelSDK's <libkern/libkern.h>; use it as-is.
- * fls64 is defined above; no re-definition here. */
+/* fls is declared extern in MacKernelSDK's <libkern/libkern.h>, but that
+ * declaration existing doesn't mean it's actually exported for third-party
+ * kexts to bind against - confirmed via kmutil load: _fls appeared as a
+ * genuinely unresolved symbol (findings.md Section 88). Defined here
+ * instead using the same __builtin_clz approach __fls/fls64 already use. */
+/* Renamed to rtlwifi_fls + macro redirect: a plain static inline
+ * fls() collided with libkern.h's real `extern int fls(unsigned int);`
+ * declaration ("static declaration of 'fls' follows non-static
+ * declaration") - that declaration IS reachable in real driver TUs,
+ * it's just apparently not actually exported by the shipped kernel
+ * under that symbol name (confirmed via kmutil load). */
+static inline int rtlwifi_fls(unsigned int x)
+{
+    return x ? (32 - __builtin_clz(x)) : 0;
+}
+#define fls(x) rtlwifi_fls(x)
 
 static inline unsigned int hweight8(unsigned int w)
 {

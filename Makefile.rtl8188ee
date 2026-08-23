@@ -131,12 +131,36 @@ COMPAT_FLAGS := \
     -I$(KEXT_SRC)
 
 # C flags for rtlwifi driver files
+#
+# findings.md Section 87: -I$(LINUX_SRC)/-I$(CHIP_SRC) placed AFTER
+# $(COMPAT_FLAGS) here meant quote-form #include "pci.h" (used by
+# real rtlwifi's own base.c, efuse.c, and pci.c — confirmed by direct
+# grep against the real checkout) was silently resolving to this
+# port's OWN unrelated compat-shim src/compat/linux/pci.h (a small
+# IOKit-facing PCI-config-space shim, zero overlapping symbols)
+# instead of real rtlwifi's own pci.h (struct rtl_pci, rtl8192_tx_ring,
+# BE_QUEUE, etc.) — a real, previously-undetected bug affecting three
+# files already believed to build correctly, not just new code.
+# CONFIRMED via a real failed compile this session (rtlwifi_compat.c,
+# added for the same real pci.h symbols) — the error looked like a
+# missing include but was actually a shadowed one.
+#
+# Fixed by moving -I$(LINUX_SRC)/-I$(CHIP_SRC) BEFORE $(COMPAT_FLAGS),
+# so real rtlwifi's own headers win any filename collision with this
+# port's compat shim. CONFIRMED SAFE to reorder, not just convenient:
+# `ls $(LINUX_SRC)/*.h` vs `ls $(COMPAT_DIR)/linux/*.h` cross-checked
+# directly — only two filenames collide (pci.h, usb.h). usb.h's only
+# real-rtlwifi consumer is usb.c, which is NOT in DRIVER_SRCS (this
+# port only builds the PCI chip variant) and wifi.h's own usb.h
+# reference is angle-bracket (<linux/usb.h>), unaffected by quote-form
+# search order either way — so this reorder has no other file in this
+# build's real source list to break.
 DRIVER_CFLAGS := \
     $(KEXT_FLAGS) \
-    $(COMPAT_FLAGS) \
-    -include $(COMPAT_DIR)/rtlwifi_compat.h \
     -I$(LINUX_SRC) \
     -I$(CHIP_SRC) \
+    $(COMPAT_FLAGS) \
+    -include $(COMPAT_DIR)/rtlwifi_compat.h \
     -DRTL8188EE_MACOS=1 \
     -D__KERNEL__ \
     -Wno-implicit-function-declaration \

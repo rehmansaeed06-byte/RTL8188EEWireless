@@ -1,6 +1,116 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## FOURTEENTH UPDATE (read this first) — Bucket A closed; RTW88IEEE80211.cpp
+## FIFTEENTH UPDATE (read this first) — RTW88PCIDevice.cpp's own
+## unported-symbol gap closed; a real header-shadow bug found and
+## fixed affecting 3 already-shipped files; FIRST-EVER full clean
+## `make clean && make kext` succeeds end to end, real .kext produced.
+
+The FOURTEENTH UPDATE below closed `RTW88IEEE80211.cpp` completely.
+This update closes `RTW88PCIDevice.cpp`'s own separate gap (Section
+77's original catalogue), and along the way finds and fixes a real
+bug in already-shipped source that had nothing to do with either
+gap. See `docs/findings.md` Section 87 for full detail.
+
+**Section 77's "17 names" was an overcount, corrected before any fix
+was written.** 6 of the 17 only ever appeared inside `/* comments */`
+— never real code, never a real error. 1 more was already
+self-declared. Of the remaining 10 real names, 3 already had working
+infrastructure sitting unused (`rtw88_pci_io_ops`/`rtw88_dma_ops`
+already fully defined in the compat headers; `rtw88_find_fw_dir`'s
+real equivalent already correctly written in `rtl8188ee_firmware.c`).
+7 were genuinely new: `compat_init`/`_exit` (confirmed no-ops — real
+rtlwifi has no module-level PCI-subsystem registration to mirror),
+`force_wifi_only` (confirmed no-op — RTL8188EE's real
+`get_btc_status()` always returns false, so the wifi-only path is
+already unconditional for this chip), `be_tx_avail`/
+`debug_dump_tx_state` (real fallback ring-arithmetic rtlwifi itself
+uses when a chip has no `get_available_desc`), and `set_tx_resume_cb`
+(wired to `ieee80211_wake_queue()` — the real mac80211 API real
+rtlwifi's own TX-complete ISR calls, which existed as a declaration in
+this port's `mac80211.h` but, unlike its three no-op siblings, had no
+definition at all — a real gap found along the way).
+
+**Separate real bug found and fixed, unrelated to Section 77's list:**
+`src/compat/linux/firmware.h` was wired to
+`request_firmware_nowait()`/`release_firmware()`/
+`rtw88_load_firmware_sync()` — names its own comment claimed live in
+`rtw88_compat.c`, a file this project doesn't have. Only the correctly
+-named `rtl8188ee_`-prefixed versions exist (and were already written
+correctly in `rtl8188ee_firmware.c`, whose own header comment had
+*already* flagged this exact seam as open at authoring time). Fixed by
+rewiring `firmware.h` to the real names.
+
+**A much bigger, previously-undetected bug found while fixing the new
+code, affecting 3 already-shipped files:** adding the new TX-ring
+bridge functions needed real rtlwifi's `pci.h` (for `rtl8192_tx_ring`/
+`BE_QUEUE`/`rtl_pcidev()`), and a first attempt to `#include "pci.h"`
+produced "incomplete type" errors — not a missing include, a
+*shadowed* one. `Makefile.rtl8188ee`'s `DRIVER_CFLAGS` had this port's
+own compat-shim `-I` paths listed BEFORE the real-rtlwifi `-I` paths,
+so quote-form `#include "pci.h"` was silently resolving to this port's
+own unrelated IOKit-facing `pci.h` (same filename, completely
+different header) instead of real rtlwifi's. Live grep against real
+rtlwifi source found `base.c`, `efuse.c`, and `pci.c` itself all do
+this same `#include "pci.h"` — and all three are already in
+`DRIVER_SRCS`, already compiled into every prior build of this
+project. **All three have been silently compiling against the wrong
+header this entire project**, not just for this session's new code —
+a real bug in already-shipped source, only surfaced because new code
+happened to need a symbol the wrong header didn't have. Fixed by
+reordering `DRIVER_CFLAGS` so real rtlwifi's headers win. Confirmed
+safe to reorder (not just convenient) by cross-checking every real
+rtlwifi header filename against every compat-shim header filename
+first — only `pci.h` and `usb.h` collide, and `usb.h`'s only real
+consumer (`usb.c`) isn't in this port's build at all.
+
+**Real compile confirmation, in two stages** (`docs/findings.md`
+Section 87.6): isolated syntax-only checks first (`RTW88PCIDevice.cpp`
+— 11 warnings, 0 errors, clean on the first attempt; `rtlwifi_
+compat.c` — 26 warnings, 0 errors, after both fixes). Then, since the
+Makefile change affects every driver file's real recipe: a genuine
+**`rm -rf build && make -f Makefile.rtl8188ee kext`, no isolation, no
+suppressed steps — succeeded completely.** Every source file compiled,
+linked, and synced into a real `.kext` bundle with a real UUID and a
+final `OK build/out/rtl8188ee.kext`. This is the first time in this
+project's recorded history that a full clean build has completed
+without error.
+
+### What is still open (real, not superseded)
+
+- **Runtime/hardware behavior is still completely untested.** This is
+  the load-bearing caveat on everything above: a clean full build is
+  real and major, but says nothing about whether probe succeeds,
+  association works, frames actually move, or any of the specific
+  hazards this project's own comments describe (the LPS-wake stall,
+  the BE-ring backpressure mechanism) are actually avoided at runtime.
+  Nothing built or fixed so far has been run against real hardware.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/`) — the full clean build this session did
+  NOT hit this, worth understanding why before assuming it's actually
+  fixed rather than avoided by luck/ordering.
+- The `pci.h`/`usb.h` filename-collision pattern is fixed for the
+  current `DRIVER_SRCS` list, but worth remembering generally: any
+  future real-rtlwifi file added to the build that does a quote-form
+  `#include` of a name also present under `src/compat/linux/` or
+  `src/compat/net/` deserves the same suspicion.
+
+### Correct next step
+
+With both `RTW88IEEE80211.cpp` and `RTW88PCIDevice.cpp` now
+compiler-clean and a full build succeeding, there is no known
+compiler-confirmed error backlog left anywhere in this kext. The
+correct next step is a real hardware test — load the kext on actual
+RTL8188EE hardware and observe probe/association/TX/RX behavior — not
+further static-analysis work, since no further static gaps are known.
+If a new Claude picks this up without hardware access, the next best
+use of time is a careful line-by-line re-read of the Bucket-A
+stall-avoidance logic and the Section 87 TX-backpressure mechanism
+against the real rtlwifi call sequences one more time, specifically
+looking for anything that would only matter at runtime (locking order,
+timing assumptions, IOKit/IOWorkLoop threading interactions with
+rtlpriv's own locks) rather than anything a compiler could catch.
+
+## FOURTEENTH UPDATE (historical; superseded by FIFTEENTH UPDATE above) — Bucket A closed; RTW88IEEE80211.cpp
 ## now compiles with ZERO errors; rtlwifi_compat.c isolation-compiled clean
 ## for the first time. Every bucket tracked since Section 80/81 is closed.
 

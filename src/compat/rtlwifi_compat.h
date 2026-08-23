@@ -236,4 +236,78 @@ void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
                                    struct ieee80211_vif *vif,
                                    const u8 *bssid);
 
+/*
+ * findings.md Section 87 (RTW88PCIDevice.cpp's own unported-symbol
+ * gap, Section 77's original catalogue corrected and closed). Each
+ * function below grepped against real rtlwifi source before writing,
+ * same discipline as the RTW88IEEE80211.cpp Buckets. Full evidence in
+ * rtlwifi_compat.c's block comments; summary here.
+ */
+
+/*
+ * rtlwifi_compat_init()/_exit() — CONFIRMED no-ops. rtlwifi has no
+ * module-level init/exit of its own to mirror (live grep for
+ * pci_register_driver/struct pci_driver/probe=/remove= in real pci.c
+ * returned zero hits — this port already replaces that whole
+ * Linux-PCI-subsystem layer with IOKit, established in earlier
+ * sections). The workqueues this function's call site comment
+ * ("Initialise compat runtime (workqueues, timers)") refers to
+ * (system_wq/system_long_wq) are static file-scope storage — always
+ * valid from kext load, no runtime creation step exists to call.
+ */
+void rtlwifi_compat_init(void);
+void rtlwifi_compat_exit(void);
+
+/*
+ * rtlwifi_force_wifi_only() — CONFIRMED no-op, for a stronger reason
+ * than "no mechanism exists": for RTL8188EE specifically,
+ * rtl88e_get_btc_status() (real chip source, rtl8188ee/sw.c,
+ * compiled as-is into this port per DRIVER_SRCS) is hardcoded
+ * `return false;` unconditionally — this chip has no BT-coexistence
+ * hardware/logic at all. Real rtlwifi's own init path
+ * (pci.c:1711-1717) already takes the wifi-only branch
+ * (btc_ops->btc_init_variables_wifi_only) automatically whenever
+ * get_btc_status() is false — for this chip, that is the *only* path
+ * it can ever take. There is nothing to force; it already always
+ * happens.
+ */
+void rtlwifi_force_wifi_only(void);
+
+/*
+ * rtlwifi_be_tx_avail() — real equivalent of the BE-ring free-slot
+ * count RTW88PCIDevice.cpp uses for TX backpressure. rtl8188ee's
+ * hal_ops has no get_available_desc implementation (real rtl_hal_ops
+ * member exists at wifi.h:2264, but grep against rtl8188ee/*.c for it
+ * returns zero hits), so this uses the real mechanism rtlwifi itself
+ * falls back to internally: struct rtl8192_tx_ring's own entries/
+ * queue fields (pci.h:128-137), read the same way
+ * _rtl_pci_tx_chk_waitq() does at pci.c:417-419
+ * (`ring->entries - skb_queue_len(&ring->queue)`), for the BE queue
+ * specifically (BE_QUEUE == 1, pci.h:24).
+ */
+unsigned int rtlwifi_be_tx_avail(void);
+
+/*
+ * rtlwifi_debug_dump_tx_state() — diagnostic dump of the same BE-ring
+ * state rtlwifi_be_tx_avail() reads, plus cur_tx_wp/cur_tx_rp
+ * (pci.h:137-138), for the debug timer's stall diagnostics.
+ */
+void rtlwifi_debug_dump_tx_state(void);
+
+/*
+ * rtlwifi_set_tx_resume_cb() — registers the callback
+ * RTW88PCIDevice.cpp wants fired when TX ring slots free up. Real
+ * rtlwifi's own TX-complete path (_rtl_pci_tx_isr, pci.c:450) signals
+ * exactly this event via the real mac80211 API
+ * ieee80211_wake_queue(hw, queue) (pci.c:540) — CONFIRMED that name
+ * is declared in this port's mac80211.h (line 1429) but, unlike its
+ * three siblings (ieee80211_stop_queues/wake_queues/stop_queue, all
+ * confirmed-deliberate no-ops per the comment above them), has NO
+ * definition anywhere in this file — a real gap, not a deliberate
+ * no-op. Fixed by giving ieee80211_wake_queue() a real body that
+ * fires the registered callback, making it the actual, correct hook
+ * point rather than inventing a parallel bespoke mechanism.
+ */
+void rtlwifi_set_tx_resume_cb(void (*cb)(void));
+
 #endif /* RTLWIFI_COMPAT_H */

@@ -13,6 +13,7 @@
 /* The Linux-compat pci_ops that route through this class */
 extern "C" {
 #include "../compat/rtlwifi_compat.h"
+#include "../compat/linux/firmware.h"
 }
 
 extern "C" void rtw88_trigger_interrupt(void);
@@ -322,7 +323,7 @@ bool RTW88PCIDevice::start(IOService *provider)
     rtw88_dma_ops      = &_dma_ops;
 
     /* Initialise compat runtime (workqueues, timers) */
-    rtw88_compat_init();
+    rtlwifi_compat_init();
 
     /* Build the pci_dev struct for the Linux driver */
     _compatPciDev = (struct pci_dev *)IOMallocZero(sizeof(struct pci_dev));
@@ -352,7 +353,7 @@ bool RTW88PCIDevice::start(IOService *provider)
     }
 
     /* Locate firmware Resources/ and set fw dir */
-    rtw88_find_fw_dir();
+    rtl8188ee_find_fw_dir();
 
     /* Create 802.11 state machine */
     _ieee80211 = RTW88IEEE80211::create(this, _compatPciDev);
@@ -361,17 +362,17 @@ bool RTW88PCIDevice::start(IOService *provider)
         return false;
     }
 
-    /* Force-disable BT coexistence.  rtw_pci_probe (inside create()) has
-     * already run rtw_core_init which filled rtwdev->efuse.btcoex from
-     * the chip's eFuse — but the actual coex setup happens later in
-     * rtw_power_on (via _ieee80211->start() below).  Override now so the
-     * coex driver initialises with wifi_only=true and never enables the
-     * BT-side H2C/C2H exchange that appears to be wedging BE TX. */
-    rtw88_force_wifi_only();
+    /* Force-disable BT coexistence. RTL8188EE has no BT-coexistence
+     * hardware at all — rtl88e_get_btc_status() (real chip source) is
+     * hardcoded to always return false, so rtlwifi's own init path
+     * (pci.c's BSS_CHANGED init sequence) already always takes the
+     * wifi-only branch for this chip unconditionally. This call is a
+     * confirmed no-op kept for documentation/parity with the call
+     * site rather than deleted — see findings.md Section 87. */
+    rtlwifi_force_wifi_only();
 
     /* Run the full probe now so the MAC address is populated before
-     * the Ethernet interface is attached.  enable() will call
-     * rtw_core_start() to power on the hardware for TX/RX. */
+     * the Ethernet interface is attached. */
     IOReturn probeRet = _ieee80211->start();
     if (probeRet != kIOReturnSuccess) {
         IOLog("rtw88: probe failed (0x%08x)\n", probeRet);
@@ -384,7 +385,7 @@ bool RTW88PCIDevice::start(IOService *provider)
     _initialized = true;
     /* Wire TX flow-control resume: fired from the IRQ bottom-half after tx_isr
      * frees BE ring slots, so a stalled output queue gets re-serviced. */
-    rtw88_set_tx_resume_cb(rtw88_tx_resume_trampoline);
+    rtlwifi_set_tx_resume_cb(rtw88_tx_resume_trampoline);
     if (_intrSrc) _intrSrc->enable();
 
     /* Debug: poll BE ring + HISR/HIMR every second. Logs distinguish chip
@@ -404,11 +405,11 @@ bool RTW88PCIDevice::start(IOService *provider)
 
 void RTW88PCIDevice::debugTimerFired(IOTimerEventSource *src)
 {
-    unsigned int avail = rtw88_be_tx_avail();
+    unsigned int avail = rtlwifi_be_tx_avail();
     if (_txStalled && avail >= kRTW88TxResumeAvail)
         resumeTxIfStalled();
     if (_txStalled || avail < kRTW88TxStallAvail)
-        rtw88_debug_dump_tx_state();
+        rtlwifi_debug_dump_tx_state();
     src->setTimeoutMS(1000);   /* re-arm */
 }
 
@@ -431,7 +432,7 @@ void RTW88PCIDevice::teardown()
 {
     /* Stop the IRQ bottom-half from calling back into us before we tear down
      * the output queue it services. */
-    rtw88_set_tx_resume_cb(nullptr);
+    rtlwifi_set_tx_resume_cb(nullptr);
 
     if (_debugTimer)
         _debugTimer->cancelTimeout();
@@ -447,7 +448,7 @@ void RTW88PCIDevice::teardown()
 
     if (_ieee80211)  { _ieee80211->stop(); _ieee80211->release(); _ieee80211 = nullptr; }
 
-    rtw88_compat_exit();
+    rtlwifi_compat_exit();
 
     if (_debugTimer) { _debugTimer->cancelTimeout(); _workLoop->removeEventSource(_debugTimer); _debugTimer->release(); _debugTimer = nullptr; }
     if (_intrSrc)  { _workLoop->removeEventSource(_intrSrc); _intrSrc->release();  _intrSrc = nullptr; }
@@ -581,15 +582,11 @@ IOOutputQueue *RTW88PCIDevice::createOutputQueue()
     /*
      * Without an output queue, IONetworkController delivers outputPacket()
      * straight from the networking stack, which can call it concurrently from
-     * multiple threads.  rtw_pci_tx_write_data() computes the TX buffer-
-     * descriptor slot from ring->r.wp and fills it BEFORE taking irq_lock
-     * (only the wp increment is locked), so two concurrent submissions fill the
-     * same slot and skip the next, leaving a zeroed descriptor in the BE ring.
-     * The chip then stalls its TX DMA on that zero descriptor (HW rp frozen,
-     * FIFO empty) and the shared DMA wedges RX too.
-     *
-     * An IOGatedOutputQueue runs every outputPacket() under the work-loop gate,
-     * serializing submission so the ring fill is single-threaded.
+     * multiple threads. Real rtlwifi's own TX-buffer-descriptor fill
+     * (rtl_pci_tx, pci.c) is not proven safe against concurrent submission
+     * on this port's slot-fill path either, so an IOGatedOutputQueue runs
+     * every outputPacket() under the work-loop gate, serializing submission
+     * so the ring fill is single-threaded.
      */
     return IOGatedOutputQueue::withTarget(this, getWorkLoop(), 256);
 }
@@ -602,16 +599,19 @@ UInt32 RTW88PCIDevice::outputPacket(mbuf_t m, void *param)
         return kIOReturnOutputDropped;
     }
     /*
-     * Backpressure instead of dropping.  When the BE ring is nearly full,
-     * rtw_pci_tx_write_data() would return -ENOSPC and rtw_tx() would FREE the
-     * skb — silently dropping it.  Under a sustained transfer those dropped
-     * frames (TCP ACKs/data) stall the connection.  Returning
-     * kIOReturnOutputStall makes IOGatedOutputQueue hold this exact packet and
-     * stop dispatching; resumeTxIfStalled() (fired from the IRQ bottom-half
-     * after tx_isr frees slots) re-services the queue.  Threshold leaves
-     * headroom so rtw_tx never actually hits -ENOSPC.
+     * Backpressure instead of dropping. When the BE ring is nearly full,
+     * real rtlwifi's own TX submission path can return -ENOSPC and drop the
+     * skb — silently dropping the frame. Under a sustained transfer those
+     * dropped frames (TCP ACKs/data) stall the connection. Returning
+     * kIOReturnOutputStall makes IOGatedOutputQueue hold this exact packet
+     * and stop dispatching; resumeTxIfStalled() re-services the queue, now
+     * wired via ieee80211_wake_queue() — the real mac80211 API real
+     * rtlwifi's own _rtl_pci_tx_isr() calls after freeing ring slots
+     * (pci.c:540) — rather than a bespoke callback (findings.md Section
+     * 87). Threshold leaves headroom so submission never actually hits
+     * -ENOSPC.
      */
-    if (rtw88_be_tx_avail() < kRTW88TxStallAvail) {
+    if (rtlwifi_be_tx_avail() < kRTW88TxStallAvail) {
         _txStalled = true;
         return kIOReturnOutputStall;
     }
@@ -620,9 +620,12 @@ UInt32 RTW88PCIDevice::outputPacket(mbuf_t m, void *param)
 
 void RTW88PCIDevice::resumeTxIfStalled()
 {
-    /* Runs on the IRQ bottom-half thread (no rtw88 locks held). Use async
-     * service so we never block on the output-queue gate from here. */
-    if (_txStalled && rtw88_be_tx_avail() >= kRTW88TxResumeAvail) {
+    /* Called via ieee80211_wake_queue(), fired from real rtlwifi's
+     * own _rtl_pci_tx_isr() (pci.c:540) after freeing BE ring slots —
+     * runs on whatever thread/lock context that real ISR path itself
+     * runs under (not independently verified here). Use async service
+     * so we never block on the output-queue gate from here regardless. */
+    if (_txStalled && rtlwifi_be_tx_avail() >= kRTW88TxResumeAvail) {
         _txStalled = false;
         if (_txQueue)
             _txQueue->service(IOBasicOutputQueue::kServiceAsync);

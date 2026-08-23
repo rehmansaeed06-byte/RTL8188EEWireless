@@ -6527,4 +6527,217 @@ and not superseded:
 
 ------------------------------------------------------------------------
 
+# 87. `RTW88PCIDevice.cpp`'s own unported-symbol gap (Section 77)
+     closed. Section 77's 17-name catalogue corrected to 10 real
+     names. A real, previously-undetected header-shadowing bug found
+     and fixed along the way, affecting 3 files already believed to
+     build correctly. First-ever full clean `make clean && make kext`
+     succeeds end to end.
+
+## 87.1 Section 77's count corrected before any fix was written
+
+Live re-read of `RTW88PCIDevice.cpp` found 6 of the original 17 names
+(`rtw_core_init`, `rtw_core_start`, `rtw_pci_probe`,
+`rtw_pci_tx_write_data`, `rtw_power_on`, `rtw_tx`) exist ONLY inside
+`/* ... */` comments — CONFIRMED by isolating every occurrence: none
+are real code, so they were never a real error source. A 7th
+(`rtw88_trigger_interrupt`) was already self-declared in the file.
+That leaves 10 real names, three of which turned out cheaper than
+listed:
+
+- `rtw88_pci_io_ops` — already fully defined (`struct pci_ops_rtw88`)
+  in `src/compat/linux/pci.h`, reachable transitively already.
+- `rtw88_dma_ops`/`struct rtw88_dma_alloc_ops` — already fully
+  defined in `src/compat/linux/dma-mapping.h`.
+- `rtw88_find_fw_dir` — the real equivalent
+  (`rtl8188ee_find_fw_dir(void) {}`) already existed in
+  `rtl8188ee_firmware.c`, correctly a no-op (this port loads firmware
+  from an embedded blob table, not a filesystem directory) — just
+  needed renaming at the call site, not new logic.
+
+7 genuinely new items remained: `rtw88_compat_init`/`_exit`,
+`rtw88_force_wifi_only`, `rtw88_be_tx_avail`,
+`rtw88_debug_dump_tx_state`, `rtw88_set_tx_resume_cb` (+ its
+trampoline, already self-contained in the file).
+
+## 87.2 Research, each grepped against real rtlwifi source
+
+- **`compat_init`/`_exit`** — CONFIRMED no-ops. `grep -n
+  "pci_register_driver\|struct pci_driver\|probe\s*=\|remove\s*="`
+  against real `pci.c` returned ZERO hits — rtlwifi has no
+  module-level Linux-PCI-subsystem registration of its own to mirror
+  (this port already replaces that layer with IOKit). The workqueues
+  this port's own call-site comment references
+  (`system_wq`/`system_long_wq`) are static file-scope storage
+  (`rtlwifi_compat.c:1080-1083`), always valid from kext load, no
+  runtime creation step exists to call.
+- **`force_wifi_only`** — CONFIRMED no-op, for a stronger reason than
+  "no mechanism exists": `rtl88e_get_btc_status()` (real RTL8188EE
+  chip source, `rtl8188ee/sw.c:187-190`, compiled as-is into this
+  port) is hardcoded `return false;` unconditionally — this chip has
+  no BT-coexistence hardware/logic at all. Real rtlwifi's own init
+  path (`pci.c:1711-1717`, full body read) already takes the
+  wifi-only branch (`btc_ops->btc_init_variables_wifi_only`)
+  automatically whenever `get_btc_status()` is false — for this chip,
+  that is the *only* path it can ever take.
+- **`be_tx_avail`/`debug_dump_tx_state`** — rtl8188ee has no
+  `get_available_desc` implementation (real `rtl_hal_ops` member
+  exists at `wifi.h:2264`, but `grep -rn "get_available_desc"
+  $LW/rtl8188ee/*.c` returns zero hits), so these use the real
+  fallback rtlwifi itself uses internally,
+  `_rtl_pci_tx_chk_waitq()` (`pci.c:417-419`): `ring->entries -
+  skb_queue_len(&ring->queue)`, for the BE queue specifically
+  (`BE_QUEUE == 1`, confirmed `pci.h:24`).
+- **`set_tx_resume_cb`** — CONFIRMED the real hook point is
+  `ieee80211_wake_queue(hw, queue)`, called by real rtlwifi's own
+  `_rtl_pci_tx_isr()` (`pci.c:450/540`) after freeing TX ring slots.
+  This name is declared in this port's `mac80211.h` (line 1429) but,
+  unlike its three siblings (`ieee80211_stop_queues`/`wake_queues`/
+  `stop_queue`, all confirmed-deliberate no-ops per the existing
+  comment above them, mirroring `rtw88_compat.c:546-548`), had NO
+  definition anywhere — a real gap, not a deliberate no-op, found
+  along the way rather than the thing being searched for.
+
+## 87.3 Separate real bug found and fixed: `linux/firmware.h`
+     wired to functions that don't exist
+
+Not part of Section 77's list at all — found while checking
+`find_fw_dir`'s neighbors. `src/compat/linux/firmware.h` declared and
+wired `request_firmware_nowait()`/`release_firmware()`/
+`rtw88_load_firmware_sync()`, all claimed by its own comment to be
+"Implemented in rtw88_compat.c" — a file this project doesn't have
+(Section 77.1). CONFIRMED zero non-declaration hits for
+`rtw88_load_firmware_sync` anywhere under `src/`. Only the correctly-
+named `rtl8188ee_load_firmware_sync`/`rtl8188ee_request_firmware_nowait`/
+`rtl8188ee_release_firmware` (`rtl8188ee_firmware.c:180-214`) exist —
+and that file's own header comment (lines 10-29) had *already*
+explicitly flagged this exact seam as open, unresolved business at
+authoring time. Fixed by rewiring `firmware.h` to the real
+`rtl8188ee_`-prefixed names.
+
+## 87.4 The fix
+
+`rtlwifi_compat.h`/`.c`: 7 new functions per Section 87.2's findings,
+plus real (non-`extern`) definitions for `rtw88_pci_io_ops`/
+`rtw88_dma_ops` (RTW88PCIDevice.cpp already assigns to both by these
+exact names — no renaming needed, just a definition to link), plus a
+real body for `ieee80211_wake_queue()` (previously undefined) that
+fires the registered resume callback. `RTW88PCIDevice.cpp`: 9 real
+call sites renamed `rtw88_*` -> `rtlwifi_*`/`rtl8188ee_*`, 2 stale
+comment blocks corrected, `linux/firmware.h` included directly (was
+unreachable transitively).
+
+## 87.5 A self-caught bug in this session's own first draft, and a
+     much bigger one it led to
+
+First isolated-compile attempt of the updated `rtlwifi_compat.c`
+produced 10 real errors: `incomplete definition of type 'struct
+rtl_pci'`/`'struct rtl8192_tx_ring'`, `use of undeclared identifier
+'BE_QUEUE'`. Root cause traced to a wrong header read: `rtl8192_tx_ring`/
+`BE_QUEUE`/`rtl_pcidev()`/`rtl_pcipriv()` all live in real rtlwifi's
+`pci.h`, which this file never included (only `wifi.h`, which does
+NOT include `pci.h` itself — confirmed by grep). Same compile also
+caught a second, independent bug in the same new code:
+`-Wpointer-bool-conversion` on `if (!rtlpriv->priv)` — CONFIRMED
+`rtl_priv.priv` (`wifi.h:2751`) is a C99 flexible array member (`u8
+priv[]`), not a pointer; checking its address for null is always true
+and was dead code from a wrong mental model of the field. Fixed by
+removing the redundant check (the real guard is `hw->priv` one level
+up, already present).
+
+Adding a bare `#include "pci.h"` to fix the first issue produced the
+exact same 10 errors again — a second, much larger finding, not a
+failed fix. Root cause: quote-form `#include "pci.h"` searches the
+including file's own directory first, then the `-I` list in order;
+`Makefile.rtl8188ee`'s `DRIVER_CFLAGS` had `$(COMPAT_FLAGS)`
+(`-I$(COMPAT_DIR)/linux`, containing this port's OWN unrelated
+IOKit-facing compat-shim `pci.h`, zero rtlwifi symbols in it — a
+totally different header that happens to share a filename) listed
+BEFORE `-I$(LINUX_SRC)`. So `#include "pci.h"` was silently resolving
+to the wrong file, producing "incomplete type"/"undeclared
+identifier" errors that looked exactly like a missing include but
+were actually a *shadowed* one.
+
+**This is not new-code-only**: `grep -rn '#include "pci.h"'` against
+real rtlwifi source found `base.c`, `efuse.c`, and `pci.c` itself all
+do this same `#include "pci.h"` — and all three are already in
+`DRIVER_SRCS`, already compiled into every prior "successful" build of
+this port. Every one of them has been silently compiling against the
+wrong `pci.h` this entire project, not just for this session's new
+code. A real bug in already-shipped source, found only because new
+code happened to need a symbol the wrong header didn't have (masking
+by omission: prior files apparently never hit a hard compile error
+from the wrong types, only silent wrong-type usage or luck).
+
+Fix: reordered `DRIVER_CFLAGS` in `Makefile.rtl8188ee` to put
+`-I$(LINUX_SRC)`/`-I$(CHIP_SRC)` BEFORE `$(COMPAT_FLAGS)`, so real
+rtlwifi's own headers win any filename collision. CONFIRMED safe to
+reorder, not just convenient, before applying it: `ls
+$(LINUX_SRC)/*.h` vs `ls $(COMPAT_DIR)/linux/*.h` cross-checked
+directly — only two filenames collide (`pci.h`, `usb.h`). `usb.h`'s
+only real-rtlwifi consumer is `usb.c`, confirmed NOT in `DRIVER_SRCS`
+(this port only builds the PCI chip variant), and `wifi.h`'s own
+`usb.h` reference is angle-bracket (`<linux/usb.h>`), unaffected by
+quote-form search order either way — so the reorder has no other file
+in this build's real source list to break.
+
+## 87.6 The rerun — first full clean build in this project's history
+
+Isolated syntax-only checks first (same pattern as every prior
+section): `RTW88PCIDevice.cpp` — **11 warnings (pre-existing
+categories), 0 errors**, clean on the first real attempt. `rtlwifi_
+compat.c` after both real fixes (pci.h shadow + Makefile reorder) —
+**26 warnings, 0 errors**.
+
+Then, since the Makefile change affects every driver-source file's
+real compile recipe, not just the one file under test: a genuine
+`rm -rf build && make -f Makefile.rtl8188ee kext`, no isolation, no
+suppressed steps — **succeeded end to end**. Every `DRIVER_SRCS` file
+(`base.c`, `cam.c`, `core.c`, `debug.c`, `efuse.c`, `ps.c`, `rc.c`,
+`regd.c`, `stats.c`, `pci.c`, all 10 `rtl8188ee/*.c` files),
+`rtlwifi_compat.c`, `rtl8188ee_firmware.c`, `fw_blobs_rtl8188ee.c`,
+and all 3 kext `.cpp` files compiled, linked (`LD rtl8188ee`), and
+synced into a real `.kext` bundle with a real UUID (`KEXT UUID:
+B555E552-0354-33A0-B0CF-74A1680CF754`) and a final `OK
+build/out/rtl8188ee.kext`. Specifically re-checked `base.c`/`efuse.c`/
+`pci.c` (the 3 files the header-shadow fix directly affects) in the
+full log: every diagnostic line for all three is `warning:`
+(implicit-conversion/sign-conversion noise, same style-level category
+as everywhere else in this project), zero `error:` lines anywhere.
+This is the first time in this project's recorded history that
+`make clean && make kext` (or equivalent) has completed without any
+error, isolation workaround, or manual per-file patching mid-build.
+
+## 87.7 Status
+
+Every bucket tracked since Section 80/81, plus Section 77's separate
+`RTW88PCIDevice.cpp` gap, plus the newly-found `firmware.h` mis-wiring
+and the newly-found `pci.h` header-shadow bug, are now closed and
+confirmed against a real, full, clean build — not just isolated
+per-file syntax checks. What's left, real and not superseded:
+
+- **Runtime/hardware behavior is still completely untested.** A clean
+  full build is a real, major milestone — the project has never had
+  one before — but says nothing about correctness at runtime: probe
+  succeeding, association, TX/RX actually moving frames, the LPS-wake
+  stall the Bucket A comments described actually being avoided, the
+  BE-ring backpressure mechanism actually working under load, etc.
+  Nothing in this session's or Section 86's fixes has been run against
+  real hardware.
+- §72.1's Makefile bug (missing `mkdir -p` for
+  `build/driver/rtl8188ee/`) — still only "worked around, not fixed";
+  the full-clean-build this session succeeded WITHOUT hitting this,
+  worth a closer look at why (possibly `$(BUILD_DIR)/driver/rtl8188ee`
+  ordering already resolved it as a side effect of an earlier
+  session's fix, per the original §72.1 note about rule ordering — not
+  independently re-verified here).
+- The `pci.h`/`usb.h` filename-collision pattern this session found
+  is now fixed for `DRIVER_CFLAGS`, but worth keeping in mind
+  generally: any future real-rtlwifi source file added to
+  `DRIVER_SRCS` that does a quote-form `#include` of a name that also
+  exists under `src/compat/linux/` or `src/compat/net/` deserves the
+  same suspicion, not just `pci.h`/`usb.h` specifically.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

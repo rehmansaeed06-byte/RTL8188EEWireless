@@ -32,6 +32,38 @@
  * itself.
  */
 #include "wifi.h"
+/*
+ * findings.md Section 87: rtl8192_tx_ring, BE_QUEUE, rtl_pcidev(),
+ * and rtl_pcipriv() (used by _rtlwifi_be_ring() below) all live in
+ * real rtlwifi's pci.h, not wifi.h — CONFIRMED wifi.h does not
+ * include pci.h itself (grep against real wifi.h for "include.*pci.h"
+ * returns zero hits).
+ *
+ * NOT a plain #include "pci.h" — CONFIRMED by a real failed compile
+ * this session: quote-form #include searches the including file's
+ * own directory (src/compat/) first, then falls through the -I list
+ * in order; src/compat/linux (this port's OWN unrelated compat-shim
+ * pci.h, zero rtlwifi symbols in it) is listed before either real
+ * -I$(LINUX_SRC) path on the actual build command, so a bare
+ * #include "pci.h" silently picked up the wrong file and produced
+ * "incomplete type"/"undeclared identifier" errors that looked like a
+ * missing include but were actually a *shadowed* one.
+ *
+ * Fixing this from inside the .c file with a clever relative path
+ * isn't reliable — quote-form resolution for a compound relative path
+ * like "rtl8188ee/../pci.h" isn't something to guess at either,
+ * same risk as the original bug. The correct fix is a build-system
+ * one: RTLWIFI_COMPAT_CFLAGS (Makefile.rtl8188ee) needs
+ * -I$(LINUX_SRC) placed BEFORE -Isrc/compat/linux specifically for
+ * this file's compile, so real rtlwifi's pci.h wins the shadow
+ * instead of the compat shim's. Not fixed here — flagging the seam
+ * per this project's own convention (see e.g. rtl8188ee_firmware.c's
+ * own header comment for the same pattern of flagging an open
+ * build-system decision rather than guessing a source-level
+ * workaround). See findings.md Section 87 / handover for the exact
+ * Makefile change needed and why.
+ */
+#include "pci.h"
 
 /* ------------------------------------------------------------------ */
 /* Globals — mirrors rtw88_compat.c's g_rtw88_hw pattern               */
@@ -609,6 +641,125 @@ void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
     _rtlwifi_set_channel_and_bssid(hw, vif, bssid);
 }
 
+/* ------------------------------------------------------------------ */
+/* RTW88PCIDevice.cpp's own unported-symbol gap (findings.md Section  */
+/* 87, Section 77's original catalogue corrected: 6 of the original   */
+/* 17 names were stale comment text with no compiled call site, and   */
+/* 3 more already had real bridging infrastructure sitting unused —   */
+/* see rtlwifi_compat.h for the full per-name evidence.                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Real definitions for globals real rtlwifi/dma-mapping.h and pci.h
+ * already declare `extern` and already read from internally
+ * (rtw88_pci_io_ops used throughout linux/pci.h's inline wrappers,
+ * rtw88_dma_ops throughout linux/dma-mapping.h's) — RTW88PCIDevice.cpp
+ * already assigns to both by these exact names (start()/teardown()),
+ * so no renaming is needed, only a single real (non-extern) definition
+ * linked into the kext, same pattern as g_rtlwifi_hw.
+ */
+struct pci_ops_rtw88 *rtw88_pci_io_ops = NULL;
+struct rtw88_dma_alloc_ops *rtw88_dma_ops = NULL;
+
+/* CONFIRMED no-ops — see rtlwifi_compat.h for full rationale (no real
+ * rtlwifi module-level init/exit exists to mirror; the workqueues
+ * this port's own call-site comment references are static storage,
+ * always valid, no creation step to call). */
+void rtlwifi_compat_init(void)
+{
+}
+
+void rtlwifi_compat_exit(void)
+{
+}
+
+/* CONFIRMED no-op — see rtlwifi_compat.h. rtl88e_get_btc_status()
+ * (real RTL8188EE chip source, compiled as-is) already unconditionally
+ * returns false, so real rtlwifi's own init path already always takes
+ * the wifi-only branch for this chip. Nothing to force. */
+void rtlwifi_force_wifi_only(void)
+{
+}
+
+/*
+ * Shared BE-ring lookup for rtlwifi_be_tx_avail()/
+ * _debug_dump_tx_state(). Returns NULL if hw isn't registered yet
+ * (mirrors this file's existing null-safety pattern elsewhere, e.g.
+ * rtlwifi_get_hw()'s own callers).
+ */
+static struct rtl8192_tx_ring *_rtlwifi_be_ring(void)
+{
+    struct ieee80211_hw *hw = rtlwifi_get_hw();
+
+    /*
+     * hw->priv IS the rtl_priv allocation (rtl_priv(hw) is just
+     * `(struct rtl_priv *)(hw)->priv`) — this is the one real guard
+     * needed. There is no separate rtlpriv->priv to check afterward:
+     * real rtl_priv's own `priv[]` field (wifi.h:2751) is a C99
+     * flexible array member at the struct's tail, part of the same
+     * allocation, not a second pointer — checking it for null is
+     * checking "is this array's own address non-null," which is
+     * always true once rtl_priv itself exists (confirmed: clang
+     * flagged an earlier version of this check as dead code,
+     * -Wpointer-bool-conversion, correctly).
+     */
+    if (!hw || !hw->priv)
+        return NULL;
+
+    struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
+
+    return &rtlpci->tx_ring[BE_QUEUE];
+}
+
+/*
+ * CONFIRMED real mechanism: rtl8188ee has no get_available_desc
+ * implementation (zero grep hits), so this mirrors the real fallback
+ * rtlwifi itself uses internally, _rtl_pci_tx_chk_waitq()
+ * (pci.c:417-419): entries minus current queue length, for the BE
+ * ring specifically (BE_QUEUE == 1).
+ */
+unsigned int rtlwifi_be_tx_avail(void)
+{
+    struct rtl8192_tx_ring *ring = _rtlwifi_be_ring();
+
+    if (!ring)
+        return 0;
+
+    return ring->entries - skb_queue_len(&ring->queue);
+}
+
+void rtlwifi_debug_dump_tx_state(void)
+{
+    struct rtl8192_tx_ring *ring = _rtlwifi_be_ring();
+
+    if (!ring) {
+        IOLog("rtlwifi: debug_dump_tx_state: hw not ready\n");
+        return;
+    }
+
+    IOLog("rtlwifi: BE ring: entries=%u queued=%u avail=%u wp=%u rp=%u\n",
+          ring->entries, skb_queue_len(&ring->queue),
+          ring->entries - skb_queue_len(&ring->queue),
+          ring->cur_tx_wp, ring->cur_tx_rp);
+}
+
+/*
+ * CONFIRMED real hook point: real rtlwifi's own TX-complete path
+ * (_rtl_pci_tx_isr, pci.c:450) signals "ring slots freed" via
+ * ieee80211_wake_queue(hw, queue) (pci.c:540) — a real mac80211 API
+ * this port's mac80211.h already declares (line 1429) but, unlike its
+ * three siblings just below, never defines. Storing the callback here
+ * and firing it from ieee80211_wake_queue() (defined right after this
+ * block) makes that the actual, correct wiring rather than a bespoke
+ * parallel mechanism.
+ */
+static void (*g_tx_resume_cb)(void) = NULL;
+
+void rtlwifi_set_tx_resume_cb(void (*cb)(void))
+{
+    g_tx_resume_cb = cb;
+}
+
 /*
  * Queue-control no-ops — CONFIRMED, src/compat/rtw88_compat.c:546-548:
  *   void ieee80211_stop_queues(struct ieee80211_hw *hw)  {}
@@ -625,6 +776,27 @@ void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
 void ieee80211_stop_queues(struct ieee80211_hw *hw) {}
 void ieee80211_wake_queues(struct ieee80211_hw *hw) {}
 void ieee80211_stop_queue(struct ieee80211_hw *hw, int q) {}
+
+/*
+ * ieee80211_wake_queue() — UNLIKE its three siblings above, this one
+ * is not a deliberate no-op: it's the real per-queue "TX has room
+ * again" signal real rtlwifi's own _rtl_pci_tx_isr() calls after
+ * freeing ring slots (pci.c:540, confirmed live read). RTW88PCIDevice
+ * .cpp's own flow-control mechanism (IOGatedOutputQueue +
+ * kIOReturnOutputStall, resumeTxIfStalled()) is this port's IOKit-side
+ * reimplementation of exactly the same concept — so this real
+ * mac80211 API is the correct, real hook to fire it from, not a
+ * contradiction of the no-op siblings' bypass rationale (that
+ * rationale is about mac80211's own *outbound* tx-scheduling queue,
+ * a different concern from this *inbound* hardware-ready signal).
+ */
+void ieee80211_wake_queue(struct ieee80211_hw *hw, int queue)
+{
+    (void)hw;
+    (void)queue;
+    if (g_tx_resume_cb)
+        g_tx_resume_cb();
+}
 
 /* ------------------------------------------------------------------ */
 /* rtlwifi_is_scanning() — equivalent of rtw88_is_scanning()           */

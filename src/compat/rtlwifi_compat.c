@@ -1132,8 +1132,20 @@ static void rtlwifi_timer_thread_call_trampoline(thread_call_param_t param0,
 {
     struct timer_list *t = (struct timer_list *)param0;
     (void)param1;
-    if (t && t->function)
+    if (!t)
+        return;
+
+    if (t->done_lock) { IOLockLock(t->done_lock); t->running = 1; IOLockUnlock(t->done_lock); }
+
+    if (t->function)
         t->function(t);
+
+    if (t->done_lock) {
+        IOLockLock(t->done_lock);
+        t->running = 0;
+        IOLockWakeup(t->done_lock, (void *)&t->running, false);
+        IOLockUnlock(t->done_lock);
+    }
 }
 
 void timer_setup(struct timer_list *timer,
@@ -1144,9 +1156,11 @@ void timer_setup(struct timer_list *timer,
     timer->function = func;
     timer->data     = 0;
     timer->expires  = 0;
-    timer->active   = 0;
-    timer->call     = thread_call_allocate(rtlwifi_timer_thread_call_trampoline,
-                                            (thread_call_param_t)timer);
+    timer->active    = 0;
+    timer->running   = 0;
+    timer->done_lock = IOLockAlloc();
+    timer->call      = thread_call_allocate(rtlwifi_timer_thread_call_trampoline,
+                                             (thread_call_param_t)timer);
 }
 
 int mod_timer(struct timer_list *timer, unsigned long expires)
@@ -1164,6 +1178,8 @@ int mod_timer(struct timer_list *timer, unsigned long expires)
                                             (thread_call_param_t)timer);
         if (!timer->call)
             return 0;
+        if (!timer->done_lock)
+            timer->done_lock = IOLockAlloc();
     }
 
     if (delay_ms < 0)
@@ -1202,13 +1218,33 @@ int del_timer_sync(struct timer_list *timer)
         return 0;
     }
 
-    /* _wait variant blocks until any in-flight callback finishes —
-     * required by *_sync's real contract, and relied on by callers
-     * (driver teardown) to guarantee the callback can't fire after
-     * this returns. */
-    was_pending   = thread_call_cancel_wait(timer->call) ? 1 : 0;
+    /* thread_call_cancel_wait() is com.apple.kpi.private -- rejected at
+     * kmutil load time for third-party kexts ("Linking com.apple.kpi.private
+     * requires an Apple kext", confirmed via a real load attempt). Reproduce
+     * its cancel-then-wait-for-in-flight contract using only public KPI:
+     * thread_call_cancel() first; if that catches it before it started, done;
+     * otherwise block on done_lock/running, set by the trampoline above. */
+    was_pending = thread_call_cancel(timer->call) ? 1 : 0;
+
+    if (!was_pending && timer->done_lock) {
+        IOLockLock(timer->done_lock);
+        while (timer->running)
+            IOLockSleep(timer->done_lock, (void *)&timer->running, 0);
+        IOLockUnlock(timer->done_lock);
+    }
+
     timer->active = 0;
     return was_pending;
+}
+
+/* timer_delete_sync() -- Linux 6.x renamed del_timer_sync() to
+ * this; rtlwifi's base.c uses the new name directly
+ * (base.c:182,184,476). Same cancel-and-wait contract, just
+ * aliased to the existing implementation rather than
+ * duplicated. */
+int timer_delete_sync(struct timer_list *timer)
+{
+    return del_timer_sync(timer);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1244,10 +1280,20 @@ static void rtlwifi_work_thread_call_trampoline(thread_call_param_t param0,
 {
     struct work_struct *w = (struct work_struct *)param0;
     (void)param1;
-    if (w) {
-        w->pending = 0;
-        if (w->func)
-            w->func(w);
+    if (!w)
+        return;
+
+    w->pending = 0;
+    if (w->done_lock) { IOLockLock(w->done_lock); w->running = 1; IOLockUnlock(w->done_lock); }
+
+    if (w->func)
+        w->func(w);
+
+    if (w->done_lock) {
+        IOLockLock(w->done_lock);
+        w->running = 0;
+        IOLockWakeup(w->done_lock, (void *)&w->running, false);
+        IOLockUnlock(w->done_lock);
     }
 }
 
@@ -1333,6 +1379,8 @@ bool queue_work(struct workqueue_struct *wq, struct work_struct *work)
                                            (thread_call_param_t)work);
         if (!work->call)
             return false;
+        if (!work->done_lock)
+            work->done_lock = IOLockAlloc();
     }
 
     work->pending = 1;
@@ -1359,6 +1407,8 @@ bool queue_delayed_work(struct workqueue_struct *wq,
             (thread_call_param_t)dwork);
         if (!dwork->timer.call)
             return false;
+        if (!dwork->timer.done_lock)
+            dwork->timer.done_lock = IOLockAlloc();
     }
 
     clock_interval_to_deadline((uint32_t)delay, kMillisecondScale, &deadline);
@@ -1391,7 +1441,16 @@ bool cancel_work_sync(struct work_struct *work)
         return false;
     }
 
-    was_pending   = thread_call_cancel_wait(work->call) ? true : false;
+    /* see del_timer_sync() above for why this isn't thread_call_cancel_wait() */
+    was_pending = thread_call_cancel(work->call) ? true : false;
+
+    if (!was_pending && work->done_lock) {
+        IOLockLock(work->done_lock);
+        while (work->running)
+            IOLockSleep(work->done_lock, (void *)&work->running, 0);
+        IOLockUnlock(work->done_lock);
+    }
+
     work->pending = 0;
     return was_pending;
 }
@@ -1416,7 +1475,16 @@ bool cancel_delayed_work_sync(struct delayed_work *dwork)
     if (!dwork || !dwork->timer.call)
         return false;
 
-    was_pending          = thread_call_cancel_wait(dwork->timer.call) ? true : false;
+    /* see del_timer_sync() above for why this isn't thread_call_cancel_wait() */
+    was_pending = thread_call_cancel(dwork->timer.call) ? true : false;
+
+    if (!was_pending && dwork->timer.done_lock) {
+        IOLockLock(dwork->timer.done_lock);
+        while (dwork->timer.running)
+            IOLockSleep(dwork->timer.done_lock, (void *)&dwork->timer.running, 0);
+        IOLockUnlock(dwork->timer.done_lock);
+    }
+
     dwork->work.pending  = 0;
     dwork->timer.active  = 0;
     return was_pending;
@@ -1424,8 +1492,18 @@ bool cancel_delayed_work_sync(struct delayed_work *dwork)
 
 void flush_work(struct work_struct *work)
 {
-    if (work && work->call)
-        thread_call_cancel_wait(work->call);
+    /* Real flush_work() waits for in-flight execution WITHOUT cancelling a
+     * not-yet-run item -- unlike the old thread_call_cancel_wait()-based
+     * version, this wait-only form matches that contract exactly, as a side
+     * effect of no longer having a cancel+wait primitive available at all
+     * (kpi.private). No call site in DRIVER_SRCS/PCI_SRCS uses flush_work()
+     * (confirmed by grep), so still currently unreachable in practice. */
+    if (work && work->call && work->done_lock) {
+        IOLockLock(work->done_lock);
+        while (work->running)
+            IOLockSleep(work->done_lock, (void *)&work->running, 0);
+        IOLockUnlock(work->done_lock);
+    }
     /* Real flush_work() waits for in-flight execution without
      * cancelling a not-yet-run item; thread_call_cancel_wait() both
      * cancels *and* waits, which is stronger than real semantics if

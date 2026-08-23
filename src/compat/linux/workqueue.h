@@ -20,6 +20,11 @@ struct work_struct {
                                * mirrors delayed_work's timer.call so
                                * cancel_work_sync()/flush_work() have
                                * something real to cancel/wait on. */
+    /* same cancel+wait completion tracking as timer_list, see timer.h --
+     * thread_call_cancel_wait() is com.apple.kpi.private and unusable by a
+     * third-party kext. */
+    IOLock          *done_lock;
+    volatile int     running;
 };
 
 struct delayed_work {
@@ -39,8 +44,10 @@ struct workqueue_struct {
 #define INIT_WORK(_work, _func) \
     do { (_work)->func = (_func); \
          INIT_LIST_HEAD(&(_work)->entry); \
-         (_work)->pending = 0; \
-         (_work)->call    = NULL; } while (0)
+         (_work)->pending    = 0; \
+         (_work)->call       = NULL; \
+         (_work)->done_lock  = NULL; \
+         (_work)->running    = 0; } while (0)
 
 #define INIT_DELAYED_WORK(_dwork, _func) \
     INIT_WORK(&(_dwork)->work, _func)

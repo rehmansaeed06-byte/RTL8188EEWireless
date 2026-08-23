@@ -7404,4 +7404,150 @@ writing a new definition.
 
 ------------------------------------------------------------------------
 
+# 93. Closing the 5 frame-type-check cluster from Section 92's remaining
+list — 17 -> 13, plus a name/type bug caught before it could regress
+undefined-symbol progress
+
+Continuation of the mac80211-stub cluster. Targeted the 5 frame-type
+checks flagged as "trivial, matching the existing
+ieee80211_is_beacon/_is_action/_is_nullfunc pattern" in the prior
+handover: `ieee80211_has_pm`, `ieee80211_is_auth`, `ieee80211_is_pspoll`,
+`ieee80211_is_qos_nullfunc`, and `__ieee80211_is_robust_mgmt_frame`
+(flagged separately as needing real caution, not an assumed shape).
+
+## 93.1 The 4 straightforward frame-type checks
+
+Added to `src/compat/net/mac80211.h`, immediately after the existing
+`ieee80211_is_data_qos()`, matching that block's exact style (`static
+inline int foo(__le16 fc) { return (fc & cpu_to_le16(...)) ==
+cpu_to_le16(...); }`):
+
+- `ieee80211_has_pm`: single-bit test against `IEEE80211_FCTL_PM`
+  (already defined), same shape as the existing `ieee80211_has_tods`/
+  `_has_fromds`/`_has_protected`/`_has_moredata`.
+- `ieee80211_is_auth`: FTYPE_MGMT | STYPE_AUTH, both already-defined
+  constants — same shape as `ieee80211_is_beacon`/`_is_probe_resp`/
+  `_is_action`.
+- `ieee80211_is_pspoll`: FTYPE_CTL | STYPE_PSPOLL. `STYPE_PSPOLL` did
+  not exist yet — added as `0x00A0` (standard 802.11 control-frame
+  subtype value; note this bit pattern is numerically identical to
+  `STYPE_DISASSOC`, which is expected and correct since FTYPE
+  disambiguates them — CTL vs MGMT).
+- `ieee80211_is_qos_nullfunc`: FTYPE_DATA | STYPE_QOS_NULLFUNC.
+  `STYPE_QOS_NULLFUNC` did not exist yet — added as `0x00C0` (standard
+  802.11 data-frame subtype value).
+
+Both new STYPE constants added next to the existing STYPE block with
+comments matching the existing `STYPE_QOS_DATA` comment's style
+(explains the FTYPE it combines with).
+
+## 93.2 `__ieee80211_is_robust_mgmt_frame` — wrong symbol shape caught
+before it could cost a wasted rebuild cycle
+
+Initial pass wrote `__ieee80211_is_robust_mgmt_frame(struct sk_buff
+*skb)` (double leading underscore, skb-typed) by analogy to real
+upstream mac80211's split between a public `ieee80211_is_robust_mgmt_
+frame()` (skb-taking wrapper) and an internal `__ieee80211_is_robust_
+mgmt_frame()` (header-taking core). This was checked against
+`check_kext_symbols.sh` before assuming it was correct, per the
+Section 90 process note — good thing, because it was wrong on two
+counts simultaneously:
+
+- **Wrong symbol name.** The real call site (confirmed via `grep -rn
+  "ieee80211_is_robust_mgmt_frame"
+  ../linux-kernel/drivers/net/wireless/realtek/rtlwifi/`, present in
+  all 7 sibling chip drivers including rtl8188ee/trx.c:442) calls
+  `_ieee80211_is_robust_mgmt_frame` — single leading underscore, not
+  double.
+- **Wrong parameter type.** The real call site passes `hdr`, confirmed
+  by context (`hdr->frame_control` used on the same line, and `hdr`'s
+  declaration a few lines up: `struct ieee80211_hdr *hdr;`, obtained
+  via `rtl_get_hdr(skb)` earlier in the function) — not a `struct
+  sk_buff *`.
+
+First attempt built and linked clean (no compile-time way to catch
+this — a `static inline` function with the wrong name/signature simply
+never gets called, and produces no error, since nothing in this source
+tree independently declares an `extern` prototype to check against).
+`check_kext_symbols.sh` still showed `__ieee80211_is_robust_mgmt_frame`
+undefined after the "fix," at 13 symbols instead of the expected 12 —
+the tell that something was wrong, since a truly-fixed symbol
+disappears from the list entirely rather than lingering.
+
+Root-caused by grepping the real driver source directly (not present
+in this project's `src/` tree — lives at
+`../linux-kernel/drivers/net/wireless/realtek/rtlwifi/rtl8188ee/trx.c`
+per the Makefile's `LINUX_SRC` path) rather than guessing from
+upstream-mac80211 memory. Renamed to `_ieee80211_is_robust_mgmt_frame`,
+retyped to `struct ieee80211_hdr *hdr`, reworked the category-byte
+lookup from `skb->data + 24` (with an `skb->len` bounds check) to
+`(const u8 *)hdr + sizeof(struct ieee80211_hdr)` (no bounds check
+available or needed — the header pointer alone doesn't carry a length,
+and real call sites only invoke this on already-parsed, already-
+decrypted-flagged received frames). Left an explicit in-code comment
+warning against reverting the name/type, since nothing at compile time
+would catch a regression back to the wrong shape.
+
+**Process note reinforced:** for any symbol whose real call site isn't
+in this project's own tree, grep the actual upstream driver source
+(`$LINUX_SRC`, per the Makefile) before writing a stub, even when the
+function looks like a well-known standard mac80211 API — upstream
+sometimes exposes two similarly-named variants (single- vs
+double-underscore) with different signatures, and only one is what
+this driver's real call sites actually use. A clean build is not
+evidence of a correct symbol name/signature when the function is
+`static inline` and nothing else in the tree cross-checks it — only
+`check_kext_symbols.sh`'s post-rebuild count is.
+
+## 93.3 Result
+
+Two rebuild-and-recheck cycles this session (the wrong-shape attempt,
+then the corrected one). Both compiled clean with no new warnings
+beyond the pre-existing baseline. Final `check_kext_symbols.sh`:
+**17 -> 13 -> 12 unique undefined symbols**, zero regressions at each
+step (every symbol in each new list was already present in the prior
+list). All 5 targeted symbols now confirmed closed.
+
+**Remaining, unresolved (12), one clean cluster — mac80211 driver-
+facing API, exactly as predicted in the prior handover's "6 state
+accessors/stubs" + "2 TX-BA no-ops" + "3 VHT rate helpers" breakdown:**
+
+- 2 TX-BA session no-ops: `_ieee80211_start_tx_ba_session`,
+  `_ieee80211_stop_tx_ba_cb_irqsafe`
+- 3 VHT rate encode/decode: `_ieee80211_rate_get_vht_mcs`,
+  `_ieee80211_rate_get_vht_nss`, `_ieee80211_rate_set_vht`
+- 6 state accessors/stubs: `_ieee80211_vif_type_p2p`,
+  `_ieee80211_tx_info_clear_status`, `_ieee80211_get_tx_rate`,
+  `_ieee80211_beacon_get`, `_ieee80211_connection_loss`,
+  `_wiphy_rfkill_start_polling`/`_wiphy_rfkill_stop_polling`
+
+**Next candidates, per the existing (unchanged) plan:** the 2 TX-BA
+no-ops next (trivial, matching the AMPDU precedent already in
+`RTW88IEEE80211.cpp:2622-2625`), then the 6 state accessors/stubs,
+saving the 3 VHT rate helpers for last since they need the real
+`ieee80211_tx_rate.idx`/`.flags` bit-packing scheme confirmed against
+real call sites before writing — guessing wrong there risks silent
+rate-selection corruption rather than a visible link/load failure,
+unlike everything closed this session.
+
+## 93.4 Also fixed this session: root-owned `build/` directory trap
+
+Unrelated to the symbol work, but cost significant time and is worth
+recording. `check_kext_symbols.sh` / `kmutil load` require the kext
+bundle to be owned by `root:wheel` (the Makefile even prints `NOTE run
+'sudo chown -R root:wheel .../rtl8188ee.kext' for kextutil` after every
+build). Once that chown has been run once, the `build/` directory tree
+is root-owned, so a plain `rm -rf build` from then on fails with
+`Permission denied` on every file — this is what the last handover
+entry's "sometimes makefile and kextutil shows permission denied" was.
+Not a SIP/immutable-flag issue (checked and ruled out this session) —
+just plain ownership. Fix is mechanical: `sudo rm -rf build` instead of
+`rm -rf build` for every rebuild from now on, since the previous
+build's output is always going to be root-owned after a
+`check_kext_symbols.sh` run. Worth folding a `chown`/`rm` step into the
+Makefile or the check script itself at some point so this stops
+recurring, but not done this session (mechanical workaround only).
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

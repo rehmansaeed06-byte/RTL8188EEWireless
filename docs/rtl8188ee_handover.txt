@@ -2092,3 +2092,66 @@ would silently corrupt rate selection rather than fail to link, so
 this is the one sub-cluster in the batch still worth real caution;
 (4) the remaining 6 state accessors/stubs.
 
+## LATEST UPDATE — 17 -> 12: frame-type-check cluster closed, one
+name/type bug caught before it could regress progress (findings.md
+Section 93)
+Wrote the 5-symbol frame-type-check batch flagged as step (1) above:
+`ieee80211_has_pm`, `ieee80211_is_auth`, `ieee80211_is_pspoll`,
+`ieee80211_is_qos_nullfunc` all closed cleanly on the first attempt,
+matching the existing `mac80211.h` `ieee80211_is_beacon`-style pattern
+exactly (two new subtype constants, `IEEE80211_STYPE_PSPOLL` and
+`IEEE80211_STYPE_QOS_NULLFUNC`, needed adding alongside).
+
+`__ieee80211_is_robust_mgmt_frame` did **not** close on the first
+attempt despite building clean — written by analogy to real upstream
+mac80211's double-underscore/skb-taking internal helper, but the
+actual rtlwifi call site (confirmed by grepping
+`../linux-kernel/drivers/net/wireless/realtek/rtlwifi/rtl8188ee/
+trx.c:442` directly, since this project's own `src/` tree doesn't
+contain the real driver source) calls a *different* symbol entirely:
+single-underscore `_ieee80211_is_robust_mgmt_frame`, taking a `struct
+ieee80211_hdr *` rather than a `struct sk_buff *`. Caught via
+`check_kext_symbols.sh` still showing the symbol undefined post-build
+(13 instead of the expected 12) rather than at compile time — a
+`static inline` function with a wrong name/signature simply never
+gets called and produces no compiler error. Renamed, retyped, and
+reworked the category-byte lookup to index off the header pointer
+directly (no skb/length available at that layer). Second attempt
+closed clean: **13 -> 12**.
+
+**Current count: 12 unique undefined symbols, one clean cluster** — 2
+TX-BA session no-ops, 3 VHT rate encode/decode helpers, 6 state
+accessors/stubs. Full breakdown and exact symbol names in
+findings.md Section 93.3. No regressions across either rebuild this
+session; zero new compiler warnings beyond the pre-existing baseline.
+
+Also fixed this session (Section 93.4): root-caused the "sometimes
+makefile and kextutil shows permission denied" note from the prior
+handover entry. Not SIP/immutable-flags (checked and ruled out) — the
+kext bundle under `build/` becomes `root:wheel`-owned after any
+`check_kext_symbols.sh`/`kextutil` run (required for `kmutil load` to
+accept it), so a plain `rm -rf build` afterward fails with permission
+denied on every file. Mechanical fix: use `sudo rm -rf build` for
+every rebuild from here on, since `build/`'s prior contents will
+always be root-owned after the kext has been loaded/checked even
+once. Not yet folded into the Makefile or `check_kext_symbols.sh`
+itself — still a manual `sudo` on the clean step.
+
+## Next immediate step
+Continue the mac80211 stub cluster, in the order the previous update
+already laid out: (1) the 2 TX-BA no-ops next — trivial, matching the
+AMPDU precedent already in `RTW88IEEE80211.cpp:2622-2625`; (2) the 6
+state accessors/stubs; (3) the 3 VHT rate helpers last, since those
+need the real `ieee80211_tx_rate.idx`/`.flags` bit-packing scheme
+confirmed against real call sites before writing — guessing wrong
+there risks silently corrupting rate selection rather than failing to
+link or load, unlike every symbol closed so far in this cluster. Per
+Section 93.2's reinforced process note: for any symbol whose real
+call site isn't in this project's own `src/` tree, grep the actual
+`$LINUX_SRC` driver source before writing a stub, even for
+well-known-looking mac80211 API names — upstream sometimes exposes
+similarly-named variants with different signatures, and a clean build
+is not evidence of a correct name/signature for a `static inline`
+function that nothing else in the tree cross-checks; only
+`check_kext_symbols.sh`'s post-rebuild count is.
+

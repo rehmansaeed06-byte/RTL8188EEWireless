@@ -47,9 +47,14 @@
 #define IEEE80211_STYPE_DEAUTH      0x00C0
 #define IEEE80211_STYPE_ACTION      0x00D0
 #define IEEE80211_STYPE_DISASSOC    0x00A0
+/* Control-frame subtype: PS-Poll. Combined with FTYPE_CTL. */
+#define IEEE80211_STYPE_PSPOLL      0x00A0
 /* Data subtype: QoS Data (carries a 2-byte QoS Control field; required for
  * A-MPDU / BlockAck, which are strictly per-TID). Combined with FTYPE_DATA. */
 #define IEEE80211_STYPE_QOS_DATA    0x0080
+/* Data subtype: QoS Null (QoS Data's no-payload sibling, still carries the
+ * QoS Control field). Combined with FTYPE_DATA. */
+#define IEEE80211_STYPE_QOS_NULLFUNC 0x00C0
 #define IEEE80211_QOS_CTL_TID_MASK  0x000f
 
 struct ieee80211_hdr {
@@ -236,6 +241,77 @@ static inline int ieee80211_is_nullfunc(__le16 fc)
 static inline int ieee80211_is_data_qos(__le16 fc)
 {
     return ((le16_to_cpu(fc) & (0x000c | 0x0080)) == (IEEE80211_FTYPE_DATA | 0x0080));
+}
+static inline int ieee80211_has_pm(__le16 fc)
+{
+    return !!(fc & cpu_to_le16(IEEE80211_FCTL_PM));
+}
+static inline int ieee80211_is_auth(__le16 fc)
+{
+    return (fc & cpu_to_le16(IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) ==
+           cpu_to_le16(IEEE80211_FTYPE_MGMT | IEEE80211_STYPE_AUTH);
+}
+static inline int ieee80211_is_pspoll(__le16 fc)
+{
+    return (fc & cpu_to_le16(IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) ==
+           cpu_to_le16(IEEE80211_FTYPE_CTL | IEEE80211_STYPE_PSPOLL);
+}
+static inline int ieee80211_is_qos_nullfunc(__le16 fc)
+{
+    return (fc & cpu_to_le16(IEEE80211_FCTL_FTYPE | IEEE80211_FCTL_STYPE)) ==
+           cpu_to_le16(IEEE80211_FTYPE_DATA | IEEE80211_STYPE_QOS_NULLFUNC);
+}
+/*
+ * NOTE: real rtlwifi (rtl8188ee/trx.c and siblings) calls the single-
+ * underscore driver-facing wrapper `_ieee80211_is_robust_mgmt_frame(hdr)`
+ * -- NOT the double-underscore `__ieee80211_is_robust_mgmt_frame()` core
+ * helper some mac80211 versions expose separately. Confirmed against the
+ * real call site (rtl8188ee/trx.c:442): single leading underscore, one
+ * argument, `struct ieee80211_hdr *hdr` (obtained via `rtl_get_hdr(skb)`
+ * earlier in that function) -- not a `struct sk_buff *`. Do not rename
+ * this back to the double-underscore form or change it to take an skb;
+ * both would silently fail to link against the real call site (or worse,
+ * wrong-argument-type compile past a permissive implicit cast).
+ *
+ * 802.11-2020 Table 9-53 (Category values): categories 0 (Spectrum Mgmt),
+ * 3 (BA / Block Ack), 4 (Public... partially robust, excluded below), 6
+ * (Fast BSS Transition), 8 (SA Query), 9 (Protected Dual of Public Action,
+ * itself always protected so irrelevant here), 10 (Vendor-specific
+ * Protected), 15+ (vendor-specific) are excluded from the *non-robust*
+ * allowlist used by real ieee80211_is_robust_mgmt_frame() implementations;
+ * everything not explicitly allowed below is treated as robust (the safe
+ * default -- misclassifying a robust frame as non-robust risks accepting
+ * an unauthenticated/unencrypted management frame it shouldn't).
+ * Real upstream (net/wireless/util.c) allowlists exactly: Public Action
+ * (cat 4) for unprotected-Public-Action subtypes only, plus a small set of
+ * explicitly-unprotected special cases (category 0x7F vendor-specific
+ * with certain OUIs). This driver never needs the vendor-specific carve-out
+ * (rtlwifi does not use WNM/vendor robust-frame exemptions), so this stub
+ * only implements the two cases rtlwifi/mac80211 core actually checks
+ * against: plain Action frames of category Public (4) are treated as
+ * non-robust, everything else classified as Action is robust.
+ */
+#define WLAN_CATEGORY_PUBLIC        4
+static inline int _ieee80211_is_robust_mgmt_frame(struct ieee80211_hdr *hdr)
+{
+    u16 fc = le16_to_cpu(hdr->frame_control);
+    const u8 *category;
+
+    if (!ieee80211_is_action(cpu_to_le16(fc)))
+        return 0;
+
+    /* Category is the first octet of the Action frame body, immediately
+     * after the 24-byte header (802.11-2020 9.6.1). No skb/length here to
+     * bounds-check against (we only have the header pointer) -- callers
+     * are only expected to invoke this on frames already confirmed to be
+     * Action frames of at least header+1 length, matching how real
+     * rtlwifi call sites use it (already inside an `if (status->decrypted)`
+     * path operating on a received, parsed frame). */
+    category = (const u8 *)hdr + sizeof(struct ieee80211_hdr);
+    if (*category == WLAN_CATEGORY_PUBLIC)
+        return 0;
+
+    return 1;
 }
 
 static inline u16 ieee80211_get_hdrlen_from_skb(const struct sk_buff *skb)

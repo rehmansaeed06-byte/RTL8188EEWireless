@@ -2029,3 +2029,66 @@ it's differently-shaped from the rest — confirming whether it's a
 link-line omission would be a fast, high-value win before tackling
 the larger mac80211-stub block.
 
+## UPDATE — 22 -> 17: PCI pair, rtl88ee_hal_cfg, and both kernel/timer
+compat symbols all closed
+Since the update above: `pci_resource_flags`/`pcie_capability_clear_and_set_word`
+closed (`src/compat/linux/pci.h`), `rtl88ee_hal_cfg` resolved, and the
+"2 kernel/timer compat" pair turned out to be two unrelated bugs, not
+one cluster:
+
+- `timer_delete_sync` was a plain missing compat wrapper — real
+  rtlwifi (`base.c:182,184,476`) already calls the Linux 6.x renamed
+  function directly; this project's `timer.h` only had the old
+  `del_timer_sync` name. Fixed as a one-line alias in
+  `rtlwifi_compat.c`, no new logic.
+- `thread_call_cancel_wait` took several wrong turns before landing on
+  the real cause, worth recording so the next session doesn't repeat
+  them: first suspected as an `OSBundleLibraries` KPI-version mismatch
+  (wrong — bumping `com.apple.kpi.*` from `20.0.0` to the real
+  `21.6.0` running-kernel version did fix a *different*, unrelated
+  gap but not this one). Then suspected as needing `com.apple.kpi.private`
+  declared, based on real installed Apple kexts (`IOHIDFamily.kext`,
+  `CoreStorage.kext`, etc.) that call this same symbol and do declare
+  `kpi.private` — **also wrong**, confirmed by an actual `kmutil load`
+  rejection: `com.apple.kpi.private` is restricted to Apple-signed
+  kexts only (`CFBundleIdentifier` must start with `com.apple`), so a
+  third-party kext can never declare it, full stop. The real fix:
+  `thread_call_cancel_wait()` is simply off-limits to this kext.
+  Rewrote `timer_list`/`work_struct`'s cancel+wait contract
+  (`del_timer_sync`, `cancel_work_sync`, `cancel_delayed_work_sync`,
+  `flush_work`) using only public KPI — `thread_call_cancel()` plus a
+  hand-built completion wait (`IOLock` + `volatile int running`,
+  set/cleared by each thread_call trampoline, waited on with
+  `IOLockSleep`/`IOLockWakeup`). As a side effect, `flush_work()` is
+  now *more* correct than before (wait-only, doesn't cancel — matches
+  real semantics; the old version was flagged in-comment as
+  over-strong).
+
+**Current count: 17 unique undefined symbols, one clean group**: all
+mac80211 driver-facing API — 5 frame-type checks (`ieee80211_is_auth`,
+`_has_pm`, `_is_pspoll`, `_is_qos_nullfunc`, `__ieee80211_is_robust_mgmt_frame`),
+2 TX-BA session no-ops (`_start_tx_ba_session`, `_stop_tx_ba_cb_irqsafe`,
+safe per the AMPDU precedent already in `RTW88IEEE80211.cpp:2622-2625`),
+3 VHT rate encode/decode (`_rate_set_vht`, `_rate_get_vht_mcs`,
+`_rate_get_vht_nss`), and 6 state accessors/stubs (`_vif_type_p2p`,
+`_tx_info_clear_status`, `_get_tx_rate`, `_beacon_get`,
+`_connection_loss`, `_wiphy_rfkill_start_polling`/`_stop_polling`).
+No build-system or KPI-linking landmines expected in this batch —
+unlike the last two symbols, these are ordinary compat-shim writes
+once real call sites are confirmed (already done for most, via real
+`../linux-kernel/.../rtlwifi/{rc.c,base.c,core.c,pci.c}` grep this
+session).
+
+## Next immediate step
+Write the 17-symbol mac80211 cluster above, batch by batch: (1) the 5
+frame-type checks — trivial bit-pattern stubs matching the existing
+`ieee80211_is_beacon`/`_is_action`/`_is_nullfunc` pattern already in
+`mac80211.h`, except `__ieee80211_is_robust_mgmt_frame` which needs
+the real non-robust-category allowlist confirmed against the actual
+kernel version rather than assumed; (2) the 2 TX-BA no-ops; (3) the 3
+VHT rate helpers, which need the real `ieee80211_tx_rate.idx`/`.flags`
+bit-packing scheme locked down before writing — guessing wrong here
+would silently corrupt rate selection rather than fail to link, so
+this is the one sub-cluster in the batch still worth real caution;
+(4) the remaining 6 state accessors/stubs.
+

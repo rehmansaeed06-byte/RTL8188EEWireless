@@ -853,6 +853,38 @@ struct ieee80211_sta {
     u8   drv_priv[0] __attribute__((aligned(sizeof(void *))));
 };
 
+/*
+ * TX-BA (Block Ack) session negotiation no-ops.
+ *
+ * Real rtlwifi (base.c:1797, rc.c:241) calls these two mac80211 core
+ * entry points to kick off/tear down per-TID BlockAck session
+ * bookkeeping inside mac80211's own state machine. This port bypasses
+ * mac80211 entirely for ADDBA/BlockAck negotiation -- see the
+ * AMPDU BlockAck comment block in RTW88IEEE80211.cpp
+ * (search "A-MPDU BlockAck negotiation"): TX aggregation is driven by
+ * this driver's own MLME sending real ADDBA Request/Response frames
+ * over the air, and RX aggregation is a hardware-automatic no-op
+ * (rtw88's ampdu_action is a no-op for RX_START/STOP, per that same
+ * comment). Both real call sites (base.c:1797, rc.c:241) ignore the
+ * return value / treat this as fire-and-forget, so a true no-op stub
+ * is correct here, not a placeholder needing a follow-up TODO -- the
+ * real negotiation already happens elsewhere in this codebase.
+ * Return type matches real upstream mac80211
+ * (ieee80211_start_tx_ba_session returns int, _stop_tx_ba_cb_irqsafe
+ * returns void); real call sites don't check either.
+ */
+static inline int ieee80211_start_tx_ba_session(struct ieee80211_sta *sta,
+                                                 u16 tid, u16 timeout)
+{
+    (void)sta; (void)tid; (void)timeout;
+    return 0;
+}
+static inline void ieee80211_stop_tx_ba_cb_irqsafe(struct ieee80211_vif *vif,
+                                                    const u8 *ra, u16 tid)
+{
+    (void)vif; (void)ra; (void)tid;
+}
+
 /* ------------------------------------------------------------------ */
 /*  TX  info                                                            */
 /* ------------------------------------------------------------------ */

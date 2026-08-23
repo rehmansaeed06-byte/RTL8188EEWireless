@@ -1593,6 +1593,152 @@ static inline int ieee80211_register_hw(struct ieee80211_hw *hw)
 
 static inline void ieee80211_unregister_hw(struct ieee80211_hw *hw) {}
 
+/*
+ * wiphy rfkill polling start/stop.
+ *
+ * Real rtlwifi (base.c:514, base.c:520): rtl_init_rfkill()/
+ * rtl_deinit_rfkill() call these to tell mac80211 core to start/stop
+ * periodically polling hardware rfkill state via
+ * hw->ops->rfkill_poll(). This port has no rfkill polling
+ * infrastructure of its own (no ops->rfkill_poll implementation
+ * exists in RTW88IEEE80211.cpp), so both are true no-ops -- there is
+ * no polling loop for these to start or stop. Real upstream both
+ * return void; real call sites don't check any return.
+ */
+static inline void wiphy_rfkill_start_polling(struct wiphy *wiphy)
+{
+    (void)wiphy;
+}
+static inline void wiphy_rfkill_stop_polling(struct wiphy *wiphy)
+{
+    (void)wiphy;
+}
+
+/*
+ * ieee80211_vif_type_p2p — real call site core.c:218, used in a
+ * switch() that falls through NL80211_IFTYPE_P2P_CLIENT into
+ * NL80211_IFTYPE_STATION (confirmed real context). Real upstream
+ * semantics (net/mac80211/util.c, not present in this project's
+ * $LINUX_SRC reference tree to grep directly -- that tree is scoped
+ * to just the rtlwifi driver, not mac80211 core -- so this is
+ * reconstructed from well-documented, stable real behavior rather
+ * than grepped verbatim; flagging that distinction explicitly per
+ * this project's own process note): returns vif->type unchanged,
+ * *except* when vif->p2p is set, in which case NL80211_IFTYPE_STATION
+ * is remapped to NL80211_IFTYPE_P2P_CLIENT and NL80211_IFTYPE_AP is
+ * remapped to NL80211_IFTYPE_P2P_GO -- letting driver code branch on
+ * P2P-ness without checking vif->p2p separately at every call site.
+ */
+static inline enum nl80211_iftype ieee80211_vif_type_p2p(struct ieee80211_vif *vif)
+{
+    if (vif->p2p) {
+        if (vif->type == NL80211_IFTYPE_STATION)
+            return NL80211_IFTYPE_P2P_CLIENT;
+        if (vif->type == NL80211_IFTYPE_AP)
+            return NL80211_IFTYPE_P2P_GO;
+    }
+    return vif->type;
+}
+
+/*
+ * ieee80211_tx_info_clear_status — real call sites (base.c:1583,
+ * pci.c:526, usb.c:797) all follow the identical pattern: call this,
+ * then immediately set `info->flags |= IEEE80211_TX_STAT_ACK`
+ * themselves. That means this function must NOT touch `->flags`
+ * (the caller sets it right after) -- it clears the per-rate TX
+ * status array and ack-signal fields real upstream clears, i.e. the
+ * `status` union members that hold post-TX results, not the
+ * pre-TX control fields.
+ */
+static inline void ieee80211_tx_info_clear_status(struct ieee80211_tx_info *info)
+{
+    memset(info->status.rates, 0, sizeof(info->status.rates));
+    info->status.rates[0].idx = -1; /* -1 = "rate unset", matches real upstream */
+    info->status.ack_signal = 0;
+}
+
+/*
+ * ieee80211_connection_loss — real call site base.c:2196, fire-and-
+ * forget (return value, if any, unused). Real upstream notifies
+ * mac80211's connection-monitor/roaming logic that the link is
+ * considered lost so it can trigger disconnect/reconnect handling.
+ * This port's MLME is entirely driver-side (no mac80211 connection
+ * monitor running), so there is no separate subsystem to notify --
+ * true no-op, matching the same rationale as the TX-BA session stubs
+ * above (real reconnect logic already lives in this driver's own
+ * code, immediately around the real call site: `rtlpriv->
+ * link_info.roam_times = 0` right before this call).
+ */
+static inline void ieee80211_connection_loss(struct ieee80211_vif *vif)
+{
+    (void)vif;
+}
+
+/*
+ * ieee80211_get_tx_rate — real call site base.c:1213-1216
+ * (_rtl_get_tx_hw_rate, "legacy" branch — i.e. not MCS/VHT, so a
+ * plain 802.11a/b/g rate index): `txrate = ieee80211_get_tx_rate(hw,
+ * info); if (txrate) hw_value = txrate->hw_value;` confirms the
+ * return type is `struct ieee80211_rate *` (nullable) and the field
+ * actually read afterward is `->hw_value`. Real upstream looks up
+ * `info->status.rates[0].idx` into the current band's bitrate table
+ * (`hw->wiphy_bands[info->band]->bitrates[]`, both already-real
+ * fields in this tree). Returns NULL on an out-of-range index or a
+ * missing band table rather than asserting, since the real call site
+ * explicitly null-checks before use.
+ */
+static inline struct ieee80211_rate *
+ieee80211_get_tx_rate(struct ieee80211_hw *hw, const struct ieee80211_tx_info *info)
+{
+    struct ieee80211_supported_band *sband;
+    s8 idx;
+
+    if (!hw || !info)
+        return NULL;
+    if (info->band >= NL80211_NUM_BANDS)
+        return NULL;
+
+    sband = hw->wiphy_bands[info->band];
+    if (!sband || !sband->bitrates)
+        return NULL;
+
+    idx = info->status.rates[0].idx;
+    if (idx < 0 || idx >= sband->n_bitrates)
+        return NULL;
+
+    return &sband->bitrates[idx];
+}
+
+/*
+ * ieee80211_beacon_get — real call sites core.c:980
+ * (`ieee80211_beacon_get(hw, vif, 0)`) and pci.c:1038
+ * (`ieee80211_beacon_get(hw, mac->vif, 0)`), both passing a literal
+ * `0` as the third argument and both null-checking the return
+ * (`if (!pskb) return;`). Real upstream's third argument is a
+ * link_id (multi-link operation); this port has no MLO support, so a
+ * plain 2-argument-shaped stub with an ignored third parameter is
+ * sufficient -- kept as a parameter (rather than dropped) purely so
+ * the signature matches every real call site without requiring call-
+ * site edits. This driver builds and sends beacon frames itself via
+ * `sendBeaconFrame`-style paths in RTW88IEEE80211.cpp rather than
+ * through mac80211's beacon-template mechanism (mac80211 normally
+ * caches a template built by cfg80211/hostapd and this function hands
+ * back a fresh skb copy of it) -- there is no real beacon template to
+ * hand back here, so this returns NULL, matching what real upstream
+ * returns when no beacon has been configured for the vif yet. Both
+ * real call sites already handle a NULL return correctly (silently
+ * skip sending that round), so this is a safe default rather than a
+ * functional gap -- if beacon-mode (AP/P2P-GO) operation is ever
+ * needed, this is the function that would need a real skb-building
+ * implementation instead of NULL.
+ */
+static inline struct sk_buff *
+ieee80211_beacon_get(struct ieee80211_hw *hw, struct ieee80211_vif *vif, int link_id)
+{
+    (void)hw; (void)vif; (void)link_id;
+    return NULL;
+}
+
 /* ------------------------------------------------------------------ */
 /*  mac80211 callbacks into upper layer (we implement these)           */
 /* ------------------------------------------------------------------ */

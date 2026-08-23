@@ -7550,4 +7550,129 @@ recurring, but not done this session (mechanical workaround only).
 
 ------------------------------------------------------------------------
 
+# 94. Closing the TX-BA no-op pair (12 -> 10) and the 6-symbol state-
+accessor/stub cluster (10 -> 3)
+
+Continuation of the mac80211-stub work, two batches this session,
+both closing exactly as planned with zero regressions.
+
+## 94.1 TX-BA session no-ops (12 -> 10)
+
+Real call sites confirmed by grep before writing (per Section 93.2's
+reinforced process note):
+`ieee80211_start_tx_ba_session(sta, tid, 5000)` at rc.c:241 and
+`ieee80211_stop_tx_ba_cb_irqsafe(vif, sta->addr, tid)` at base.c:1797.
+Both calls are bare statements with return values ignored at both real
+sites (confirmed by viewing the surrounding lines directly, not
+assumed). Written as true no-ops matching real upstream's signatures
+(`int`-returning start, `void`-returning stop) — correct because the
+real TX/RX BlockAck negotiation for this port happens entirely in this
+driver's own MLME code (see the existing "A-MPDU BlockAck negotiation"
+comment block in `RTW88IEEE80211.cpp`, which already documents that
+`rtw88's ampdu_action is a no-op for RX_START/STOP`; these two
+mac80211-facing entry points are the TX-side sibling of that same
+architecture, not a placeholder needing real logic later).
+
+Inserted into `mac80211.h` immediately after `struct ieee80211_sta`'s
+closing brace — both `struct ieee80211_sta` and `struct ieee80211_vif`
+needed to be fully visible at the insertion point (they weren't, at
+the file's earlier `_ieee80211_is_robust_mgmt_frame` location from
+Section 93, which sits before both struct definitions). Verified no
+incomplete-type errors on first build attempt.
+
+Result: clean build, first attempt. `check_kext_symbols.sh`: **12 ->
+10**, zero regressions.
+
+## 94.2 Six-symbol state-accessor/stub cluster (10 -> 3)
+
+Real call sites grepped for all six before writing any of them:
+
+- `wiphy_rfkill_start_polling`/`_stop_polling` (base.c:514, base.c:520,
+  inside `rtl_init_rfkill`/`rtl_deinit_rfkill`): true no-ops — this
+  port has no `ops->rfkill_poll` implementation for these to
+  start/stop polling against.
+- `ieee80211_vif_type_p2p` (core.c:218, inside a `switch` that falls
+  through `NL80211_IFTYPE_P2P_CLIENT` into `NL80211_IFTYPE_STATION`):
+  **the one symbol this session not directly grepped from a real
+  definition** — `../linux-kernel` in this project's reference tree is
+  scoped to just the rtlwifi driver, not mac80211 core, confirmed by
+  `find ... | xargs grep -l ieee80211_vif_type_p2p` returning only the
+  one driver call site. Written from well-documented, stable real
+  upstream semantics instead (remaps STATION->P2P_CLIENT and
+  AP->P2P_GO when `vif->p2p` is set, else returns `vif->type`
+  unchanged) — flagged explicitly in-code as reconstructed-from-known-
+  behavior rather than grepped-verbatim, per this project's standing
+  distinction between the two.
+- `ieee80211_tx_info_clear_status` (base.c:1583, pci.c:526, usb.c:797
+  — three identical real call sites): confirmed real pattern is
+  call-this-then-immediately-set-`info->flags |= IEEE80211_TX_STAT_ACK`
+  at every site, meaning the function must NOT touch `->flags` itself.
+  Implemented as clearing `status.rates[]` and `status.ack_signal`
+  only.
+- `ieee80211_connection_loss` (base.c:2196, fire-and-forget, no return
+  checked): true no-op — this port's MLME/roaming logic is entirely
+  driver-side already (the real call site sits right next to
+  `rtlpriv->link_info.roam_times = 0`, i.e. the actual reconnect logic
+  lives in this driver's own code, not in a mac80211 subsystem this
+  stub would need to trigger).
+- `ieee80211_get_tx_rate` (base.c:1213-1216, `_rtl_get_tx_hw_rate`'s
+  "legacy"/non-MCS/non-VHT branch): confirmed return type
+  `struct ieee80211_rate *` (nullable, dereferenced as `->hw_value`)
+  by viewing the real call site's full context. Implemented as a real
+  (non-stub) rate-table lookup: `info->status.rates[0].idx` indexed
+  into `hw->wiphy_bands[info->band]->bitrates[]`, both already-real
+  fields in this tree, with bounds/null checks matching the real call
+  site's own null-check discipline.
+- `ieee80211_beacon_get` (core.c:980 and pci.c:1038, both passing a
+  literal `0` third argument and both null-checking the return): **NOT
+  a full implementation — flagged as a known functional gap, not just
+  a link-time stub.** Returns `NULL` unconditionally. Both real call
+  sites already handle NULL gracefully (skip that round silently), so
+  this is safe for load/link/no-crash purposes, but it means this
+  driver's mac80211-beacon-template path will never actually produce
+  a beacon frame via this function. Relevant only if AP/P2P-GO
+  (beacon-transmitting) operation is ever needed — station-mode
+  (connecting to an AP, not hosting one) is unaffected, since a
+  station never calls this path. If beacon-mode operation becomes a
+  goal, this is the specific function that needs a real skb-building
+  implementation instead of NULL.
+
+All six inserted into `mac80211.h` after the existing `ieee80211_hw`/
+`wiphy` helper block (`ieee80211_register_hw`/`_unregister_hw`), where
+`struct wiphy`, `struct ieee80211_hw`, `struct ieee80211_vif`,
+`struct ieee80211_tx_info`, and `struct ieee80211_supported_band` are
+all already fully visible.
+
+Result: clean build, first attempt, no new warnings beyond the
+pre-existing baseline. `check_kext_symbols.sh`: **10 -> 3**, zero
+regressions across both batches this session.
+
+## 94.3 Result
+
+**Current count: 3 unique undefined symbols, all VHT rate encode/
+decode: `_ieee80211_rate_get_vht_mcs`, `_ieee80211_rate_get_vht_nss`,
+`_ieee80211_rate_set_vht`.** This is the last remaining cluster from
+every prior handover's breakdown, and the one flagged since Section
+92 as needing the most care: the real `ieee80211_tx_rate.idx`/
+`.flags` VHT bit-packing scheme must be confirmed against real call
+sites before writing, since a wrong guess here would silently corrupt
+rate selection (garbage MCS/NSS values sent to hardware) rather than
+fail to link or load — unlike every symbol closed in Sections 90-94,
+none of which had a silent-corruption failure mode.
+
+**Next candidates:** grep real call sites for all three
+(`base.c:1201-1211` already partially seen in Section 94.2's
+`_rtl_get_tx_hw_rate` context — `ieee80211_rate_get_vht_mcs(r)` and
+`ieee80211_rate_get_vht_nss(r) == 2` both called there on
+`r = &info->status.rates[0]`) plus `ieee80211_rate_set_vht`'s call
+site (not yet located — likely in a TX-rate-selection path, opposite
+direction from the two get-side helpers). Once the real
+idx/flags bit layout is confirmed (which bits of `idx` encode MCS vs.
+NSS, and what `IEEE80211_TX_RC_VHT_MCS`-style flag if any gates it),
+implementing all three should be mechanical — this is a research-then-
+write task, not a difficult one, with the caution being entirely about
+not skipping the research step.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

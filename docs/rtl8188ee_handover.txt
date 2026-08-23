@@ -2155,3 +2155,69 @@ is not evidence of a correct name/signature for a `static inline`
 function that nothing else in the tree cross-checks; only
 `check_kext_symbols.sh`'s post-rebuild count is.
 
+## LATEST UPDATE — 12 -> 3: TX-BA no-ops and the 6-symbol state-
+accessor/stub cluster both closed clean (findings.md Section 94)
+Both remaining batches from the prior update's plan closed in this
+session, each on the first build attempt, zero regressions:
+
+**TX-BA no-ops (12 -> 10):** `ieee80211_start_tx_ba_session`/
+`_stop_tx_ba_cb_irqsafe`, real call sites confirmed at rc.c:241 and
+base.c:1797. True no-ops — this driver's own MLME code already drives
+real ADDBA/BlockAck negotiation over the air (documented in
+`RTW88IEEE80211.cpp`'s existing "A-MPDU BlockAck negotiation" comment
+block), matching the same no-op architecture already established for
+`rtw88_ampdu_action`'s RX_START/STOP handling.
+
+**State accessors/stubs (10 -> 3):** all six real call sites grepped
+first. `wiphy_rfkill_start/stop_polling` — no-ops (no rfkill_poll
+implementation exists to start/stop). `ieee80211_tx_info_clear_status`
+— clears `status.rates[]`/`ack_signal` only, confirmed real call
+sites always set `->flags` themselves immediately after. `ieee80211_
+connection_loss` — no-op (reconnect logic is already driver-side,
+confirmed by its real call site sitting next to the driver's own
+`roam_times` reset). `ieee80211_get_tx_rate` — a real (non-stub)
+implementation: looks up `info->status.rates[0].idx` in
+`hw->wiphy_bands[info->band]->bitrates[]`, confirmed against the real
+call site's exact dereference pattern. `ieee80211_vif_type_p2p` — the
+one symbol not grepped from a real definition this session (mac80211
+core isn't present in this project's `$LINUX_SRC` reference tree,
+confirmed by search); written from documented stable upstream
+semantics instead, flagged explicitly as such in-code.
+
+**`ieee80211_beacon_get` is a known, explicitly-flagged functional
+gap, not a completed stub:** returns `NULL` unconditionally. Both real
+call sites null-check and skip gracefully, so this is safe for
+build/link/load purposes and correct for station-mode operation (this
+driver connects to APs, it doesn't host one), but AP/P2P-GO
+(beacon-transmitting) operation would need a real skb-building
+implementation here instead.
+
+**Current count: 3 unique undefined symbols, one cluster: VHT rate
+encode/decode** — `_ieee80211_rate_get_vht_mcs`,
+`_ieee80211_rate_get_vht_nss`, `_ieee80211_rate_set_vht`. This is the
+last remaining symbol group from every prior handover's breakdown,
+and the one flagged since Section 92 as needing the most care: wrong
+guesses on the real `ieee80211_tx_rate.idx`/`.flags` VHT bit-packing
+scheme would silently corrupt rate selection (garbage MCS/NSS to
+hardware) rather than fail to link/load, unlike every symbol closed
+in Sections 90-94 so far.
+
+## Next immediate step
+Grep real call sites for all three VHT rate helpers before writing
+anything (per the now well-established process in this document —
+every symbol closed cleanly on the first attempt this session
+followed exactly this discipline, and the two name/type near-misses
+in Sections 92 and 93 both happened on symbols whose real call sites
+weren't checked closely enough first). `base.c:1201-1211`
+(`_rtl_get_tx_hw_rate`) already shows partial real usage of the two
+get-side helpers (`ieee80211_rate_get_vht_mcs(r)` and
+`ieee80211_rate_get_vht_nss(r) == 2`, both called on
+`r = &info->status.rates[0]`) — worth re-viewing with wider context
+to confirm the exact bit layout before writing. `ieee80211_rate_
+set_vht`'s real call site is not yet located; likely in a TX-rate-
+selection path (the encode-side opposite of the two get-side decode
+helpers already partially seen). Once the real bit layout is
+confirmed, this should be a mechanical research-then-write task like
+every other symbol closed this session — the caution is entirely
+about not skipping the research step for these three specifically.
+

@@ -1,6 +1,129 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
-## FIFTEENTH UPDATE (read this first) — RTW88PCIDevice.cpp's own
+## SIXTEENTH UPDATE (read this first) — first real kextutil/kmutil
+## load attempt made: 48 undefined symbols found, 8 fixed (a real
+## rtw88-vs-rtlwifi entry-point mixup plus 6 never-defined functions),
+## 41 remain. Kext still does not load.
+
+The FIFTEENTH UPDATE below got a full clean build for the first
+time ever. This update is the first time anyone actually tried to
+load the result — `kextutil -t` (which on macOS 12.7.6 genuinely
+runs `kmutil load`, not a dry run; `kextutil -n` is outright
+rejected: "not a supported kmutil mode"). It failed, as the FIFTEENTH
+UPDATE's own "still completely untested" caveat predicted it might.
+See `docs/findings.md` Section 88 for full detail.
+
+**48 unique undefined symbols at load time** (deduped with
+`grep -o "bind ([^)]*)" | sort -u` — raw kmutil output repeats each
+one per call site, thousands of lines). Ruled out a KPI-version
+mismatch first (`Info.plist`'s `20.0.0` vs the real kernel's
+`21.6.0` — forward-compatible, confirmed via `kextstat`) before
+categorizing the 48 into: real bugs in our own code (8, all fixed
+this session), genuinely-missing kernel-runtime primitives (~15,
+`_udelay`/`_mdelay`/`_rcu_read_lock`/etc. — still open), missing
+mac80211 API stubs (~25, `_ieee80211_find_sta`/`_ieee80211_beacon_get`/
+etc. — still open), and one standalone gap, `_rtl88ee_hal_cfg` (not
+yet root-caused, confirmed independent of the fixes below since it's
+still unresolved after them).
+
+**The real bug, architecturally the most important one:**
+`RTW88IEEE80211.cpp` (reused from Feixiao) was still calling
+`rtw_pci_probe`/`rtw_pci_remove` — real rtw88 upstream entry points,
+`struct rtw_dev *`-based — despite this project compiling rtlwifi,
+not rtw88. Everything *downstream* of the probe call in the same
+file was already correctly ported to rtlwifi's names
+(`rtlwifi_get_hw()`, `rtlwifi_register_vif()`, `struct rtl_priv *`)
+— only the declarations block and 2 call sites were stale. Fixed by
+switching to the real rtlwifi entry points, confirmed via direct
+source read: `int rtl_pci_probe(struct pci_dev *, const struct
+pci_device_id *)` / `void rtl_pci_disconnect(struct pci_dev *)` —
+note the real teardown function's name matches the `pci_driver
+.remove` field, not a `*_remove` suffix.
+
+**6 more real bugs, same root cause (files reused verbatim from
+Feixiao, never fully adapted):** `rtw88_printk`/`rtw88_log_level`/
+`rtw88_module_start`/`rtw88_module_stop`/`rtw88_read_log`/
+`rtw88_trigger_interrupt` were declared in `kernel.h`/
+`RTW88UserClient.cpp`/`kmod_info.c` but never defined anywhere in
+this tree. Implemented for real in `rtlwifi_compat.c` — not stubs,
+since `pr_err`/`WARN`/etc. all expand to `rtw88_printk()` and are
+called throughout the real, compiled-in rtlwifi source. Ring-buffer
++ `IOLog()` mirror for the logging pair; `rtw88_module_start/stop`
+are the kext's real kernel-called entry points
+(`KMOD_EXPLICIT_DECL`), bodies deliberately minimal since real
+bring-up happens later via IOKit's own probe/start(), not at
+kmod-entry time; `rtw88_trigger_interrupt` left an explicit no-op
+(same confirmed-no-op-over-guessed-behavior precedent as prior
+sessions' `compat_init`/`_exit`) since no real MMIO trigger register
+is documented anywhere and guessing risks writing to an undefined
+register on real hardware.
+
+**Two gotchas hit and fixed along the way, both worth remembering:**
+(1) a comment containing the literal text `rtw_core_*/rtw_tx` closed
+the C block comment early at the `*/`, turning the rest into real
+(broken) code — same `-Wcomment` class already flagged elsewhere in
+this project, but here it wasn't just a warning. (2) The first
+logging implementation used `IOSimpleLockLockDisableInterrupt`/
+`UnlockEnableInterrupt`, which don't bind at load time despite being
+declared in `iokit_shim.h` (showed up as 2 new undefined symbols,
+turning a clean -8 into a net -6). Fixed by matching this project's
+own already-proven pattern (`RTW88PCIDevice.cpp`'s `_dmaLock`, used
+directly from `handleInterrupt()` — plain `IOSimpleLockLock`/`Unlock`,
+safe because `IOInterruptEventSource`'s callback runs on the
+IOWorkLoop thread, not true primary-interrupt context).
+
+**Net result: 48 → 41 undefined symbols.** Confirmed via 3 separate
+clean `rm -rf build && make` runs across this session (once after
+the probe/remove fix, once after the logging functions were first
+added, once after the IOSimpleLock correction) — all three fully
+clean, zero `error:` lines, only the same pre-existing warning-level
+noise as the FIFTEENTH UPDATE's build. **The kext still cannot
+load** — this session closed naming/wiring bugs in our own code, not
+the missing compat-shim coverage, which is most of what's left.
+
+### What is still open (real, not superseded)
+
+- **Runtime/hardware behavior is still completely untested** — even
+  more clearly true now than before, since the kext doesn't load yet
+  at all.
+- 15 kernel-runtime primitives never implemented:
+  `_udelay`/`_mdelay`/`_usleep_range`/`_rcu_read_lock`/`_rcu_read_
+  unlock`/`_local_irq_enable`/`_local_irq_restore`/
+  `_local_save_flags`/`_fls`/`_be16_to_cpup`/
+  `_ether_addr_equal_64bits`/`_ether_addr_equal_unaligned`/
+  `_timer_delete_sync`/`___skb_dequeue`/`___skb_queue_purge`/
+  `_skb_queue_is_last`/`_dev_warn`/`_pci_resource_flags`/
+  `_pcie_capability_clear_and_set_word`/`_get_random_bytes`. Likely
+  the fastest next win — `_udelay`/`_mdelay`/`_usleep_range` in
+  particular are thin wrappers around MacKernelSDK's
+  `IODelay`/`IOSleep`, not yet attempted.
+- ~25 mac80211 API calls never stubbed in the compat shim:
+  `_ieee80211_find_sta`, `_ieee80211_beacon_get`,
+  `_ieee80211_get_tx_rate`, `_ieee80211_rate_get_vht_mcs/nss`,
+  `_ieee80211_rate_set_vht`, `_ieee80211_start_tx_ba_session`,
+  `_ieee80211_stop_tx_ba_cb_irqsafe`, `_ieee80211_connection_loss`,
+  `_ieee80211_tx_info_clear_status`, `_ieee80211_vif_type_p2p`,
+  `_ieee80211_get_DA/SA/tid`, `_ieee80211_has_pm`,
+  `_ieee80211_is_auth/pspoll/qos_nullfunc`,
+  `__ieee80211_is_robust_mgmt_frame`,
+  `_wiphy_rfkill_start/stop_polling`. Larger surface than the
+  primitives bucket, needs more care per-symbol since these are real
+  API contracts callers depend on, not just linker satisfaction — not
+  yet started.
+- `_rtl88ee_hal_cfg` — standalone, not yet root-caused. Confirmed
+  independent of this session's probe/remove fix (still unresolved
+  after it landed). No non-`extern` definition found anywhere in
+  `src/` by direct grep — worth checking whether `rtl8188ee/sw.c` is
+  actually being compiled with the right visibility/linkage, or
+  whether the real definition is missing/misnamed there too.
+- `_thread_call_cancel_wait` — real kernel-exported symbol (confirmed
+  via `nm` against the actual kernel binary), likely just collateral
+  from linking having already failed elsewhere rather than an
+  independent bug. Deprioritized, not separately investigated.
+
+------------------------------------------------------------------------
+
+## FIFTEENTH UPDATE — RTW88PCIDevice.cpp's own
 ## unported-symbol gap closed; a real header-shadow bug found and
 ## fixed affecting 3 already-shipped files; FIRST-EVER full clean
 ## `make clean && make kext` succeeds end to end, real .kext produced.

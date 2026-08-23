@@ -2,7 +2,7 @@
  * RTW88IEEE80211.hpp — 802.11 state machine for rtw88 macOS port.
  *
  * Responsibilities:
- *  - Drives the Linux rtw88 driver (rtw_core_start/stop, rtw_tx, etc.)
+ *  - Drives the compiled-in rtlwifi driver (hw->ops->start/stop/tx)
  *  - Manages scan, authenticate, associate, 4-way handshake
  *  - Converts between mbuf_t and sk_buff for the driver
  *  - Delivers decrypted data frames as Ethernet to RTW88PCIDevice
@@ -90,7 +90,7 @@ public:
     /* Called by RTW88PCIDevice */
     IOReturn  start();       /* probe: chip info, efuse, register hw */
     void      stop();        /* full teardown */
-    IOReturn  powerOn();     /* enable: rtw_core_start */
+    IOReturn  powerOn();     /* enable: hw->ops->start() */
     void      powerOff();    /* disable: rtw_core_stop */
     void      handleInterrupt();
     UInt32    outputPacket(mbuf_t m);

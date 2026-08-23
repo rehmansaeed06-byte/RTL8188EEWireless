@@ -20,6 +20,14 @@
 
 #include "rtlwifi_compat.h"
 
+/* mach_types.h -> kmod_info_t/kern_return_t, needed for
+ * rtw88_module_start/_stop's real signatures (must match
+ * src/kext/kmod_info.c's extern declarations exactly). KERN_SUCCESS
+ * itself comes from iokit_shim.h (pulled in transitively) — a
+ * project-local #define, not this header's Mach KERN_SUCCESS family —
+ * confirmed no collision (both resolve to 0). */
+#include <mach/mach_types.h>
+
 /*
  * struct rtl_priv, struct rtl_mac, and the rtl_mac()/rtl_priv() accessor
  * macros come from rtlwifi's own real, unmodified wifi.h — confirmed
@@ -1427,4 +1435,182 @@ bool schedule_delayed_work(struct delayed_work *dwork, unsigned long delay)
 void flush_scheduled_work(void)
 {
     flush_workqueue(system_wq);
+}
+
+/*
+ * ---------------------------------------------------------------------
+ * Logging: rtw88_printk / rtw88_log_level / rtw88_read_log
+ * ---------------------------------------------------------------------
+ * Confirmed missing at kext-load time, not just a naming leftover: grep
+ * across src/ found declarations only (src/compat/linux/kernel.h,
+ * src/kext/RTW88UserClient.cpp) and zero definitions anywhere in this
+ * tree. pr_err/pr_warn/pr_info/pr_debug/printk/WARN/WARN_ON/BUG all
+ * expand to rtw88_printk() (kernel.h) and are called throughout the
+ * real, compiled-in rtlwifi source (base.c/core.c/pci.c/ps.c/etc. all
+ * use pr_*), so this needs a real implementation, not a stub — a
+ * no-op body would silently swallow every diagnostic message the
+ * driver produces, which is exactly the wrong failure mode for a
+ * still-unverified-on-real-hardware port.
+ *
+ * Kept the rtw88_-prefixed names from kernel.h/RTW88UserClient.cpp
+ * as-is here (rather than renaming to rtlwifi_) since both call sites
+ * are in files reused verbatim from Feixiao and neither name collides
+ * with anything real rtlwifi source defines — renaming would only
+ * matter if this project ever also linked rtw88_compat.c, which it
+ * does not (findings.md Section 57: separate Makefile, separate
+ * build/ tree, never combined into one link).
+ *
+ * Design: small fixed-size ring buffer, IOSimpleLock-protected
+ * (interrupt-safe — pr_err/WARN/BUG are reachable from the ISR and
+ * tasklets, not just process context, so this cannot use IOLock,
+ * which can block). Every message is also mirrored to IOLog()
+ * unconditionally, so console/log output works even before
+ * RTW88UserClient's sGetLog() is ever called — the ring buffer exists
+ * for the userclient debug-drain path specifically, not as the only
+ * way to see driver output.
+ */
+
+int rtw88_log_level = KERN_INFO;
+
+#define RTW88_LOG_RING_SIZE 16384
+
+static char            s_rtw88_log_ring[RTW88_LOG_RING_SIZE];
+static uint32_t        s_rtw88_log_head;   /* next byte to write */
+static uint32_t        s_rtw88_log_count;  /* valid bytes, <= ring size */
+static IOSimpleLock    *s_rtw88_log_lock;  /* lazily allocated, see below */
+
+static IOSimpleLock *rtw88_log_lock_get(void)
+{
+    /* Lazily allocated because this file has no single init call site
+     * guaranteed to run before the first pr_*()/WARN() — chip probe,
+     * module start, and even early error paths can all call in first.
+     * IOSimpleLockAlloc() itself is not interrupt-safe to race with
+     * itself, but the realistic first caller is kext start() on a
+     * single thread before any IRQ is wired up (Section 46/49: IRQ
+     * registration happens late in probe, after hw registration) —
+     * flagged rather than silently assumed watertight under true
+     * concurrent first-use. */
+    if (!s_rtw88_log_lock)
+        s_rtw88_log_lock = IOSimpleLockAlloc();
+    return s_rtw88_log_lock;
+}
+
+void rtw88_printk(int level, const char *fmt, ...)
+{
+    char        line[256];
+    va_list     args;
+    int         len;
+    IOSimpleLock *lock;
+
+    if (level > rtw88_log_level)
+        return;
+
+    va_start(args, fmt);
+    len = vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+    if (len < 0)
+        return;
+    if ((size_t)len >= sizeof(line))
+        len = sizeof(line) - 1; /* vsnprintf truncated; keep what fit */
+
+    /* Always mirror to the real kernel log regardless of ring-buffer
+     * state — this is the primary output path or a serial/verbose
+     * boot; the ring buffer below is secondary (RTW88UserClient's
+     * on-demand drain). */
+    IOLog("%s", line);
+
+    lock = rtw88_log_lock_get();
+    if (!lock) {
+        /* Allocation failed (or raced) — IOLog above already ran, so
+         * the message isn't lost, just not available via the
+         * userclient ring-buffer drain for this one call. */
+        return;
+    }
+
+    IOSimpleLockLock(lock);
+    for (int i = 0; i < len; i++) {
+        s_rtw88_log_ring[s_rtw88_log_head] = line[i];
+        s_rtw88_log_head = (s_rtw88_log_head + 1) % RTW88_LOG_RING_SIZE;
+        if (s_rtw88_log_count < RTW88_LOG_RING_SIZE)
+            s_rtw88_log_count++;
+    }
+    IOSimpleLockUnlock(lock);
+}
+
+uint32_t rtw88_read_log(char *out_buf, uint32_t max_len)
+{
+    IOSimpleLock *lock;
+    uint32_t     to_copy;
+    uint32_t     start;
+
+    if (!out_buf || max_len == 0)
+        return 0;
+
+    lock = rtw88_log_lock_get();
+    if (!lock)
+        return 0;
+
+    IOSimpleLockLock(lock);
+
+    to_copy = s_rtw88_log_count;
+    if (to_copy > max_len)
+        to_copy = max_len;
+
+    start = (s_rtw88_log_head + RTW88_LOG_RING_SIZE - s_rtw88_log_count)
+            % RTW88_LOG_RING_SIZE;
+
+    for (uint32_t i = 0; i < to_copy; i++) {
+        out_buf[i] = s_rtw88_log_ring[(start + i) % RTW88_LOG_RING_SIZE];
+    }
+
+    s_rtw88_log_count -= to_copy;
+
+    IOSimpleLockUnlock(lock);
+
+    return to_copy;
+}
+
+/*
+ * ---------------------------------------------------------------------
+ * rtw88_trigger_interrupt — debug-only manual IRQ trigger
+ * ---------------------------------------------------------------------
+ * Called from RTW88IEEE80211.cpp/RTW88PCIDevice.cpp (both reused
+ * verbatim from Feixiao) as a debug/diagnostic hook. Confirmed no
+ * equivalent exists anywhere in this tree under any name. Left as an
+ * explicit no-op rather than guessing at a real MMIO trigger sequence
+ * — a wrong guess here risks writing to an undefined register on real
+ * hardware, which is worse than "the debug trigger does nothing yet."
+ */
+void rtw88_trigger_interrupt(void)
+{
+    IOLog("rtw88: rtw88_trigger_interrupt() called (no-op — no confirmed "
+          "software-IRQ-trigger register for RTL8188EE; see rtlwifi_compat.c "
+          "header comment above this function)\n");
+}
+
+/*
+ * ---------------------------------------------------------------------
+ * rtw88_module_start / rtw88_module_stop — kext entry points
+ * ---------------------------------------------------------------------
+ * Referenced by src/kext/kmod_info.c (KMOD_EXPLICIT_DECL, _realmain,
+ * _antimain) — these ARE the kext's start()/stop() entry points the
+ * kernel calls on load/unload, not optional. Confirmed no definition
+ * existed anywhere in this tree. Bodies are deliberately minimal: real
+ * per-device bring-up happens later via IOKit's own probe/start() on
+ * RTW88PCIDevice, not here.
+ */
+kern_return_t rtw88_module_start(kmod_info_t *ki, void *data)
+{
+    (void)ki;
+    (void)data;
+    IOLog("rtw88: kext module loaded (com.rtlwifi.rtl8188ee)\n");
+    return KERN_SUCCESS;
+}
+
+kern_return_t rtw88_module_stop(kmod_info_t *ki, void *data)
+{
+    (void)ki;
+    (void)data;
+    IOLog("rtw88: kext module unloading (com.rtlwifi.rtl8188ee)\n");
+    return KERN_SUCCESS;
 }

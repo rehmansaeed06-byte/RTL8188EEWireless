@@ -20,17 +20,16 @@ static mbuf_t rtw88_make_packet_mbuf(const void *src, uint32_t len);
 extern "C" {
 #include "../compat/rtlwifi_compat.h"
 
-/* Linux driver public API */
-int  rtw_core_init(struct rtw_dev *rtwdev);
-void rtw_core_deinit(struct rtw_dev *rtwdev);
-int  rtw_core_start(struct rtw_dev *rtwdev);
-void rtw_core_stop(struct rtw_dev *rtwdev);
-void rtw_tx(struct rtw_dev *rtwdev, struct ieee80211_tx_control *control,
-            struct sk_buff *skb);
-
-/* PCI probe shim declared in pci.c */
-int  rtw_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
-void rtw_pci_remove(struct pci_dev *pdev);
+/* PCI probe/remove — real rtlwifi entry points, confirmed via direct
+ * source read (findings.md Section 49.2, Section 40.11.3): declared in
+ * pci.c, registered as rtl88ee_driver's .probe/.remove. Note the real
+ * teardown function is rtl_pci_disconnect, not *_remove. This project
+ * compiles rtlwifi, not rtw88 — the rtw_core_[star]/rtw_tx/rtw_pci_probe/
+ * rtw_pci_remove names that used to be declared here belong to rtw88's
+ * struct rtw_dev family and were never defined anywhere in this tree
+ * (confirmed: kmutil load reported both as unresolved). */
+int  rtl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
+void rtl_pci_disconnect(struct pci_dev *pdev);
 
 /* RTL8188EE is a single-chip target (PCI ID 0x8179) — no chip-ID lookup
  * table is needed. rtl88ee_hal_cfg is rtlwifi's single struct rtl_hal_cfg
@@ -732,11 +731,11 @@ IOReturn RTW88IEEE80211::start()
         .driver_data = (unsigned long)chip,
     };
 
-    RTW88_STAGE("calling rtw_pci_probe");
-    int ret = rtw_pci_probe(_pcidev, &fake_id);
-    RTW88_STAGE("rtw_pci_probe returned %d", ret);
+    RTW88_STAGE("calling rtl_pci_probe");
+    int ret = rtl_pci_probe(_pcidev, &fake_id);
+    RTW88_STAGE("rtl_pci_probe returned %d", ret);
     if (ret != 0) {
-        IOLog("rtw88: rtw_pci_probe failed: %d\n", ret);
+        IOLog("rtw88: rtl_pci_probe failed: %d\n", ret);
         return kIOReturnError;
     }
 
@@ -748,7 +747,7 @@ IOReturn RTW88IEEE80211::start()
     _hw = rtlwifi_get_hw();
 
     /* rtwdev is hw->priv (allocated contiguously after ieee80211_hw in alloc_hw).
-     * Note: rtw_pci_probe stores hw (not rtwdev) in pdev->driver_data via pci_set_drvdata(). */
+     * Note: rtl_pci_probe stores hw (not rtwdev) in pdev->driver_data via pci_set_drvdata(). */
     if (_hw) {
         _rtwdev = (struct rtl_priv *)_hw->priv;
     } else {
@@ -830,7 +829,7 @@ void RTW88IEEE80211::stop()
         _vif = nullptr;
     }
 
-    if (_pcidev) rtw_pci_remove(_pcidev);
+    if (_pcidev) rtl_pci_disconnect(_pcidev);
     _rtwdev = nullptr;
     _hw     = nullptr;
     _state  = RTW88_STATE_IDLE;
@@ -848,7 +847,7 @@ IOReturn RTW88IEEE80211::powerOn()
     if (!_hw || !_hw->ops || !_hw->ops->start) return kIOReturnNotReady;
     int ret = _hw->ops->start(_hw);
     if (ret) {
-        IOLog("rtw88: rtw_core_start failed: %d\n", ret);
+        IOLog("rtw88: hw->ops->start failed: %d\n", ret);
         return kIOReturnError;
     }
     _powered = true;

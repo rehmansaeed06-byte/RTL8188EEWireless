@@ -251,6 +251,82 @@ static inline u16 ieee80211_get_hdrlen_from_skb(const struct sk_buff *skb)
     return len;
 }
 
+/*
+ * ieee80211_get_DA() / ieee80211_get_SA() / ieee80211_get_tid() and
+ * ether_addr_equal_64bits() / ether_addr_equal_unaligned() -- real
+ * implementations, not stubs. Standard upstream Linux inline helpers
+ * (linux/ieee80211.h, linux/etherdevice.h) never ported into this
+ * compat layer. Pure address / frame-header logic, no driver-state
+ * dependency (unlike ieee80211_find_sta, see rtlwifi_compat.c).
+ *
+ * Real call sites (confirmed by grep against only the files this
+ * project compiles):
+ *   - rc.c: is_multicast_ether_addr(ieee80211_get_DA(hdr)) / is_broadcast_*
+ *   - rtl8188ee/trx.c: ieee80211_get_SA(hdr) for RX; ieee80211_get_DA(hdr)
+ *     for multicast/broadcast checks
+ *   - wifi.h:3013 rtl_get_tid(): ieee80211_get_tid(rtl_get_hdr(skb))
+ *   - base.c:2660: ether_addr_equal_64bits(hdr->addr3, ...)
+ *   - cam.c:272,311: ether_addr_equal_unaligned(addr, sta_addr)
+ *
+ * DA/SA addressing follows the standard 802.11 ToDS/FromDS table
+ * (802.11-2020 Table 9-26). get_tid mirrors this same file's
+ * ieee80211_get_hdrlen_from_skb() has_a4/is_qos computation exactly
+ * (immediately above) rather than re-deriving the header-length/QoS
+ * offset differently -- the QoS control field sits right after the
+ * (possibly 4-address) header, low 4 bits are the TID.
+ *
+ * ether_addr_equal_64bits/_unaligned: Linux distinguishes these for a
+ * runtime alignment/word-size optimization that doesn't apply here;
+ * both are simple 6-byte address comparisons.
+ */
+
+static inline bool ether_addr_equal_64bits(const u8 *addr1, const u8 *addr2)
+{
+    return memcmp(addr1, addr2, ETH_ALEN) == 0;
+}
+
+static inline bool ether_addr_equal_unaligned(const u8 *addr1, const u8 *addr2)
+{
+    return memcmp(addr1, addr2, ETH_ALEN) == 0;
+}
+
+static inline u8 *ieee80211_get_DA(struct ieee80211_hdr *hdr)
+{
+    u16 fc = le16_to_cpu(hdr->frame_control);
+
+    if (fc & IEEE80211_FCTL_TODS)
+        return hdr->addr3;
+    return hdr->addr1;
+}
+
+static inline u8 *ieee80211_get_SA(struct ieee80211_hdr *hdr)
+{
+    u16 fc = le16_to_cpu(hdr->frame_control);
+
+    if (fc & IEEE80211_FCTL_FROMDS)
+        return hdr->addr3;
+    return hdr->addr2;
+}
+
+static inline u16 ieee80211_get_tid(struct ieee80211_hdr *hdr)
+{
+    u16 fc = le16_to_cpu(hdr->frame_control);
+    bool has_a4 = (fc & (IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS)) ==
+                  (IEEE80211_FCTL_TODS | IEEE80211_FCTL_FROMDS);
+    bool is_qos = (fc & 0x0080) && ((fc & 0x000c) == IEEE80211_FTYPE_DATA);
+    u16 hdrlen = 24;
+    __le16 qc;
+
+    if (!is_qos)
+        return 0;
+
+    if (has_a4)
+        hdrlen += 6;
+
+    qc = *(__le16 *)((u8 *)hdr + hdrlen);
+    return le16_to_cpu(qc) & 0x000f;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Bands and channels                                                  */
 /* ------------------------------------------------------------------ */

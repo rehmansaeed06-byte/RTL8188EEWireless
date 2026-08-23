@@ -1,5 +1,36 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
+## NINETEENTH UPDATE (read this first) -- ieee80211 address/frame
+## helpers closed. 32 -> 27 undefined symbols. Kext still does not load.
+
+Same-session continuation of EIGHTEENTH UPDATE. Full detail:
+docs/findings.md Section 91.
+
+Closed 5 more symbols: _ieee80211_get_DA, _ieee80211_get_SA,
+_ieee80211_get_tid, _ether_addr_equal_64bits,
+_ether_addr_equal_unaligned. All confirmed genuinely-missing standard
+upstream Linux helpers (never ported into this compat layer), and
+unlike ieee80211_find_sta these are pure address/frame-header logic
+with no driver-state dependency -- direct standard implementations
+were safe without deeper investigation. Inserted as static inline
+functions directly into src/compat/net/mac80211.h, right after the
+existing ieee80211_get_hdrlen_from_skb() (get_tid reuses that
+function's has_a4/is_qos logic rather than re-deriving it separately).
+
+Net: 32 -> 27 undefined symbols, confirmed via clean rebuild +
+check_kext_symbols.sh, zero regressions. Kext still doesn't load --
+remaining: ~14 mac80211 API stubs (unchanged categorization),
+8 kernel-runtime primitives, _rtl88ee_hal_cfg, _thread_call_cancel_wait.
+
+Next candidates (easiest first): _be16_to_cpup (single call site,
+base.c, likely trivial byteswap), the three skbuff queue helpers
+(___skb_dequeue/___skb_queue_purge/_skb_queue_is_last -- check if
+skbuff.h's existing queue struct already supports these operations
+directly), _dev_warn (likely matches an existing dev_err/pr_info-style
+logging macro pattern already in compat/linux/device.h).
+
+------------------------------------------------------------------------
+
 ## EIGHTEENTH UPDATE (read this first) — local_irq_*/rcu_read_*/
 ## ieee80211_find_sta cluster closed. 36 → 32 undefined symbols. Kext
 ## still does not load.

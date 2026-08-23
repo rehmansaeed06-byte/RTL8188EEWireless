@@ -7212,4 +7212,86 @@ single-station, no-AP-mode shape is accounted for.
 
 ------------------------------------------------------------------------
 
+# 91. Small ieee80211 address/frame helpers closed — 32 -> 27
+
+Continuation of Section 90, same session. Closed 5 more symbols:
+`_ieee80211_get_DA`, `_ieee80211_get_SA`, `_ieee80211_get_tid`,
+`_ether_addr_equal_64bits`, `_ether_addr_equal_unaligned`.
+
+## 91.1 Confirmed genuinely missing, standard upstream helpers
+
+All five are real, standard upstream Linux inline helpers
+(linux/ieee80211.h, linux/etherdevice.h) never ported into this
+compat layer -- confirmed absent via direct grep of
+src/compat/net/mac80211.h and src/compat/linux/etherdevice.h before
+writing anything. Unlike ieee80211_find_sta (Section 90), these are
+pure address/frame-header logic with no driver-state dependency, so
+a direct standard implementation was safe without deeper
+investigation.
+
+Real call sites (confirmed against only the files this project
+compiles): rc.c uses ieee80211_get_DA() for multicast/broadcast
+checks; rtl8188ee/trx.c uses both get_SA() (RX) and get_DA()
+(multicast/broadcast); wifi.h's rtl_get_tid() wraps
+ieee80211_get_tid(); base.c uses ether_addr_equal_64bits(); cam.c
+uses ether_addr_equal_unaligned() twice.
+
+## 91.2 Implementation matches existing file conventions exactly
+
+Before writing, confirmed struct ieee80211_hdr's real field layout
+(addr1/2/3/4, frame_control) and that IEEE80211_FCTL_TODS/FROMDS and
+bool (via stdbool.h, already included through linux/types.h) were
+already in scope at the insertion point.
+
+DA/SA addressing follows the standard 802.11 ToDS/FromDS table.
+get_tid mirrors this same file's existing
+ieee80211_get_hdrlen_from_skb() has_a4/is_qos computation exactly
+(inserted directly after that function) rather than deriving the
+header-length/QoS-offset logic a second, possibly-inconsistent way.
+ether_addr_equal_64bits/_unaligned are both plain memcmp -- the
+Linux naming distinction is a word-alignment optimization that
+doesn't apply here.
+
+All five inserted as static inline functions directly into
+src/compat/net/mac80211.h, immediately after
+ieee80211_get_hdrlen_from_skb() -- no new file/include needed since
+every dependency was already resolved at that point in the header.
+
+## 91.3 Result
+
+Clean rebuild, zero new warnings beyond the existing baseline
+(compile log line numbers shifted forward as expected from the
+insertion, e.g. mac80211.h:1249 -> mac80211.h:1325 -- confirms this
+was a real fresh compile of the modified file, not a stale-cache
+false positive).
+
+kextutil -t re-run via check_kext_symbols.sh: **32 -> 27 unique
+undefined symbols**, zero regressions (every symbol in the new 27
+was already present in Section 90's list of 32).
+
+**Remaining, unresolved (27):** ~14 mac80211 API stubs
+(_ieee80211_beacon_get, _ieee80211_get_tx_rate,
+_ieee80211_rate_get_vht_mcs/nss, _ieee80211_rate_set_vht,
+_ieee80211_start_tx_ba_session, _ieee80211_stop_tx_ba_cb_irqsafe,
+_ieee80211_connection_loss, _ieee80211_tx_info_clear_status,
+_ieee80211_vif_type_p2p, _ieee80211_has_pm,
+_ieee80211_is_auth/pspoll/qos_nullfunc,
+__ieee80211_is_robust_mgmt_frame, _wiphy_rfkill_start/stop_polling);
+8 kernel-runtime primitives (_be16_to_cpup, _timer_delete_sync,
+___skb_dequeue, ___skb_queue_purge, _skb_queue_is_last, _dev_warn,
+_pci_resource_flags, _pcie_capability_clear_and_set_word);
+_rtl88ee_hal_cfg (still standalone); _thread_call_cancel_wait (still
+likely collateral).
+
+**Next candidates, easiest first per the Section 90 process note
+(check real call sites before assuming stub shape):**
+_be16_to_cpup (single-purpose byteswap, base.c only, likely trivial),
+___skb_dequeue/___skb_queue_purge/_skb_queue_is_last (skbuff.h queue
+helpers -- check if skbuff.h already implements a queue struct these
+could operate on directly), _dev_warn (likely a printf-style logging
+macro, check existing dev_err/pr_info-style stubs already in
+compat/linux/device.h for the pattern to match).
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

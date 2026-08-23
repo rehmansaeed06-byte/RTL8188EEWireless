@@ -214,6 +214,25 @@ static inline int pcie_capability_clear_word(struct pci_dev *pdev, int where, u1
     return pci_write_config_word(pdev, 0x100 + where, val & ~clear);
 }
 
+/*
+ * pcie_capability_clear_and_set_word() -- genuinely missing combined
+ * variant of the two functions above. Real call sites (pci.c:182,197)
+ * use it for atomic clear+set on the Link Control register (ASPM
+ * bits) in one read-modify-write, rather than two separate calls.
+ * Same read/modify/write pattern as its two siblings immediately
+ * above.
+ */
+static inline int pcie_capability_clear_and_set_word(struct pci_dev *pdev, int where,
+                                                       u16 clear, u16 set)
+{
+    u16 val;
+    int ret;
+    ret = pci_read_config_word(pdev, 0x100 + where, &val);
+    if (ret) return ret;
+    val = (val & ~clear) | set;
+    return pci_write_config_word(pdev, 0x100 + where, val);
+}
+
 static inline int pci_find_capability(struct pci_dev *dev, int cap)
 {
     if (rtw88_pci_io_ops) return rtw88_pci_io_ops->pci_find_capability(dev, cap);
@@ -292,6 +311,21 @@ static inline u64 pci_resource_start(struct pci_dev *dev, int bar)
 static inline u64 pci_resource_len(struct pci_dev *dev, int bar)
 {
     return (u64)dev->resource_len[bar];
+}
+
+/*
+ * pci_resource_flags() -- genuinely missing sibling of
+ * pci_resource_start()/pci_resource_len() above. Real call site
+ * (pci.c:2150) only uses the result for a debug log line
+ * (pci.c:2162-2164, "flags:%08lx"), never branched on -- confirmed
+ * by grep of every use of pmem_flags in pci.c. struct pci_dev in
+ * this compat layer has no resource_flags field (no IORESOURCE_MEM
+ * etc. modeling), so 0 is a safe, behavior-neutral stub: it only
+ * changes cosmetic log output, never control flow.
+ */
+static inline unsigned long pci_resource_flags(struct pci_dev *dev, int bar)
+{
+    return 0;
 }
 
 /* PCI power states */

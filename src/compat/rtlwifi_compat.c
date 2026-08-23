@@ -90,6 +90,20 @@
 static struct ieee80211_hw *g_rtlwifi_hw = NULL;
 
 /*
+ * g_rtlwifi_vif / g_rtlwifi_sta -- single-station bridge for
+ * ieee80211_find_sta(). Mirrors g_rtlwifi_hw's own split-declaration/
+ * global-pointer pattern immediately above, rather than inventing a
+ * second bridging mechanism. Set from RTW88IEEE80211.cpp via
+ * rtlwifi_set_vif_sta()/rtlwifi_clear_sta() (declared in
+ * rtlwifi_compat.h). See ieee80211_find_sta()'s own comment below for
+ * why a scalar pointer (not a list + real RCU) is the correct shape
+ * here, not a simplification.
+ */
+static struct ieee80211_vif *g_rtlwifi_vif = NULL;
+static struct ieee80211_sta *g_rtlwifi_sta = NULL;
+
+
+/*
  * Per-hw callback vtable, mirroring rtw88_compat.c's g_hw_cbs /
  * hw->kext_hw indirection (findings.md Section 52.3: ieee80211_rx_irqsafe
  * reads ctx = hw->kext_hw, falling back to a global if unset). Kept as a
@@ -1614,3 +1628,54 @@ kern_return_t rtw88_module_stop(kmod_info_t *ki, void *data)
     IOLog("rtw88: kext module unloading (com.rtlwifi.rtl8188ee)\n");
     return KERN_SUCCESS;
 }
+
+
+/*
+ * rtlwifi_set_vif_sta() / rtlwifi_clear_sta() -- see g_rtlwifi_vif's
+ * declaration comment above for the full rationale. Called from
+ * RTW88IEEE80211.cpp: once (with sta==NULL) right after _vif is
+ * allocated, and again once _sta is fully populated inside
+ * doAssociate()'s sta_add block. rtlwifi_clear_sta() is called from
+ * releaseSta() on teardown/disconnect.
+ */
+void rtlwifi_set_vif_sta(struct ieee80211_vif *vif, struct ieee80211_sta *sta)
+{
+    g_rtlwifi_vif = vif;
+    g_rtlwifi_sta = sta;
+}
+
+void rtlwifi_clear_sta(void)
+{
+    g_rtlwifi_sta = NULL;
+}
+
+/*
+ * ieee80211_find_sta() -- real implementation, not a stub. Every
+ * rcu_read_lock()/rcu_read_unlock() call site in the compiled driver
+ * (base.c, core.c, stats.c, rtl8188ee/dm.c -- confirmed by direct grep
+ * against only the files actually in DRIVER_SRCS/CHIP_SRCS, not the
+ * other-chip files that also live in the vendored rtlwifi tree) exists
+ * solely to bracket a call into this function, via wifi.h's inline
+ * rtl_find_sta()/get_sta() wrappers or directly (core.c).
+ *
+ * No real RCU implementation exists anywhere in this port
+ * (src/compat/linux/rcupdate.h's rcu_read_lock/unlock are deliberate
+ * no-ops). Since this driver only ever tracks one associated station
+ * (RTW88IEEE80211.hpp's _sta is scalar, not a list -- confirmed by
+ * direct header read, no AP-mode support), a real list-walk-under-RCU
+ * emulation would be solving a problem that doesn't exist here. A
+ * direct address compare against the one tracked station, with no
+ * locking beyond the pointer read itself, is the correct, honest
+ * substitute -- not a guessed-at RCU replacement standing in for
+ * unverified behavior.
+ */
+struct ieee80211_sta *ieee80211_find_sta(struct ieee80211_vif *vif,
+                                          const u8 *addr)
+{
+    if (!g_rtlwifi_sta || vif != g_rtlwifi_vif)
+        return NULL;
+    if (memcmp(g_rtlwifi_sta->addr, addr, ETH_ALEN) != 0)
+        return NULL;
+    return g_rtlwifi_sta;
+}
+

@@ -7053,4 +7053,163 @@ the header declare it."
 
 ------------------------------------------------------------------------
 
+# 90. Closing the `local_irq_*`/`rcu_read_*`/`ieee80211_find_sta` cluster —
+36 → 32
+
+Continuation of Section 89, next session. Handover's SEVENTEENTH UPDATE
+flagged 13 kernel-primitive symbols as the next block; this round
+closed the `local_irq_enable`/`local_save_flags`/`local_irq_restore`/
+`rcu_read_lock`/`rcu_read_unlock` sub-cluster (5 of the 13) plus, as a
+required side effect, `ieee80211_find_sta` (previously uncounted
+separately — it doesn't appear as its own named symbol in earlier
+`kmutil load` output because nothing called it directly until the RCU
+call sites were investigated).
+
+## 90.1 Scoped grep confirms real call sites, not a dead cluster
+
+The starting question (same two-step check §89.4 established): does a
+correct implementation already exist unreached in `src/compat/`, or is
+this genuinely new? `grep -rn` against `src/` alone came back empty —
+but that's because the actual call sites live in the vendored
+`../linux-kernel/.../rtlwifi/` tree, outside `src/`, which the initial
+narrow grep didn't cover. Re-run scoped to only the files this project
+actually compiles (`DRIVER_SRCS`/`CHIP_SRCS`, cross-checked against
+`Makefile.rtl8188ee`) found real, load-bearing usage:
+
+- `local_save_flags`/`local_irq_enable`/`local_irq_restore` — exactly
+  one call site, `rtl8188ee/hw.c`'s `_rtl88ee_hw_init()`: save IRQ
+  state, force interrupts on for up to ~350ms of firmware-init work,
+  restore exactly as found on exit. Not Linux's combined
+  `local_irq_save()` semantics — this driver never uses that variant.
+- `rcu_read_lock`/`rcu_read_unlock` — 16 call sites across `base.c`,
+  `core.c`, `stats.c`, `rtl8188ee/dm.c` (the only 4 files, of this
+  project's compiled set, that use it — other-chip files like
+  `rtl8723be`/`rtl8192ce` also use it but aren't compiled here).
+  Confirmed by direct read: every single site exists only to bracket
+  either a direct `ieee80211_find_sta()` call (`core.c`, 3 sites) or a
+  call through `wifi.h`'s inline `rtl_find_sta()`/`get_sta()` wrappers
+  (`base.c`/`stats.c`/`dm.c`), both of which are themselves thin
+  pass-throughs to `ieee80211_find_sta()`. This makes the RCU pair and
+  `ieee80211_find_sta` one unit of work, not two independent ones —
+  fixing RCU alone without `find_sta` would leave the kext no closer to
+  loading at any of these 16 sites.
+
+## 90.2 `local_irq_*`: real XNU primitive found and confirmed to bind
+
+`MacKernelSDK/Headers/i386/machine_routines.h` declares
+`ml_get_interrupts_enabled()`/`ml_set_interrupts_enabled()` — a direct,
+correct-shape match (`ml_get_*` reads without changing state,
+`ml_set_*` sets and returns the *previous* state, which is exactly what
+`local_save_flags`+`local_irq_enable` followed by `local_irq_restore`
+needs). Given the `fls` gotcha in §89.2 (header declares something that
+turned out not to actually export at load time), this was **not**
+trusted on header-presence alone — confirmed for real via this
+session's own `kextutil -t` re-run after the fix: `_local_irq_enable`,
+`_local_save_flags`, `_local_irq_restore` all disappeared from the
+undefined-symbol list with no new symbols introduced, meaning
+`_ml_get_interrupts_enabled`/`_ml_set_interrupts_enabled` genuinely
+bind against the running kernel, not just the header.
+
+New file `src/compat/linux/irqflags.h`: macro-based shim
+(`local_save_flags(flags)`/`local_irq_enable()`/`local_irq_restore(flags)`),
+wired into `rtlwifi_compat.h`'s force-included umbrella alongside
+`delay.h`/`random.h`, same pattern established in §89.1/89.3.
+
+## 90.3 `ieee80211_find_sta`: single-station bridge, not a real list-walk
+
+Real Linux RCU here protects concurrent traversal of a per-vif station
+list against removal from another CPU. This port has no real RCU
+implementation anywhere (`rcu_read_lock`/`unlock` are genuine no-ops,
+`src/compat/linux/rcupdate.h`, new file this session) — so the question
+was what, if anything, needs to replace the safety RCU was providing.
+
+Checked `RTW88IEEE80211.hpp` directly rather than guess: `_sta` is a
+**scalar** `struct ieee80211_sta *`, not a list (confirmed: this driver
+has no AP-mode/multi-station support, only ever associates to one AP).
+That converts the problem from "safely walk a mutating list" to "read
+one pointer and compare one address" — no real RCU emulation needed,
+just a correct single-value lookup.
+
+**Real gap found, not just plumbing:** no existing global/singleton
+bridge exposed `_vif`/`_sta` (private C++ members of
+`RTW88IEEE80211`) to free C functions the way `g_rtlwifi_hw` already
+bridges `_hw`. `rtlwifi_register_vif()` was a confirmed intentional
+no-op (§ handover THIRTEENTH UPDATE / findings §60/81.2) that discards
+its `vif` argument — so nothing anywhere captured it. Fixed by adding
+`g_rtlwifi_vif`/`g_rtlwifi_sta` globals to `rtlwifi_compat.c`, mirroring
+`g_rtlwifi_hw`'s exact existing split-declaration pattern, plus two new
+setter functions (`rtlwifi_set_vif_sta()`, `rtlwifi_clear_sta()`)
+declared in `rtlwifi_compat.h` next to `rtlwifi_register_vif`.
+
+`ieee80211_find_sta(vif, addr)` implemented for real in
+`rtlwifi_compat.c`: returns the tracked `_sta` only if `vif` matches
+`g_rtlwifi_vif` and `addr` matches `g_rtlwifi_sta->addr` via `memcmp`,
+else `NULL`. Declared in `src/compat/net/mac80211.h` next to
+`rtw88_get_hw()`'s existing declaration (was previously referenced only
+as a type in struct member signatures, never actually declared as a
+callable function — confirmed by grep before writing).
+
+Two new call sites in `RTW88IEEE80211.cpp`, both anchored to real,
+already-existing lines (not invented insertion points): right after
+`_vif = (struct ieee80211_vif *)IOMallocZero(...)` (registers vif with
+`sta=nullptr`), and right after `_hw->ops->sta_add(_hw, _vif, _sta)`
+inside the association handler (registers the now-populated `_sta`).
+`releaseSta()` — whose full body was checked directly before editing,
+not assumed — gets a matching `rtlwifi_clear_sta()` call placed
+alongside its existing `_sta = nullptr;` line, not before the
+function's early-return guard (`if (!_sta) return;`), so the clear only
+fires when there was a real station to release.
+
+## 90.4 Result
+
+Clean `rm -rf build && make -f Makefile.rtl8188ee kext` succeeded with
+zero new warnings/errors beyond the project's existing pre-change
+warning baseline (same categories: `-Wcomment`, `-Wsign-conversion`,
+`-Wimplicit-int-conversion`, `-Waddress-of-packed-member`, all
+pre-existing and unrelated to this round).
+
+`kextutil -t` re-run, deduplicated via
+`grep -oE "bind \(_[a-zA-Z_0-9]+\)" | sort -u`: **36 → 32 unique
+undefined symbols**, confirmed zero regressions (every symbol in the
+new 32 was already present in §89.4's list, nothing new introduced).
+`_local_irq_enable`, `_local_save_flags`, `_local_irq_restore`,
+`_rcu_read_lock`, `_rcu_read_unlock` all confirmed gone.
+`ieee80211_find_sta` — not separately itemized in §88/89's counts,
+since nothing called it directly until this session's RCU
+investigation reached it — also confirmed resolved and not present in
+either the old or new list.
+
+**Remaining, unresolved, real (32):** ~21 mac80211 API stubs
+(`_ieee80211_beacon_get`, `_ieee80211_get_tx_rate`,
+`_ieee80211_rate_get_vht_mcs/nss`, `_ieee80211_rate_set_vht`,
+`_ieee80211_start_tx_ba_session`, `_ieee80211_stop_tx_ba_cb_irqsafe`,
+`_ieee80211_connection_loss`, `_ieee80211_tx_info_clear_status`,
+`_ieee80211_vif_type_p2p`, `_ieee80211_get_DA/SA/tid`,
+`_ieee80211_has_pm`, `_ieee80211_is_auth/pspoll/qos_nullfunc`,
+`__ieee80211_is_robust_mgmt_frame`, `_wiphy_rfkill_start/stop_polling`
+— unchanged from §88.1's original categorization, not yet started); 10
+remaining kernel-runtime primitives (`_be16_to_cpup`,
+`_ether_addr_equal_64bits`, `_ether_addr_equal_unaligned`,
+`_timer_delete_sync`, `___skb_dequeue`, `___skb_queue_purge`,
+`_skb_queue_is_last`, `_dev_warn`, `_pci_resource_flags`,
+`_pcie_capability_clear_and_set_word` — down from the original 13 by
+the 3 closed this round); `_rtl88ee_hal_cfg` (still standalone, still
+not root-caused); `_thread_call_cancel_wait` (still likely collateral
+from other link failures, still deprioritized per §88.1's original
+reasoning — worth re-checking once the mac80211 stub block is closed,
+since that reasoning depended on other symbols still failing).
+
+**Process note for next session:** this round's real lesson —
+`ieee80211_find_sta` never appeared as its own named symbol in any
+prior `kmutil load` output, only surfaced once the RCU call sites were
+traced to their actual destination. The remaining `_ieee80211_*` mac80211
+stub block should be approached the same way: check what each is
+actually called *for* (real call-site read, not the symbol name alone)
+before assuming a generic stub is sufficient — some may, like
+`find_sta`, have a much narrower real requirement than the general
+Linux/mac80211 semantics suggest once this driver's actual
+single-station, no-AP-mode shape is accounted for.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

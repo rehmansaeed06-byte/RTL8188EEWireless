@@ -1,5 +1,77 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 
+## EIGHTEENTH UPDATE (read this first) — local_irq_*/rcu_read_*/
+## ieee80211_find_sta cluster closed. 36 → 32 undefined symbols. Kext
+## still does not load.
+
+Same-cluster continuation of the SEVENTEENTH UPDATE's flagged next
+step. Full detail: `docs/findings.md` Section 90.
+
+Closed 5 kernel-primitive symbols
+(`_local_irq_enable`/`_local_save_flags`/`_local_irq_restore`/
+`_rcu_read_lock`/`_rcu_read_unlock`) plus, as a required side effect,
+`ieee80211_find_sta` (previously invisible in `kmutil load` output —
+nothing called it directly until these RCU call sites were traced to
+their real destination).
+
+**`local_irq_*` — real XNU primitive, confirmed to actually bind, not
+just compile:** `ml_get_interrupts_enabled()`/`ml_set_interrupts_enabled()`
+(MacKernelSDK's `i386/machine_routines.h`) is the direct match for this
+driver's one real call site (`rtl8188ee/hw.c`, save/force-enable/restore
+around a ~350ms firmware-init operation). New file
+`src/compat/linux/irqflags.h`, wired into the existing force-include
+umbrella. Confirmed via rebuild + `kextutil -t` re-run — not trusted on
+header presence alone, given the `fls` precedent (Section 89.2) of a
+header declaring something that turned out not to actually export.
+
+**`rcu_read_*`/`ieee80211_find_sta` — one unit of work, not two:** every
+real `rcu_read_lock`/`unlock` call site in the 4 files this project
+actually compiles (`base.c`, `core.c`, `stats.c`, `rtl8188ee/dm.c`)
+exists solely to bracket a call into `ieee80211_find_sta()`, directly or
+via `wifi.h`'s `rtl_find_sta()`/`get_sta()` wrappers. This driver tracks
+at most one associated station at a time (`RTW88IEEE80211.hpp`'s `_sta`
+is a scalar pointer, not a list — no AP-mode support), so the real fix
+is a direct single-pointer lookup, not a real-RCU emulation. Real gap
+found along the way: no existing bridge exposed `_vif`/`_sta` (private
+C++ members) to C code — `rtlwifi_register_vif()` was a confirmed
+intentional no-op that discarded its argument. Fixed by adding
+`g_rtlwifi_vif`/`g_rtlwifi_sta` globals mirroring the existing
+`g_rtlwifi_hw` pattern exactly, plus `rtlwifi_set_vif_sta()`/
+`rtlwifi_clear_sta()` setters called from `RTW88IEEE80211.cpp` at vif
+allocation, station association, and `releaseSta()`.
+`src/compat/linux/rcupdate.h` (new) makes `rcu_read_lock`/`unlock`
+deliberate no-ops — the real protection lives in `ieee80211_find_sta()`
+itself, not replicated at the call sites.
+
+**Net: 36 → 32 undefined symbols**, confirmed via clean
+`rm -rf build && make` plus `kextutil -t` re-run, zero regressions
+(every symbol in the new 32 already existed in Section 89's list).
+Kext still doesn't load — remaining: ~21 mac80211 API stubs (unchanged
+from Section 88's original categorization, not yet started), 10
+kernel-runtime primitives (`_be16_to_cpup`, `_ether_addr_equal_64bits`,
+`_ether_addr_equal_unaligned`, `_timer_delete_sync`, `___skb_dequeue`,
+`___skb_queue_purge`, `_skb_queue_is_last`, `_dev_warn`,
+`_pci_resource_flags`, `_pcie_capability_clear_and_set_word`),
+`_rtl88ee_hal_cfg` (still standalone, still not root-caused), and
+`_thread_call_cancel_wait` (still likely collateral, worth re-checking
+once the mac80211 stub block closes).
+
+**Process note for next session:** `ieee80211_find_sta` never showed up
+as its own named symbol in any earlier `kmutil load` output — it only
+surfaced once the RCU call sites were traced to their real destination.
+Approach the remaining `_ieee80211_*` mac80211 stub block the same way:
+read what each is actually called *for* before assuming generic
+Linux/mac80211 semantics apply — this driver's real shape (single
+station, no AP mode, no hw_scan) may make some of these narrower than
+they look from the symbol name alone.
+
+A new helper script, `check_kext_symbols.sh` (project root), replaces
+manually piping `kextutil -t` through `grep`/`sort` each time — run
+`./check_kext_symbols.sh` for a clean deduplicated undefined-symbol
+list instead of kmutil's raw per-call-site-repeated output.
+
+------------------------------------------------------------------------
+
 ## SEVENTEENTH UPDATE (read this first) — 5 more kextutil/kmutil load
 ## symbols closed (udelay/mdelay/usleep_range wiring gap, fls,
 ## get_random_bytes). 48 → 36 undefined symbols total across this

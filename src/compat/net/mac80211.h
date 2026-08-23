@@ -1372,6 +1372,14 @@ struct ieee80211_ampdu_params {
  * CRITICAL: declared here (not implicitly) so the compiler knows the return
  * type is a 64-bit pointer, not int. */
 struct ieee80211_hw *rtw88_get_hw(void);
+/* ieee80211_find_sta: real implementation in rtlwifi_compat.c, not a
+ * stub -- every rcu_read_lock()/rcu_read_unlock() call site in the
+ * compiled driver exists only to bracket a call to this. See that
+ * file's comment on the definition for the full rationale (single-
+ * station bridge, no real list-walk needed for this driver). */
+struct ieee80211_sta *ieee80211_find_sta(struct ieee80211_vif *vif,
+                                          const u8 *addr);
+
 /* CRITICAL: must be declared here so the compiler knows the return type is a
  * pointer (64-bit), NOT int. Without this declaration, the compiler emits
  * cltq after the call, truncating the 64-bit return value to 32 bits. */

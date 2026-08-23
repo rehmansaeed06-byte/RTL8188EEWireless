@@ -75,6 +75,8 @@
  * 88.1). Likely masking other similar gaps the same way.
  */
 #include <linux/delay.h>
+#include <linux/irqflags.h>
+#include <linux/rcupdate.h>
 #include <linux/random.h>
 
 /*
@@ -200,6 +202,17 @@ const struct rate_control_ops *rtlwifi_get_rate_control_ops(void);
  */
 void rtlwifi_register_vif(struct ieee80211_vif *vif);
 void rtlwifi_unregister_vif(void);
+
+/*
+ * rtlwifi_set_vif_sta() / rtlwifi_clear_sta() -- single-station bridge
+ * backing ieee80211_find_sta()'s real implementation in
+ * rtlwifi_compat.c. See that file's g_rtlwifi_vif/g_rtlwifi_sta comment
+ * for the full rationale (why a scalar pointer, not a real RCU-protected
+ * list, is correct for this driver).
+ */
+void rtlwifi_set_vif_sta(struct ieee80211_vif *vif, struct ieee80211_sta *sta);
+void rtlwifi_clear_sta(void);
+
 
 /*
  * rtlwifi_hw_scan_supported() — CONFIRMED always false. rtlwifi's

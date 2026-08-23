@@ -639,6 +639,7 @@ void RTW88IEEE80211::releaseSta()
     IOFree(_sta, _staAllocSize ? _staAllocSize : sizeof(struct ieee80211_sta));
     _sta = nullptr;
     _staAllocSize = 0;
+    rtlwifi_clear_sta();
     _txBaActive = false;
     _dataSeq = 0;
     rxBaTeardownAll();
@@ -772,6 +773,10 @@ IOReturn RTW88IEEE80211::start()
         RTW88_STAGE("adding STA interface");
         _vif = (struct ieee80211_vif *)IOMallocZero(
             sizeof(struct ieee80211_vif) + 128);
+    /* Register with the C-side single-station bridge as soon as _vif
+     * exists, so ieee80211_find_sta() can already validate against it
+     * even before a station is associated (sta starts NULL). */
+    rtlwifi_set_vif_sta(_vif, nullptr);
         if (_vif) {
             _vif->type = NL80211_IFTYPE_STATION;
             memcpy(_vif->addr, _macAddr, 6);
@@ -2160,6 +2165,7 @@ void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
             }
 
             _hw->ops->sta_add(_hw, _vif, _sta);
+            rtlwifi_set_vif_sta(_vif, _sta);
         }
     }
 

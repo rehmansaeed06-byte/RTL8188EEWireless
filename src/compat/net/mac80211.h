@@ -1927,6 +1927,35 @@ struct ieee80211_low_level_stats;
 #define IEEE80211_TX_RC_USE_CTS_PROTECT (1 << 7)
 #define IEEE80211_TX_RC_USE_SHORT_PREAMBLE (1 << 8)
 
+/*
+ * VHT rate idx packing (real upstream mac80211 scheme, confirmed against
+ * real rtlwifi call sites: base.c's _rtl_get_tx_hw_rate() decode side --
+ * gated by IEEE80211_TX_RC_VHT_MCS -- and rc.c's 4 ieee80211_rate_set_vht()
+ * encode-side call sites. See findings.md Section 94/95 for the grep
+ * trail. DO NOT change this bit layout without re-confirming against real
+ * call sites -- a wrong guess here silently corrupts rate selection
+ * instead of failing to link/load.
+ *
+ * idx bits [3:0] = MCS index (0-9)
+ * idx bits [7:4] = NSS - 1  (NSS 1 -> 0, NSS 2 -> 1)
+ */
+static inline u8 ieee80211_rate_get_vht_mcs(const struct ieee80211_tx_rate *rate)
+{
+    return (u8)(rate->idx & 0x0F);
+}
+
+static inline u8 ieee80211_rate_get_vht_nss(const struct ieee80211_tx_rate *rate)
+{
+    return (u8)(((rate->idx >> 4) & 0x0F) + 1);
+}
+
+static inline void ieee80211_rate_set_vht(struct ieee80211_tx_rate *rate,
+                                           u8 mcs, u8 nss)
+{
+    rate->idx = (s8)((mcs & 0x0F) | (((nss - 1) & 0x0F) << 4));
+    rate->flags |= IEEE80211_TX_RC_VHT_MCS;
+}
+
 /* HT/VHT caps bits */
 /* HT RX STBC shift */
 #define IEEE80211_HT_CAP_RX_STBC_SHIFT  8

@@ -1,6 +1,103 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 ##Next updates are at the bottom
-## NINETEENTH UPDATE (read this first) -- ieee80211 address/frame
+## TWENTIETH UPDATE (read this first) -- Driver now runs on real
+## hardware. 0 undefined symbols, kext loads, matches PCI device,
+## survives start(), a new network interface appears. Interface is
+## still Ethernet-typed, not Wi-Fi -- that's the next real gap.
+
+Same-session continuation of NINETEENTH UPDATE. Full detail:
+docs/findings.md Section 95.
+
+**This is the biggest jump in the project's history — read carefully,
+the situation has changed a lot since the last update.**
+
+VHT rate symbols (the last 3 undefined symbols) were closed per the
+NINETEENTH UPDATE's plan -- real upstream bit-packing confirmed via
+rc.c/base.c call sites, `idx = mcs | ((nss-1) << 4)`. **Result: 0
+undefined symbols.** kmutil load got past linking for the first time
+ever (previously always failed with "Failed to bind" errors).
+
+After that, hit a real macOS platform wall unrelated to the driver
+code: kext-signing approval (Code 27) then "requires a reboot" (Code
+28). Both resolved via System Settings approval + Enable Reduced
+Security via Startup Security Utility (this machine runs OpenCore --
+native macOS Startup Security Utility doesn't work on it, "OpenCore
+not supported"; SIP/kext-signing was instead relaxed via OpenCore's
+own csr-active-config NVRAM value in config.plist).
+
+Then hit a PCI-enumeration gap: kext loaded but never matched a real
+PCI device (confirmed via a custom ad-hoc diagnostic tool,
+ctl_getstate.c, calling the kext's own RTW88UserClient
+kRTW88GetState selector -- returned "no service found"). Confirmed
+via the user's Windows-side hardware report that the card is 100%
+physically present and working under Windows on the same machine.
+Investigated ACPI (root port RP03 present, fully enabled per _STA,
+but zero children -- inconclusive) and tried
+UEFI/Quirks/ReloadOptionRoms (did not fix it). **Root cause of this
+gap was never definitively found** -- see findings.md Section 95.3.
+It stopped being reproducible after further reboots/rebuilds; if it
+recurs, the next untried step is Debug/Target: 67 (adds file-logging
+bit to OpenCore's log config) + reading EFI/OC/opencore.log directly.
+
+Once the card did start matching, hit two identical kernel panics --
+NULL pointer deref, CR2 = 0x8, in __rtl_pci_find_adapter (called from
+rtl_pci_probe, called from RTW88IEEE80211::start(), called from
+RTW88PCIDevice::start()). **Root cause found and FIXED**: real
+rtlwifi source (pci.c:1804) does `pdev->bus->self` as its first
+dereference; the compat pci_dev struct's `bus` pointer was left NULL
+by IOMallocZero in RTW88PCIDevice::start() and never wired to the
+struct's own pre-existing `bus_storage` field. Three-line fix in
+RTW88PCIDevice.cpp right after the resource_len[2] assignment: point
+`bus` at `bus_storage`, set `bus_storage.number` from the real
+IOPCIDevice::getBusNumber(), leave `bus_storage.self` NULL (matches
+real upstream's documented legitimate case, all callers already
+null-check it).
+
+**This fix worked, confirmed by the user with two pieces of live
+evidence, no panic:**
+1. A boot console log showing the driver actively running and logging
+   (a known no-op stub, `rtw88_trigger_interrupt()`, spamming
+   repeatedly -- noisy but NOT a crash, see gaps below).
+2. `networksetup -listallhardwareports` showing a brand new hardware
+   port, "Ethernet Internal" / en2 / MAC 54:35:30:c7:67:f7, alongside
+   the pre-existing real Ethernet/en0. This is almost certainly the
+   RTL8188EE being enumerated as a network device by macOS for the
+   first time ever in this project.
+
+## Current known gaps (in the order they'll probably matter):
+
+1. **Interface shows as Ethernet, not Wi-Fi.** RTW88PCIDevice.cpp:513
+   uses `attachInterface((IONetworkInterface **)&_iface)` -- the base
+   IONetworkInterface/IOEthernetInterface-family path. Real Wi-Fi
+   recognition (System Settings, menu bar, scan/join) needs a proper
+   IO80211Interface/apple80211 personality -- a substantially larger,
+   separate piece of IOKit work, not started.
+2. **rtw88_trigger_interrupt() no-op log spam** -- tight loop, floods
+   console. Not a crash but worth quieting/rate-limiting; may also be
+   worth understanding what's driving the call loop (something
+   polling for a software-IRQ-trigger register this chip doesn't
+   have, per the message's own text).
+3. **Class renaming (RTW88* -> RTL8188EE*) was requested as pure
+   cosmetic cleanup, attempted via rename_classes.sh, but the script
+   silently did nothing (dry run and --apply both reported no
+   matches; build log confirms old RTW88* names still in use
+   everywhere). Never diagnosed or retried.** No functional impact --
+   safe to ignore, fix, or redo from scratch at any time.
+4. PCI enumeration gap's root cause (see above) -- currently moot,
+   but undiagnosed. Watch for recurrence.
+
+## Immediate next candidates:
+- Quiet the interrupt-trigger log spam (cheap, safe, do first).
+- Functional smoke test of the current Ethernet-typed interface --
+  can it pass any traffic at all in its current form, before
+  investing in full 80211 integration.
+- Scope real IO80211/apple80211 interface work as its own project
+  phase (likely large).
+- Revisit or drop the class-rename script.
+
+------------------------------------------------------------------------
+
+## NINETEENTH UPDATE -- ieee80211 address/frame
 ## helpers closed. 32 -> 27 undefined symbols. Kext still does not load.
 
 Same-session continuation of EIGHTEENTH UPDATE. Full detail:

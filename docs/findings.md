@@ -7675,4 +7675,231 @@ not skipping the research step.
 
 ------------------------------------------------------------------------
 
+# 95. VHT symbols closed, first successful load, PCI enumeration gap,
+     and the bus->self crash — the kext now runs on real hardware
+
+This section covers a lot of ground across one extended debugging
+session. Summary first, detail below.
+
+## 95.1 VHT rate helpers — closed (0 undefined symbols)
+
+Grepped real call sites per Section 94's plan:
+- `rc.c` (4 call sites): `ieee80211_rate_set_vht(&rate, mcs_idx, nss)`,
+  called with `AC_MODE_MCS8_RIX`/`AC_MODE_MCS9_RIX` and `nss`.
+- `base.c:1206-1211` (`_rtl_get_tx_hw_rate`): gated by
+  `r->flags & IEEE80211_TX_RC_VHT_MCS`; `ieee80211_rate_get_vht_nss(r)`
+  and `ieee80211_rate_get_vht_mcs(r)` both called on
+  `r = &info->status.rates[0]`.
+
+Confirmed real upstream mac80211 bit-packing (stable, unchanged for
+years): `idx = mcs | ((nss - 1) << 4)` — low nibble MCS (0-9), high
+nibble NSS-1. `IEEE80211_TX_RC_VHT_MCS` was already defined in
+`src/compat/net/mac80211.h` (`1 << 1`) from earlier work, confirming
+the flag side. Implemented all three as `static inline` in
+`mac80211.h` near the existing `IEEE80211_TX_RC_*` block:
+
+```c
+static inline u8 ieee80211_rate_get_vht_mcs(const struct ieee80211_tx_rate *rate)
+{ return (u8)(rate->idx & 0x0F); }
+
+static inline u8 ieee80211_rate_get_vht_nss(const struct ieee80211_tx_rate *rate)
+{ return (u8)(((rate->idx >> 4) & 0x0F) + 1); }
+
+static inline void ieee80211_rate_set_vht(struct ieee80211_tx_rate *rate, u8 mcs, u8 nss)
+{ rate->idx = (s8)((mcs & 0x0F) | (((nss - 1) & 0x0F) << 4));
+  rate->flags |= IEEE80211_TX_RC_VHT_MCS; }
+```
+
+**Result: 0 undefined symbols.** `kmutil load` got past linking
+entirely for the first time in the project's history — subsequent
+failures were Code 27 (kext-approval gate) and Code 28
+(post-approval, needs reboot to rebuild aux kext collection), both
+platform/policy layers, not code.
+
+## 95.2 Class renaming to RTL8188EE* — NOT DONE, deferred indefinitely
+
+User requested pure cleanup: rename `RTW88Kext`/`RTW88PCIDevice`/
+`RTW88IEEE80211`/`RTW88UserClient` → `RTL8188EEKext`/
+`RTL8188EEPCIDevice`/`RTL8188EEIEEE80211`/`RTL8188EEUserClient`,
+explicitly as cosmetic-only (not a fix for anything). A
+`rename_classes.sh` script was written and given to the user, but
+its dry run and `--apply` run both reported "no matches" for all 15
+target files, and the subsequent build log confirmed the rename
+never took effect (still compiles/links `RTW88*.cpp`/`.o`). Root
+cause not diagnosed — likely a path-resolution issue in the script
+when run from the project root, but this was never confirmed because
+the user moved on to live hardware testing before it was revisited.
+**All class/file names in the codebase are still `RTW88*` as of this
+writing.** Anyone picking this up: either fix and rerun
+`rename_classes.sh`, or abandon the rename — it has no bearing on
+functionality.
+
+## 95.3 PCI enumeration gap — investigated, NOT root-caused, then
+     resolved itself (or was resolved by something untracked)
+
+Between the symbol-clean build (95.1) and the driver actually
+running (95.4), the kext loaded (`kextstat` showed it resident) but
+`RTW88PCIDevice::probe()` never matched — confirmed directly via a
+custom diagnostic tool (`ctl_getstate.c`, written ad hoc this
+session, not part of the committed repo — calls
+`IOServiceMatching("RTW88PCIDevice")` + `IOServiceOpen` +
+`kRTW88GetState` selector 3 against the running kext's
+`RTW88UserClient`) which returned "No RTW88PCIDevice service found."
+
+Confirmed via user's own Windows-side hardware report
+(`Report.json`, HP Pavilion 15, Haswell/Lynx Point, RTL8188EE at
+`PciRoot(0x0)/Pci(0x1c,0x2)/Pci(0x0,0x0)`, device ID `10EC-8179`)
+that the card is physically present and 100% functional under
+Windows on this same machine — ruling out hardware/seating issues
+entirely.
+
+`ioreg -p IOACPIPlane` showed the relevant root port (`RP03`,
+`\_SB.PCI0.RP03`) present with `_STA = 0xFFFFFFFFFFFFFFFF` (fully
+enabled per ACPI) but with **zero children** — contrast with the
+neighboring `RP04`, which showed its downstream Ethernet device
+(`PXSX@0`) as a child despite RP04 itself being `!registered`. This
+ruled out ACPI-level disabling of the port.
+
+Tried `UEFI → Quirks → ReloadOptionRoms: true` (config.plist) as a
+candidate fix for stale PCI Option ROM enumeration on this
+Haswell-era laptop — **did not resolve it**
+(`system_profiler SPPCIDataType` still showed no network/wireless
+entry after reboot).
+
+Attempted to pull OpenCore's own boot-time PCI enumeration log
+(`EFI/OC/opencore.log`) to see the firmware-level scan directly —
+discovered `Debug → Target: 3` in config.plist only enables
+screen+basic logging (`0x01 | 0x02`), not file logging (needs
+`0x40` added, i.e. `Target: 67`). This was identified as the next
+diagnostic step but **never completed** — the user chose to move to
+implementing the class rename (95.2) instead, and by the time
+hardware testing resumed, the driver was loading and reaching real
+init code (95.4) without this being revisited. **The root cause of
+the PCI-enumeration gap was never definitively identified.** It's
+possible the `bus->self` crash fix's rebuild + reboot cycle, or
+simply a subsequent clean reboot, resolved something transient in
+the aux kext collection or OpenCore's PCI cache — but this is
+speculation, not confirmed. If the card ever fails to enumerate
+again, `Target: 67` + a fresh `opencore.log` read is the documented
+next step, not yet tried.
+
+## 95.4 First real hardware crash — NULL `pdev->bus` deref, FIXED
+
+With the kext loading and matching (however that gap closed), two
+identical kernel panics occurred, both:
+
+```
+panic ... Kernel trap ... type 14=page fault
+Fault CR2: 0x0000000000000008
+```
+
+Backtrace both times, byte-identical offsets:
+```
+__rtl_pci_find_adapter + 0x68
+_rtl_pci_probe + 0x44f
+__ZN14RTW88IEEE802115startEv + 0x104
+__ZN14RTW88PCIDevice5startEP9IOService + 0x38f
+```
+
+A third, unrelated panic (`13:57:56`) was in `com.insanelymac.
+RealtekRTL8100`'s `rxInterrupt()` — a completely different kext (the
+Ethernet driver), correctly identified and set aside as noise, not
+evidence against this driver.
+
+Root cause, confirmed by reading the real source
+(`../linux-kernel/.../rtlwifi/pci.c:1798-1808`,
+`_rtl_pci_find_adapter`): line 1804,
+`struct pci_dev *bridge_pdev = pdev->bus->self;` — the **very first**
+dereference on `pdev` in the function. Cross-checked against
+`src/compat/linux/pci.h`: `struct pci_bus { u8 number; struct
+pci_dev *self; }` — `self` sits at **offset 0x8** (after `u8 number`
++ padding), matching `CR2 = 0x8` exactly. The header even already
+documented this exact call site in a pre-existing comment
+("Confirmed real usage: pci.c dereferences pdev->bus->self...").
+
+The struct also already had `struct pci_bus bus_storage;` alongside
+`struct pci_bus *bus;` specifically anticipating this need — but
+`RTW88PCIDevice::start()`'s construction of `_compatPciDev`
+(`src/kext/RTW88PCIDevice.cpp:329`,
+`IOMallocZero(sizeof(struct pci_dev))`) only ever set `vendor`,
+`device`, `kext_dev`, and `resource[2]`/`resource_len[2]` —
+**`bus` was left NULL by the zero-init and never wired to
+`bus_storage`.** Confirmed via `grep -rn "pci_dev" src/kext/*.cpp
+*.hpp` that no other code path touched `bus` either. So every call
+to `_rtl_pci_find_adapter` dereferenced `NULL->self`, i.e. address
+`0x8` — precisely the panic.
+
+Fix applied directly to `src/kext/RTW88PCIDevice.cpp`, right after
+the existing `resource_len[2]` assignment:
+
+```c
+_compatPciDev->bus_storage.self   = nullptr;
+_compatPciDev->bus_storage.number = (u8)_pciDev->getBusNumber();
+_compatPciDev->bus = &_compatPciDev->bus_storage;
+```
+
+`self` stays NULL intentionally (no discoverable PCI bridge to
+report — matches real upstream's documented legitimate NULL case for
+this field, and every caller of `->self` already null-checks it
+downstream). `IOPCIDevice::getBusNumber()` confirmed as a real,
+existing method (`MacKernelSDK/Headers/IOKit/pci/IOPCIDevice.h:584`,
+`virtual UInt8 getBusNumber(void)`) before use — not invented.
+
+**This fix worked.** No further panics at this call site. Confirmed
+via two pieces of evidence from the user, same boot:
+1. Boot-time console log showing `rtw88: rtw88_trigger_interrupt()
+   called (no-op — no confirmed software-IRQ-trigger register for
+   RTL8188EE; see rtlwifi_compat.c header comment above this
+   function)` spamming repeatedly — a known, pre-existing documented
+   stub in the compat layer, not a new bug; the important part is
+   this is a *running* driver logging a no-op, not a crash.
+2. `networksetup -listallhardwareports` showing a **new** hardware
+   port: `Ethernet Internal`, `en2`, MAC `54:35:30:c7:67:f7` —
+   alongside the pre-existing real `Ethernet`/`en0`. This is almost
+   certainly the RTL8188EE, now enumerated as a network device by
+   macOS for the first time in this project's history.
+
+## 95.5 Current state and known gaps
+
+- **0 undefined symbols**, kext loads, matches PCI device, survives
+  `start()` through `_rtl_pci_find_adapter` and beyond without
+  panicking.
+- **New network interface (`en2`, "Ethernet Internal") appears** —
+  first confirmed sign of the driver creating a working
+  `IONetworkInterface`.
+- **The interface type is wrong**: it's showing as Ethernet, not
+  Wi-Fi. Root cause (not yet investigated in depth, but diagnosed at
+  a high level this session): `RTW88PCIDevice.cpp:513`'s
+  `attachInterface((IONetworkInterface **)&_iface)` is the base
+  `IONetworkInterface`/`IOEthernetInterface`-family attach path.
+  Making this appear as Wi-Fi in System Settings / the menu bar
+  requires a real `IO80211Interface`/`apple80211` personality — scan,
+  join, auth callbacks, the full `IO80211Controller`-style API
+  surface — which is a substantially larger, separate piece of work
+  not yet started.
+- **`rtw88_trigger_interrupt()` no-op spam**: called repeatedly in a
+  tight loop, flooding console output. Not a crash, but flagged as
+  worth quieting (rate-limit the log, or investigate what's driving
+  the call loop — likely TX/RX path polling for a register this chip
+  doesn't have) both for its own sake and because a tight IOLog loop
+  is a stability risk independent of any "real" bug.
+- **Class renaming (95.2) still not done** — cosmetic only, no
+  functional impact, safe to pick up or drop at any time.
+- **PCI enumeration gap (95.3) root cause still unknown** — currently
+  moot since the card is enumerating, but if it recurs, `Debug →
+  Target: 67` + reading `EFI/OC/opencore.log` is the next
+  documented, untried step.
+
+**Immediate next candidates, in rough priority order:**
+1. Quiet/rate-limit the `rtw88_trigger_interrupt()` no-op log spam.
+2. Investigate whether the network interface can pass real traffic
+   at all in its current (mis-typed) Ethernet-family form — a
+   functional smoke test before tackling the much larger 80211
+   integration.
+3. Scope out real `IO80211`/`apple80211` interface work as its own
+   project phase.
+4. Either fix or drop the class-rename script.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

@@ -335,6 +335,19 @@ bool RTW88PCIDevice::start(IOService *provider)
     _compatPciDev->resource[2]     = (resource_size_t)_mmioBase;
     _compatPciDev->resource_len[2] = (resource_size_t)_mmioMap->getLength();
 
+    /* Wire up pdev->bus to the embedded bus_storage. Real rtlwifi's
+     * _rtl_pci_find_adapter() (pci.c:1804) unconditionally dereferences
+     * pdev->bus->self on entry -- bus itself must be non-NULL even though
+     * ->self legitimately can be NULL (see pci.h's bus_storage/bus comment).
+     * IOMallocZero above left bus as NULL, causing a NULL deref at offset
+     * 0x8 into pci_bus (the ->self field) on every probe. bus->self stays
+     * NULL here (no discoverable bridge), matching real upstream behavior
+     * for a device with no bridge info available; only ->number is used
+     * for logging, so it's set from the real IOPCIDevice bus number. */
+    _compatPciDev->bus_storage.self   = nullptr;
+    _compatPciDev->bus_storage.number = (u8)_pciDev->getBusNumber();
+    _compatPciDev->bus = &_compatPciDev->bus_storage;
+
     IOLog("rtw88: PCI device %04x:%04x\n",
           _compatPciDev->vendor, _compatPciDev->device);
 

@@ -1675,10 +1675,9 @@ uint32_t rtw88_read_log(char *out_buf, uint32_t max_len)
  */
 void rtw88_trigger_interrupt(void)
 {
-    /* no-op: no confirmed software-IRQ-trigger register for RTL8188EE.
-     * Left silent -- this fires on every real hardware interrupt, so a
-     * per-call IOLog here reproduces the same flood this function used
-     * to cause. See docs/findings.md Section 88.3. */
+    IOLog("rtw88: rtw88_trigger_interrupt() called (no-op — no confirmed "
+          "software-IRQ-trigger register for RTL8188EE; see rtlwifi_compat.c "
+          "header comment above this function)\n");
 }
 
 /*

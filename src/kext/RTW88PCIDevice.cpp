@@ -16,7 +16,6 @@ extern "C" {
 #include "../compat/linux/firmware.h"
 }
 
-extern "C" void rtw88_trigger_interrupt(void);
 extern "C" boolean_t preemption_enabled(void);
 
 #define super IOEthernetController
@@ -500,19 +499,21 @@ bool RTW88PCIDevice::setupInterrupt()
 
 void RTW88PCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
 {
-    /* REVERTED 2026-08-25: calling _ieee80211->handleInterrupt() here
-     * causes an interrupt storm on real hardware. rtw88_trigger_interrupt()
-     * (called from RTW88IEEE80211::handleInterrupt()) does not read the
-     * chip's ISR register or write back to clear/acknowledge serviced
-     * interrupt bits -- see linux-kernel/.../rtlwifi/pci.c's
-     * _rtl_pci_interrupt() for the real read-ISR / dispatch / clear-ISR
-     * sequence this port is missing. Until that's ported, this must stay
-     * a no-op or the PCI IRQ line never de-asserts and the interrupt
-     * fires continuously (confirmed on hardware: 500k+ interrupts within
-     * ~2 minutes). Do not reconnect without implementing real ISR-clear
-     * logic first. */
+    /* RECONNECTED 2026-08-25 (findings.md Section 96.6): the 2026-08-25
+     * revert (see prior history in git blame) was against calling
+     * straight through to rtw88_trigger_interrupt(), a no-op that never
+     * reads or clears the chip's ISR register -- that was the actual
+     * cause of the confirmed 500k+/2min interrupt storm (Section 96.5),
+     * not the act of reaching RTW88IEEE80211::handleInterrupt() itself.
+     * That method now calls rtlwifi_do_interrupt(), a real port of
+     * _rtl_pci_interrupt()'s disable/read-clear/enable bracket plus an
+     * RX ring drain (rtlwifi_compat.c) -- so the IRQ line is correctly
+     * acknowledged on every call. Do NOT revert this to calling
+     * rtw88_trigger_interrupt() directly again; see the extensive
+     * comment on rtlwifi_do_interrupt()'s declaration in
+     * rtlwifi_compat.h before touching this again. */
     if (_ieee80211)
-        rtw88_trigger_interrupt();
+        _ieee80211->handleInterrupt();
 }
 
 /* ------------------------------------------------------------------ */

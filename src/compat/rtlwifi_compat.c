@@ -1758,3 +1758,220 @@ struct ieee80211_sta *ieee80211_find_sta(struct ieee80211_vif *vif,
     return g_rtlwifi_sta;
 }
 
+/*
+ * rtlwifi_do_interrupt() -- real ISR body, port of _rtl_pci_interrupt()
+ * (pci.c:835) + _rtl_pci_rx_interrupt()'s pdesc-only branch (pci.c:647).
+ * See findings.md Section 96.4-96.6 for the full trace that led here:
+ * RTW88PCIDevice::handleInterrupt() previously called only the no-op
+ * rtw88_trigger_interrupt(), so no real PCI interrupt ever reached the
+ * chip's ISR register at all -- the BSS list was structurally
+ * guaranteed to stay empty, and (96.5) naively wiring the real
+ * interrupt path through with no ISR-clear logic causes the chip's IRQ
+ * line to never de-assert (500k+ interrupts in ~2 minutes, confirmed
+ * on hardware). This function is the missing ISR-clear + RX-drain
+ * logic; the two calls a future handleInterrupt() must bracket around
+ * it are still rtl88ee_enable/disable_interrupt() at the two call
+ * sites, exactly as real pci.c does.
+ *
+ * rtl8188ee always takes the `use_new_trx_flow == false` branch --
+ * confirmed this session: that field (wifi.h:2735) is never set
+ * anywhere under rtl8188ee/*.c, so it zero-inits false. Only the
+ * legacy pdesc-based ring walk is ported here; the newer
+ * buffer_desc/rx_desc_buff_remained_cnt path (later 8822B/8821C-class
+ * chips) is out of scope for this chip and intentionally not written.
+ *
+ * Returns true if any RX frame was recognized this call (RTL_IMR_ROK
+ * or RTL_IMR_RDU set in intvec.inta) -- purely informational for the
+ * caller's own logging; the real work already happened by return.
+ */
+/*
+ * rtlwifi_mark_interface_started() -- see declaration comment in
+ * rtlwifi_compat.h for the full trace of why this is needed.
+ */
+void rtlwifi_mark_interface_started(void)
+{
+    struct ieee80211_hw *hw = rtlwifi_get_hw();
+
+    if (!hw || !hw->priv)
+        return;
+
+    struct rtl_priv *rtlpriv = rtl_priv(hw);
+    set_bit(RTL_STATUS_INTERFACE_START, &rtlpriv->status);
+}
+
+bool rtlwifi_do_interrupt(void)
+{
+    /* TEMPORARY DIAGNOSTIC (2026-08-25): rate-limited 1-in-N logging to
+     * see intvec.inta/own-bit values without recreating the 95.4/96.1
+     * unconditional-spam problem. Remove once RX is confirmed flowing
+     * -- see findings.md Section 96 follow-up: rx_byte_count stayed 0
+     * across a full 13-channel scan post-fix, so the ISR is either not
+     * being entered, not seeing RTL_IMR_ROK/RDU set, or bailing out at
+     * the own-bit check on iteration 0 every time. This block exists to
+     * distinguish those three cases, nothing more. */
+    static unsigned int _diag_call_count = 0;
+    _diag_call_count++;
+
+    struct ieee80211_hw *hw = rtlwifi_get_hw();
+
+    if (!hw || !hw->priv)
+        return false;
+
+    struct rtl_priv *rtlpriv = rtl_priv(hw);
+    struct rtl_pci  *rtlpci  = rtl_pcidev(rtl_pcipriv(hw));
+    struct rtl_int   intvec  = {0};
+
+    if (!rtlpci->irq_enabled)
+        return false;
+
+    /* disable -> read-and-clear ISR -> (RX drain) -> re-enable, exactly
+     * the real _rtl_pci_interrupt() bracket (pci.c:835). Real code also
+     * takes rtlpriv->locks.irq_th_lock here; this port has no SMP
+     * concurrent-ISR concern (IOInterruptEventSource serializes calls
+     * on the workloop thread), so the lock is intentionally omitted,
+     * not forgotten. */
+    rtlpriv->cfg->ops->disable_interrupt(hw);
+    rtlpriv->cfg->ops->interrupt_recognized(hw, &intvec);
+
+    /* TEMPORARY DIAGNOSTIC: log every 1000th call so we can see real
+     * intvec.inta values without flooding. 1000 calls at typical PCI
+     * interrupt rates is seconds, not minutes -- should surface data
+     * fast without recreating the 95.4-style flood.
+     * rfpwr_state added this session: checking whether the radio is
+     * actually in ERFON (0) most of the time, or stuck in ERFSLEEP (1)
+     * / ERFOFF (2) -- would explain real RX interrupts firing only
+     * rarely despite a correct irq_mask and a proven-working RX-drain
+     * path (findings.md Section 96 follow-up, post-RTL_STATUS_INTERFACE_START
+     * fix). rtlpriv->psc.rfpwr_state, wifi.h:1991. */
+    if ((_diag_call_count % 1000) == 1) {
+        IOLog("rtw88: [diag] call #%u inta=0x%08x intb=0x%08x irq_enabled=%d rfpwr_state=%d\n",
+              _diag_call_count, intvec.inta, intvec.intb, rtlpci->irq_enabled,
+              (int)rtlpriv->psc.rfpwr_state);
+    }
+
+    /* Shared IRQ or HW disappeared -- real pci.c's own bail-out check. */
+    if (!intvec.inta || intvec.inta == 0xffff) {
+        rtlpriv->cfg->ops->enable_interrupt(hw);
+        return false;
+    }
+
+    bool got_rx = (intvec.inta & rtlpriv->cfg->maps[RTL_IMR_ROK]) ||
+                  (intvec.inta & rtlpriv->cfg->maps[RTL_IMR_RDU]);
+
+    if (got_rx) {
+        static unsigned int _diag_rx_entries = 0;
+        _diag_rx_entries++;
+        if ((_diag_rx_entries % 100) == 1) {
+            IOLog("rtw88: [diag] RX-flagged entry #%u inta=0x%08x ROK_bit=0x%08x RDU_bit=0x%08x\n",
+                  _diag_rx_entries, intvec.inta,
+                  rtlpriv->cfg->maps[RTL_IMR_ROK], rtlpriv->cfg->maps[RTL_IMR_RDU]);
+        }
+
+        int rxring_idx = RTL_PCI_RX_MPDU_QUEUE;
+        unsigned int count = rtlpci->rxringcount;
+
+        while (count--) {
+            struct rtl_rx_desc *pdesc =
+                &rtlpci->rx_ring[rxring_idx].desc[rtlpci->rx_ring[rxring_idx].idx];
+            struct sk_buff *skb =
+                rtlpci->rx_ring[rxring_idx].rx_buf[rtlpci->rx_ring[rxring_idx].idx];
+            struct sk_buff *new_skb;
+            struct ieee80211_rx_status rx_status = {0};
+            struct rtl_stats stats = { .signal = 0, .rate = 0 };
+            u8 own;
+            u16 len;
+
+            own = (u8)rtlpriv->cfg->ops->get_desc(hw, (u8 *)pdesc, false, HW_DESC_OWN);
+            if ((_diag_rx_entries % 100) == 1) {
+                IOLog("rtw88: [diag] ring idx=%u own=%u\n",
+                      rtlpci->rx_ring[rxring_idx].idx, own);
+            }
+            if (own)
+                break; /* no more data filled by hardware -- ring drained */
+
+            /* Must unmap before touching skb, matching real pci.c's own
+             * "AAAAAAttention" comment at this exact point. */
+            dma_unmap_single(&rtlpci->pdev->dev, *((dma_addr_t *)skb->cb),
+                              rtlpci->rxbuffersize, DMA_FROM_DEVICE);
+
+            new_skb = dev_alloc_skb(rtlpci->rxbuffersize);
+            if (!new_skb) {
+                /* Real code re-arms with the old skb (best-effort, drops
+                 * this one packet) rather than stalling the ring. */
+                goto rearm;
+            }
+
+            rtlpriv->cfg->ops->query_rx_desc(hw, &stats, &rx_status,
+                                              (u8 *)pdesc, skb);
+
+            len = (u16)rtlpriv->cfg->ops->get_desc(hw, (u8 *)pdesc, false,
+                                                    HW_DESC_RXPKT_LEN);
+
+            if (skb->end - skb->tail > len) {
+                skb_put(skb, len);
+                skb_reserve(skb, stats.rx_drvinfo_size + stats.rx_bufshift);
+            } else {
+                IOLog("rtlwifi: rx desc len %u exceeds skb tailroom, dropping\n",
+                      (unsigned int)len);
+                dev_kfree_skb_any(skb);
+                goto rearm;
+            }
+
+            /* FCS_LEN (wifi.h:122, already in scope via this file's own
+             * #include "wifi.h") -- confirmed present, not the same
+             * symbol as compat/linux/if_ether.h's ETH_FCS_LEN. */
+            if (!stats.crc && !stats.hwerror && (skb->len > FCS_LEN)) {
+                memcpy(IEEE80211_SKB_RXCB(skb), &rx_status, sizeof(rx_status));
+                /* Deliver via the real intercept point, confirmed this
+                 * session against pci.c:629/631 and base.c:1363: this is
+                 * what bridges to g_hw_cbs->rx_frame -> RTW88IEEE80211::
+                 * rxFrame(), already fully wired on the delivery side. */
+                ieee80211_rx_irqsafe(hw, skb);
+            } else {
+                dev_kfree_skb_any(skb);
+            }
+
+rearm:
+            /* Re-arm this descriptor slot with a fresh (or, on alloc
+             * failure, no) skb -- port of _rtl_pci_init_one_rxdesc()'s
+             * pdesc branch (pci.c:552), inlined here rather than
+             * duplicating the static helper, since that helper is not
+             * externally linkable (confirmed: static, pci.c-local). */
+            {
+                struct sk_buff *arm_skb = new_skb ? new_skb : dev_alloc_skb(rtlpci->rxbuffersize);
+                u32 bufferaddress;
+                u8 tmp_one = 1;
+
+                if (arm_skb) {
+                    *((dma_addr_t *)arm_skb->cb) =
+                        dma_map_single(&rtlpci->pdev->dev, skb_tail_pointer(arm_skb),
+                                       rtlpci->rxbuffersize, DMA_FROM_DEVICE);
+                    bufferaddress = *((dma_addr_t *)arm_skb->cb);
+                    rtlpci->rx_ring[rxring_idx].rx_buf[rtlpci->rx_ring[rxring_idx].idx] = arm_skb;
+                    rtlpriv->cfg->ops->set_desc(hw, (u8 *)pdesc, false,
+                                                HW_DESC_RXBUFF_ADDR, (u8 *)&bufferaddress);
+                    rtlpriv->cfg->ops->set_desc(hw, (u8 *)pdesc, false,
+                                                HW_DESC_RXPKT_LEN, (u8 *)&rtlpci->rxbuffersize);
+                    rtlpriv->cfg->ops->set_desc(hw, (u8 *)pdesc, false,
+                                                HW_DESC_RXOWN, (u8 *)&tmp_one);
+                }
+                /* else: leave OWN bit as-is (still hardware-owned from the
+                 * failed own-check above would not reach here; this is
+                 * only the alloc-failure path, where we intentionally
+                 * drop one packet's worth of ring capacity rather than
+                 * risk a bad re-arm). */
+            }
+
+            if (rtlpci->rx_ring[rxring_idx].idx == (unsigned int)(rtlpci->rxringcount - 1))
+                rtlpriv->cfg->ops->set_desc(hw, (u8 *)pdesc, false, HW_DESC_RXERO,
+                                            (u8 *)&(u8){1});
+
+            rtlpci->rx_ring[rxring_idx].idx =
+                (rtlpci->rx_ring[rxring_idx].idx + 1) % rtlpci->rxringcount;
+        }
+    }
+
+    rtlpriv->cfg->ops->enable_interrupt(hw);
+    return got_rx;
+}
+

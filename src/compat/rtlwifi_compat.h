@@ -340,4 +340,38 @@ void rtlwifi_debug_dump_tx_state(void);
  */
 void rtlwifi_set_tx_resume_cb(void (*cb)(void));
 
+/*
+ * rtlwifi_do_interrupt() -- real ISR body: disable -> read-and-clear
+ * ISR -> drain RX ring (rtl8188ee's pdesc-only path) -> re-enable.
+ * Port of _rtl_pci_interrupt() (pci.c:835) + _rtl_pci_rx_interrupt()'s
+ * pdesc branch (pci.c:647). See findings.md Section 96.4-96.6.
+ *
+ * Caller (RTW88PCIDevice::handleInterrupt(), via
+ * RTW88IEEE80211::handleInterrupt()) must call this and nothing else
+ * on the real hardware interrupt path. Do NOT reintroduce a call to
+ * the old rtw88_trigger_interrupt() no-op stub alongside or instead of
+ * this -- that stub never touches the chip's ISR register, which is
+ * what caused the confirmed-on-hardware interrupt storm this function
+ * fixes (96.5).
+ *
+ * Returns true if an RX-related interrupt bit (RTL_IMR_ROK/RDU) was
+ * seen this call. Informational only -- the RX drain, if any, has
+ * already happened by the time this returns.
+ */
+bool rtlwifi_do_interrupt(void);
+
+/*
+ * rtlwifi_mark_interface_started() -- sets RTL_STATUS_INTERFACE_START
+ * on rtlpriv->status, the same bit real rtl_pci_probe() (pci.c:2234)
+ * sets right before returning success. This compat build's probe path
+ * doesn't reach that exact tail, so rtl_op_start() (core.c:118) was
+ * silently no-op'ing on its own status-bit guard -- see the call site
+ * in RTW88IEEE80211::start() for the full trace. Must run once, after
+ * a successful rtl_pci_probe(), before the first _hw->ops->start()
+ * call. Kext .cpp files can't set this bit directly: struct rtl_priv
+ * is only forward-declared on that side, not fully visible the way it
+ * is here (this file already #includes the real wifi.h).
+ */
+void rtlwifi_mark_interface_started(void);
+
 #endif /* RTLWIFI_COMPAT_H */

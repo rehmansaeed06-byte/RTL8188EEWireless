@@ -710,6 +710,22 @@ bool RTW88IEEE80211::installKey(struct ieee80211_key_conf **slot, bool pairwise,
 /*  start / stop                                                        */
 /* ------------------------------------------------------------------ */
 
+/* rtlwifi_mark_interface_started() -- sets RTL_STATUS_INTERFACE_START
+ * (real rtlwifi's own status bit) so that real rtl_op_start() actually
+ * reaches intf_ops->adapter_start() -> enable_interrupt(), instead of
+ * silently no-op'ing on its own status-bit guard. See the full trace
+ * in the call site inside start() below, and in rtlwifi_compat.h.
+ * extern "C" here (at file scope, matching rtlwifi_do_interrupt()'s
+ * declaration further down this file) is required: rtlwifi_compat.h
+ * has no extern "C" wrapping of its own, so a C++ translation unit
+ * needs its own linkage-correct redeclaration to call a symbol
+ * defined in the .c-compiled compat layer. This must be declared here
+ * at file scope, NOT inside start() -- extern "C" is a linkage
+ * specification and is not legal at block/function scope in that
+ * form (confirmed: an earlier version of this fix tried exactly that
+ * and failed with "expected unqualified-id"). */
+extern "C" void rtlwifi_mark_interface_started(void);
+
 IOReturn RTW88IEEE80211::start()
 {
     RTW88_STAGE("IEEE80211::start entered");
@@ -746,6 +762,38 @@ IOReturn RTW88IEEE80211::start()
      * *(ieee80211_hw **)rtwdev double-dereference and the UB of declaring
      * 'extern' on a static variable from another TU. */
     _hw = rtlwifi_get_hw();
+
+    /* CONFIRMED real gap (2026-08-25, findings.md Section 96 follow-up):
+     * real rtl_pci_probe() (pci.c:2234) ends with
+     * set_bit(RTL_STATUS_INTERFACE_START, &rtlpriv->status) right before
+     * returning success -- this port's compat build of rtl_pci_probe()
+     * either doesn't reach that exact tail (a goto fail* path, or the
+     * final stretch just isn't exercised the same way under this
+     * port's compat shims) or the bit lives in a status word this
+     * compat layer doesn't wire up. Without it, real rtl_op_start()
+     * (core.c:118, called below via _hw->ops->start()) silently
+     * returns 0 on its `!test_bit(RTL_STATUS_INTERFACE_START, ...)`
+     * guard -- success, but never reaching intf_ops->adapter_start()
+     * (rtl_pci_start(), pci.c:1697), which is the ONLY real call site
+     * of cfg->ops->enable_interrupt(hw) in this whole driver. Net
+     * effect confirmed on hardware: irq_enabled stayed 0 forever, so
+     * rtlwifi_do_interrupt() (rtlwifi_compat.c) silently no-op'd on
+     * every single real PCI interrupt -- zero RX ever reached the
+     * driver, with no error anywhere in the chain.
+     *
+     * FIRST ATTEMPT at this fix tried to set the bit directly here via
+     * `probe_priv->status` -- does NOT compile: struct rtl_priv is only
+     * forward-declared in RTW88IEEE80211.hpp (`struct rtl_priv;`), this
+     * .cpp never #includes the real wifi.h that defines its full layout
+     * (unlike rtlwifi_compat.c, which does). Every other place this
+     * kext needs to touch real rtlwifi internals goes through a small
+     * exported compat function instead (see rtlwifi_do_interrupt() for
+     * the established pattern) -- this follows the same approach. */
+    /* rtlwifi_mark_interface_started() -- see declaration comment above
+     * RTW88IEEE80211::start() and in rtlwifi_compat.h for the full trace
+     * of why this call exists. */
+    if (_hw)
+        rtlwifi_mark_interface_started();
 
     /* rtwdev is hw->priv (allocated contiguously after ieee80211_hw in alloc_hw).
      * Note: rtl_pci_probe stores hw (not rtwdev) in pdev->driver_data via pci_set_drvdata(). */
@@ -872,11 +920,15 @@ void RTW88IEEE80211::powerOff()
 /*  Interrupt dispatch                                                  */
 /* ------------------------------------------------------------------ */
 
-extern "C" void rtw88_trigger_interrupt(void);
+/* rtlwifi_do_interrupt() -- real ISR body (findings.md Section 96.6),
+ * replacing the old rtw88_trigger_interrupt() no-op stub. See the
+ * declaration comment in rtlwifi_compat.h for why the old stub must
+ * not be reintroduced alongside this. */
+extern "C" bool rtlwifi_do_interrupt(void);
 
 void RTW88IEEE80211::handleInterrupt()
 {
-    rtw88_trigger_interrupt();
+    rtlwifi_do_interrupt();
 }
 
 /* ------------------------------------------------------------------ */

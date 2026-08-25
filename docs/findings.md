@@ -8226,4 +8226,166 @@ logic in place first — confirmed on hardware to cause a sustained
 
 ------------------------------------------------------------------------
 
+## Section 97 — ISR implemented, real root cause found (irq path
+##            never enabled), fixed; RX now confirmed working but rare
+
+**Item 1 from Section 96 is done, and turned out to require two
+separate fixes, not one.**
+
+### 97.1 — ISR body implemented per 96.6's scope
+
+`rtlwifi_do_interrupt()` added to `rtlwifi_compat.c` (new function,
+~150 lines): disable → `interrupt_recognized()` (real read-and-clear,
+confirmed against `hw.c:1445`) → if `RTL_IMR_ROK`/`RTL_IMR_RDU` set,
+walk the RX ring using the confirmed-correct `pdesc`-only branch
+(`use_new_trx_flow` never set anywhere under `rtl8188ee/*.c`, grepped
+and confirmed this session — always `false` for this chip) → re-arm
+each drained descriptor inline (real `_rtl_pci_init_one_rxdesc()` is
+`static`, not externally linkable, so ported inline rather than
+duplicating the symbol) → re-enable. `RTW88PCIDevice::handleInterrupt()`
+reconnected to call through `RTW88IEEE80211::handleInterrupt()` again
+(previously reverted in 96.5) — safe this time because the actual
+storm cause (96.2 below) is now understood and fixed, not because the
+revert itself was wrong.
+
+Exact real-source line numbers used, for any future re-verification:
+`_rtl_pci_interrupt` pci.c:835, `_rtl_pci_rx_interrupt` pci.c:647,
+`_rtl_pci_init_one_rxdesc` pci.c:552, `rtl88ee_interrupt_recognized`
+hw.c:1445, `RTL_PCI_RX_MPDU_QUEUE` pci.h:11, `struct rtl8192_rx_ring`
+pci.h:141, `struct rtl_int` wifi.h:2153, `FCS_LEN` wifi.h:122 (real
+macro — already in scope via this file's own `wifi.h` include, don't
+reintroduce a local literal for it).
+
+### 97.2 — Real root cause of "no RX ever," found via rate-limited
+##       diagnostic logging (not guessing)
+
+First hardware test of 97.1 showed a real, silent, total no-op:
+`irq_enabled` stuck at `0` on literally every logged call, hundreds
+of thousands of them, no storm this time but also zero RX ever
+observed — worse than 96.5's crash in one sense, better in another
+(safe, but doing nothing). Added temporary 1-in-1000 rate-limited
+`IOLog` inside `rtlwifi_do_interrupt()` itself (kept deliberately
+sparse — 1000 calls at PCI interrupt rates is seconds, not the kind
+of per-interrupt flood that caused 95.4/96.1) rather than guessing at
+the cause blind, per this project's own established discipline.
+
+**Root cause, confirmed by reading real source, not inferred:**
+`RTL_STATUS_INTERFACE_START` (a `rtlpriv->status` bit) was never
+being set anywhere in this port. Real `rtl_pci_probe()` sets it right
+before returning success (`pci.c:2234`) — this port's compat build of
+that function doesn't reach that exact tail (never root-caused
+further than that; not worth chasing since the fix is one line and
+safe). Without the bit, real `rtl_op_start()` (`core.c:118`, reached
+via this kext's `_hw->ops->start()` call) hits its own
+`!test_bit(RTL_STATUS_INTERFACE_START, ...)` guard and returns 0
+**(success!)** without ever calling `intf_ops->adapter_start()`
+(`rtl_pci_start()`, `pci.c:1697`) — which is the *only* real call
+site of `cfg->ops->enable_interrupt(hw)` in the entire driver. Net
+effect: `irq_enabled` never got set, so `rtlwifi_do_interrupt()`'s own
+top-of-function guard (a faithful, correct port of real
+`_rtl_pci_interrupt()`'s own `if (rtlpci->irq_enabled == 0) return`)
+was silently swallowing every single real hardware interrupt this
+port has ever received, at any point in this project's history, with
+zero errors anywhere in the chain. This also fully explains why MAC
+address / firmware version / scan-completing all still "worked" —
+none of that path goes through `rtl_pci_start()`.
+
+**Fix:** `rtlwifi_mark_interface_started()`, a new tiny exported
+compat function (`rtlwifi_compat.c`, right next to
+`rtlwifi_do_interrupt()`), does the one-line `set_bit(...)` real
+`rtl_pci_probe()` would have done. Called once from
+`RTW88IEEE80211::start()`, right after `_hw = rtlwifi_get_hw()`,
+before the existing `_hw->ops->start()` call further down.
+
+**Two build-time mistakes made and caught before hardware, worth
+recording since both were genuine "should have known better" misses:**
+- First attempt tried `set_bit(RTL_STATUS_INTERFACE_START,
+  &probe_priv->status)` directly inline in the `.cpp` — doesn't
+  compile: `struct rtl_priv` is only forward-declared in
+  `RTW88IEEE80211.hpp`, and this `.cpp` never `#include`s the real
+  `wifi.h` that defines the full layout (unlike `rtlwifi_compat.c`,
+  which does). This is *why* the compat-function pattern exists at
+  all — should have gone there first instead of trying the direct
+  route.
+- Second attempt correctly moved the `set_bit` into a compat
+  function, but declared the required `extern "C" void
+  rtlwifi_mark_interface_started(void);` *inside* `start()`'s
+  function body, copying the visual shape of the working
+  `rtlwifi_do_interrupt()` call site without checking *where* that
+  declaration actually lives. `extern "C"` is a linkage
+  specification and is illegal at block/function scope in that form
+  — confirmed directly with a minimal g++ repro before the real fix,
+  rather than guessing again. Real fix: declared at file scope,
+  immediately above `RTW88IEEE80211::start()`, exactly matching
+  where `rtlwifi_do_interrupt()`'s own declaration already lives
+  further down the same file.
+
+### 97.3 — Post-fix hardware result: real RX confirmed, but rare
+
+With 97.1+97.2 both in, tested on hardware across two separate runs
+totaling several minutes + one full 13-channel passive scan:
+- **No storm** in either run — the actual concern from 96.5 is
+  resolved; disable→recognize→(drain)→enable brackets every call
+  correctly.
+- **One real RX frame fully processed, exactly once, mid-first-run**:
+  `inta=0x00008001` (ROK bit set), ring walk correctly read
+  `idx=379` (`own=0`, hardware had filled it), advanced to `idx=380`
+  (`own=1`, correctly detected still-empty, correctly stopped). This
+  is the first confirmed real received-and-drained 802.11 frame in
+  this port's entire history.
+- **But**: across a full subsequent 13-channel active scan, zero
+  further ROK/RDU events logged. `ctl_rtw88 state` after that scan:
+  `rx_byte_count: 0`, `ssid`/`bssid` still empty. User independently
+  confirmed 2+ real nearby APs visible to the Mac's own WiFi at the
+  same time/place — so this is not an RF-quiet environment; a real
+  scan across it should see far more than one frame in several
+  minutes.
+- **Power-save ruled out this session**: added `rfpwr_state` to the
+  same diagnostic line (`rtlpriv->psc.rfpwr_state`, `wifi.h:1991`) —
+  logged as `0` (`ERFON`) on every single sample across a fresh
+  30-sample run. The radio is confirmed on/awake throughout; this is
+  not a power-state gating issue.
+- **irq_mask checked and confirmed correct**: `sw.c:93` sets
+  `irq_mask[0]` including both `IMR_ROK` and `IMR_RDU` at init — the
+  hardware is being told to raise these interrupts; nothing is
+  masking them at the mask-register level either.
+
+**Where this leaves things:** the entire interrupt→recognize→drain→
+deliver pipeline is now proven correct end-to-end (one clean frame,
+correct own-bit stop). Real RX events are simply not asserting often
+enough given the confirmed-dense nearby RF environment. Mask and
+power-state are both ruled out. Next suspect, not yet investigated:
+something in the actual RX-enable/RCR (`REG_RCR`) configuration path
+during `hw_init()` — whether this port's compat build of
+`rtl88ee_hw_init()` reaches the same RX-filter/BB-RF bring-up real
+init does, or silently diverges partway through the same way
+`rtl_pci_probe()` did for the interface-start bit. Not yet grepped
+this session — planned next step, same read-real-source-first
+discipline as 97.2.
+
+**Diagnostic logging currently still live and TEMPORARY** in
+`rtlwifi_do_interrupt()` (both the 1-in-1000 top-of-function log and
+the 1-in-100 RX-branch/own-bit logs) — intentionally left in for the
+next debugging session rather than stripped, since the mystery isn't
+solved yet. Strip once RX frequency is understood/fixed, per this
+project's own standing rule about not leaving permanent unconditional
+log spam (95.4/96.1 precedent).
+
+### Single next step (explicit, supersedes 96's list)
+1. Grep real `rtl88ee_hw_init()` (`rtl8188ee/hw.c`) for its RX-config
+   sequence — `REG_RCR` writes, any RX-filter or BB/RF bring-up steps
+   — and confirm this port's compat build reaches all of them, the
+   same way 97.2 confirmed `RTL_STATUS_INTERFACE_START` was being
+   silently skipped.
+2. Once RX frequency looks right (or a further gap is found and
+   fixed): re-test `ctl_rtw88 scan`, confirm `rx_byte_count` climbs
+   and multiple frames drain per scan, *then* check the
+   `_bssList`-vs-`scan_list` question from 96.6 (still open,
+   untouched this session).
+3. Strip the temporary diagnostic logging once the above is settled.
+4. `ctl_rtw88 connect` against a real AP, `IO80211` integration,
+   class-rename cleanup all remain valid, lower-priority, unstarted.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

@@ -500,6 +500,17 @@ bool RTW88PCIDevice::setupInterrupt()
 
 void RTW88PCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
 {
+    /* REVERTED 2026-08-25: calling _ieee80211->handleInterrupt() here
+     * causes an interrupt storm on real hardware. rtw88_trigger_interrupt()
+     * (called from RTW88IEEE80211::handleInterrupt()) does not read the
+     * chip's ISR register or write back to clear/acknowledge serviced
+     * interrupt bits -- see linux-kernel/.../rtlwifi/pci.c's
+     * _rtl_pci_interrupt() for the real read-ISR / dispatch / clear-ISR
+     * sequence this port is missing. Until that's ported, this must stay
+     * a no-op or the PCI IRQ line never de-asserts and the interrupt
+     * fires continuously (confirmed on hardware: 500k+ interrupts within
+     * ~2 minutes). Do not reconnect without implementing real ISR-clear
+     * logic first. */
     if (_ieee80211)
         rtw88_trigger_interrupt();
 }

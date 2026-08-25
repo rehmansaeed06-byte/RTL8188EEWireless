@@ -151,6 +151,7 @@ IOReturn RTW88UserClient::sScan(RTW88UserClient *uc, void *ref,
 IOReturn RTW88UserClient::sConnect(RTW88UserClient *uc, void *ref,
                                      IOExternalMethodArguments *args)
 {
+    IOLog("rtw88: sConnect() ENTERED\n");
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;
     if (!args->structureInput || args->structureInputSize < sizeof(RTW88ConnectArgs))
         return kIOReturnBadArgument;

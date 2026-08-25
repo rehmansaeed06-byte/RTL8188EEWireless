@@ -7902,4 +7902,328 @@ via two pieces of evidence from the user, same boot:
 
 ------------------------------------------------------------------------
 
+# 96. Session: TX confirmed correct, IOUserClient control surface
+#     exercised end-to-end, interrupt-storm found and reverted, real
+#     RX-port scoped in full (2026-08-25)
+
+## 96.1 Interrupt log spam fixed
+
+The 95.4/95.5 no-op spam is fixed. Two changes:
+
+1. `RTW88IEEE80211::handleInterrupt()` — removed the unconditional
+   per-interrupt `IOLog()` ENTER/LEAVE lines and the `intr_cnt`
+   counter. Body reduced to just the call it wraps.
+2. `rtlwifi_compat.c`'s `rtw88_trigger_interrupt()` no-op body —
+   removed its own `IOLog()` call too, since leaving it in would have
+   just moved the flood rather than fixed it (this function is still
+   called on every real hardware interrupt).
+
+Confirmed on hardware: console spam gone, no other regressions.
+
+## 96.2 Functional smoke test: TX path confirmed correctly gated,
+#      not broken
+
+Per 95.5's priority list, tested whether the (still Ethernet-typed)
+`en2` interface can pass any traffic. Method: bring `en2` up, generate
+DHCP/ARP traffic, watch `tcpdump` (BPF tap, above the driver) vs.
+`netstat -i` (driver-level TX counter).
+
+Result: `tcpdump` sees outbound frames (DHCP discovers, ARP
+requests — macOS's own stack reacting to the interface's reported
+link state). `netstat -i`'s `Opkts` stays at 0 throughout.
+
+Root cause, confirmed by reading `RTW88IEEE80211::outputPacket()`
+directly: every frame hits
+
+```cpp
+bool connected = (_state == RTW88_STATE_CONNECTED) || (...scanning-with-return-to-connected case...);
+if (!connected || !_rtwdev || !_hw || !_vif || !_sta) {
+    mbuf_freem(m);
+    return kIOReturnOutputDropped;
+}
+```
+
+This is correct, intentional behavior — a station-mode Wi-Fi driver
+cannot transmit data frames without an associated BSS. The smoke test
+is conclusive: TX-path logic is sound. The real blocker for exercising
+it further is upstream — getting the driver to actually reach
+`RTW88_STATE_CONNECTED`, which requires RX (see 96.4/96.5).
+
+## 96.3 RTW88UserClient control surface built and debugged
+
+`RTW88UserClient.cpp`/`.hpp` (carried over wholesale from the
+Feixiao/rtw88 scaffold per 59.x) already exposes a full, working,
+plain-`IOUserClient` control surface — **not** gated behind
+`IO80211`/Apple-private APIs:
+
+```
+kRTW88Scan        = 0   cmdScan()          no args
+kRTW88Connect     = 1   cmdConnect(ssid,password)  input: RTW88ConnectArgs
+kRTW88Disconnect  = 2   cmdDisconnect()    no args
+kRTW88GetState    = 3   cmdGetState()      output: RTW88StateResult
+kRTW88GetBSSList  = 4   (not yet exercised this session)
+kRTW88GetRSSI     = 5   (not yet exercised this session)
+kRTW88SetDebug    = 6   (not yet exercised this session)
+kRTW88GetLog      = 7   (not yet exercised this session)
+kRTW88PowerOn     = 8   cmdPowerOn()       no args
+kRTW88PowerOff    = 9   cmdPowerOff()      no args
+```
+
+This means the earlier framing (95.5: "needs a real
+IO80211Interface/apple80211 personality" as the *only* path to
+testable Wi-Fi) was incomplete. Real precedent (itlwm/HeliPort) shows
+a fully public-API path exists: ship as Ethernet-typed
+(`IOEthernetController`, what this project already does) plus a small
+external control surface (already built here) to drive scan/connect —
+no Apple-private `IO80211Family` needed for *functional* Wi-Fi, only
+for native menu-bar/System-Settings integration (a separate, much
+harder, optional tier — see itlwm vs. AirportItlwm split,
+openintelwireless.github.io/itlwm/FAQ).
+
+A CLI tool, `ctl_rtw88.c` (extends the earlier ad hoc
+`ctl_getstate.c` from 95.3, still not part of the committed repo),
+was built and iterated on this session covering all 6 exercised
+selectors: `poweron`, `poweroff`, `scan`, `connect <ssid> <password>`,
+`disconnect`, `state`. Confirmed on hardware: `poweron` → real MAC
+address and `fw_version: 8.0` reported. `scan` → completes (state
+returns to idle). `connect <ssid>` → correctly returns
+`kIOReturnNotFound` for any SSID, because the BSS list is always
+empty (see 96.4).
+
+Tooling note: `IOReturn` `0x2f0` is **`kIOReturnNotFound`**, not
+`kIOReturnNotReady` — this was misdiagnosed for several exchanges
+mid-session before being caught via the real Apple/XNU header
+(`iokit_common_err(0x2f0) // data was not found`). Cost real time
+chasing a nonexistent transport-layer bug. Worth remembering the
+correct mapping going forward.
+
+`dmesg` (not `log stream`/`log show`) is the only reliable way to see
+this driver's `IOLog()` output — the unified logging system's
+predicate matching (`senderImagePath`/`eventMessage contains`) came
+back completely empty across multiple attempts, for reasons not
+diagnosed (kext logging-subsystem registration, most likely). `dmesg`
+worked immediately and consistently. Its buffer is small and fills
+fast under normal desktop noise (trackpad driver spam in particular);
+`sudo dmesg | grep "rtw88:"` rather than `tail -N` is the reliable
+pattern.
+
+## 96.4 Real bug found: BSS list always empty — traced to root cause
+
+`cmdConnect()` always returns `kIOReturnNotFound` because `_bssList`
+never has any entries, confirmed directly via an added diagnostic log
+(`bss_count` in the walk loop) — `list had 0 entries` on every single
+attempt, including after a scan that itself completes and reports
+"13 channels" scanned.
+
+Root cause, traced by reading the actual interrupt call chain rather
+than guessing:
+
+```cpp
+// RTW88PCIDevice.cpp — BEFORE this session's investigation:
+void RTW88PCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
+{
+    if (_ieee80211)
+        rtw88_trigger_interrupt();   // <-- calls the debug-only no-op stub directly
+}
+```
+
+This never calls `_ieee80211->handleInterrupt()` — the real
+`RTW88IEEE80211` interrupt entry point (which itself just calls
+`rtw88_trigger_interrupt()` as a placeholder, per 88.3, but is the
+correct *entry point* for real RX work to eventually hang off). So on
+real hardware, **no PCI interrupt ever reaches any RX-handling code
+at all**, regardless of scanning, regardless of RF environment — the
+BSS list was structurally guaranteed to stay empty.
+
+This also means the 95.4/95.5 log-spam symptom and this session's
+storm (96.5) share the same two lines of code as their root: the
+original stub design silenced the *symptom* (log spam) without ever
+being a real ISR, and nobody had traced what NOT calling
+`_ieee80211->handleInterrupt()` actually cost functionally until this
+session's black-box TX/connect testing surfaced it.
+
+## 96.5 Interrupt storm: reconnecting the real handler naively is
+#      unsafe — reverted
+
+Once 96.4's root cause was found, `RTW88PCIDevice::handleInterrupt()`
+was changed to call `_ieee80211->handleInterrupt()` (the "obvious"
+fix). This is **unsafe as a standalone change** and was reverted the
+same session after confirmation on hardware.
+
+Symptom: within roughly two minutes of real hardware interrupts
+firing, the console/full-screen log showed a rate-limited counter
+(1-in-1000, from this session's own earlier log-spam fix pattern)
+past **510,000+ interrupts** and climbing continuously, filling the
+entire display. Photographed evidence on file (not committed to
+`docs/`, was a phone photo of the physical screen this session).
+
+Root cause, confirmed by reading the real driver's actual interrupt
+handler for comparison (`_rtl_pci_interrupt()`, pci.c:835): the real
+ISR does `disable_interrupt()` → **read ISR register AND write the
+same value back to clear it** (`rtl88ee_interrupt_recognized()`,
+hw.c:1445 — this function does the read-and-clear in one call, for
+both `ISR`/`REG_HISRE`) → dispatch → `enable_interrupt()`.
+`rtw88_trigger_interrupt()` does none of this — it's explicitly
+commented `"debug-only manual IRQ trigger"` (rtlwifi_compat.c:1667)
+and never touches hardware registers at all. So the PCI IRQ line
+never de-asserts after the first real interrupt, and the
+kernel/APIC just keeps redelivering the same still-pending IRQ
+forever.
+
+**This also retroactively explains the original stub's existence** —
+almost certainly a deliberate stopgap against exactly this storm by
+an earlier session/author, not an oversight, though this wasn't
+documented anywhere at the time.
+
+Reverted same session: `RTW88PCIDevice::handleInterrupt()` restored
+to calling only the standalone no-op, with a code comment explaining
+why (citing this section) so a future session doesn't repeat the
+mistake blind. Confirmed stable after revert + rebuild + reload.
+
+**Caveat**: kext was also loaded via OpenCore's `EFI/OC/Kexts` at one
+point this session (not just live `kmutil load`), which meant
+`kmutil unload` alone could not stop the storm — a machine boot-time
+kext load doesn't respond to runtime unload the same way. Worth
+remembering: if a boot-time-loaded driver misbehaves badly, the
+options are a hard power-off + EFI-partition edit (disable the kext
+entry in `config.plist`), not just `kmutil unload`.
+
+## 96.6 Real ISR/RX port: fully scoped, not yet implemented
+
+Traced the complete dependency chain for real RX by reading actual
+driver source (not guessing), resolving what was previously an open
+"TODO: confirm" in the compat layer's own comments along the way:
+
+**Confirmed real, callable, correct building blocks** (all already
+compiled into the build, non-`static`, safe to call directly):
+- `rtl88ee_disable_interrupt(hw)` — hw.c:1350
+- `rtl88ee_interrupt_recognized(hw, &intvec)` — hw.c:1445. Does the
+  full correct ISR read-and-clear (both `ISR` and `REG_HISRE`
+  registers) in one call — this is the actual interrupt-acknowledge
+  logic; nothing more is needed for that part.
+- `rtl88ee_enable_interrupt(hw)` — hw.c:1329
+- `ieee80211_rx_irqsafe(hw, skb)` (rtlwifi_compat.c:338) — confirmed
+  this session to be the correct intercept point by grepping the real
+  `rtlwifi` tree directly (`pci.c:629`, `pci.c:631`, `base.c:1363` all
+  call it) — resolves the compat layer's own prior "not yet grepped
+  against the real rtlwifi tree" TODO comment. Bridges to
+  `g_hw_cbs->rx_frame(ctx, skb)`, presumably reaching
+  `RTW88IEEE80211::rxFrame()` (not re-confirmed this session, was
+  read directly in a much earlier session per RX-path notes).
+- `rtl_collect_scan_list()` (base.c:1985, non-static, `EXPORT_SYMBOL`)
+  — the real driver's own beacon/probe-response-to-scan-list
+  populator. **Important finding**: this populates
+  `rtlpriv->scan_list` (a `struct rtl_bssid_entry` list), which is a
+  **separate structure from our kext's own `_bssList`**
+  (`RTW88BSS`, in `RTW88IEEE80211.cpp`). Getting real RX flowing does
+  NOT automatically populate `_bssList` — there is likely a second,
+  smaller gap in bridging `rtlpriv->scan_list` (or, more likely,
+  beacon frames reaching `processRxMgmt()` directly) into `_bssList`.
+  Not yet confirmed which; check once RX is actually flowing, not
+  before.
+- `rtl_beacon_statistic()` (base.c:1899), `rtl_recognize_peer()`
+  (base.c:2616), `rtl_c2hcmd_enqueue()` (base.c:2263) — all
+  non-static, real, callable.
+
+**Confirmed NOT directly callable** (internal/`static` linkage,
+confined to `pci.c`'s translation unit):
+- `_rtl_pci_interrupt()` (pci.c:835) — the real driver's full ISR.
+  Never reachable from this port by design, not a bug: this port uses
+  `IOInterruptEventSource` (macOS-native), not Linux's
+  `request_irq()`. `RTW88PCIDevice::handleInterrupt()` /
+  `RTW88IEEE80211::handleInterrupt()` **is** this port's intended
+  reimplementation of `_rtl_pci_interrupt()`, confirmed via
+  `rtlwifi_compat.c:1105`'s own comment ("IRQ registration... 
+  confirmed [out of scope for this port]"). This resolved what looked
+  initially like a hidden wiring gap — it isn't one.
+- `_rtl_pci_rx_interrupt()` (pci.c:646) — the RX descriptor ring walk.
+  Read in full this session (pci.c:646-798). Confirmed rtl8188ee
+  always takes the `use_new_trx_flow == false` branch (that field is
+  declared in `wifi.h:2735` but never set anywhere in
+  `rtl8188ee/*.c`, so it zero-inits to `false`) — meaning only the
+  simpler `pdesc`-based path needs porting, not the newer
+  `buffer_desc`/`rx_desc_buff_remained_cnt` path used by later chips
+  (8822B/8821C-class).
+- `_rtl_pci_init_one_rxdesc()` (pci.c:552) — short (~45 lines),
+  self-contained descriptor re-arm helper (DMA-map new buffer, three
+  `set_desc()` calls for buffer address/length/ownership). Read in
+  full this session. Short enough to safely reimplement as a small
+  private helper in our own kext rather than fight the linkage.
+
+**The actual porting work, scoped but not started**: a new body for
+`RTW88IEEE80211::handleInterrupt()` (replacing the current reverted
+no-op) that:
+1. Calls `rtl88ee_disable_interrupt(_hw)` →
+   `rtl88ee_interrupt_recognized(_hw, &intvec)`.
+2. Checks `intvec.inta` against `_hw`'s `cfg->maps[RTL_IMR_ROK]` /
+   `RTL_IMR_RDU` (both confirmed populated for rtl8188ee,
+   `sw.c:325`).
+3. If set, walks the RX ring — a port of `_rtl_pci_rx_interrupt()`'s
+   `pdesc`-only branch: ownership check → `dma_unmap_single()` →
+   alloc new skb → `query_rx_desc()` → length/bounds check →
+   CRC/error check → (AP-mode beacon-suppress branch not relevant,
+   we're always station mode) → `_rtl_pci_rx_to_mac80211()`-equivalent
+   delivery (that helper is also `static`, pci.c:614 area — copies to
+   a right-sized skb then calls `ieee80211_rx_irqsafe()`; short enough
+   to inline or reimplement) → re-arm the descriptor via our own
+   `_rtl_pci_init_one_rxdesc()`-equivalent.
+4. Calls `rtl88ee_enable_interrupt(_hw)`.
+
+**Explicitly not done this session, by design** — this was reached at
+a natural stopping point after full scoping, with the team choosing
+to start implementation fresh next session rather than write
+substantial new driver logic at the tail end of an already-long one.
+
+**Do not** re-attempt the naive one-line fix from 96.5
+(`_ieee80211->handleInterrupt()` calling straight through to the
+still-no-op `rtw88_trigger_interrupt()`) without the real ISR-clear
+logic in place first — confirmed on hardware to cause a sustained
+500k+/interrupt storm within ~2 minutes.
+
+## 96.7 Current state and known gaps (supersedes 95.5)
+
+- 0 undefined symbols, kext loads, matches PCI device, survives
+  `start()`. (unchanged from 95.5)
+- `en2` interface still Ethernet-typed, not real Wi-Fi personality.
+  (unchanged from 95.5 — still valid, still deferred; see 96.3 for
+  why this may matter less than previously thought, since a
+  functional-but-not-native-UI path exists via the already-working
+  `RTW88UserClient` surface)
+- Interrupt log spam — **fixed** (96.1).
+- TX path — **confirmed correct**, not broken; blocked only on
+  association state, which is blocked on RX (96.2).
+- `RTW88UserClient` control surface — **confirmed working**
+  end-to-end for 6 of 10 selectors; `ctl_rtw88.c` tool exists
+  (uncommitted, same status as `ctl_getstate.c`) (96.3).
+- BSS list always empty / `connect` always `kIOReturnNotFound` — real
+  bug, **root cause fully traced** (96.4), **fix fully scoped**
+  (96.6), **not yet implemented**.
+- Interrupt storm risk — **found, reverted, documented** so it isn't
+  repeated blind (96.5).
+- Class renaming (95.2) — still not done, cosmetic only, unchanged.
+- PCI enumeration gap (95.3) — still dormant/unconfirmed root cause,
+  unchanged, moot while the card keeps enumerating.
+
+**Immediate next candidate, singular and specific** (supersedes
+95.5's list, items 1-2 of which are now done):
+1. Implement the real ISR body per 96.6's scope: chip
+   enable/disable/recognize calls (trivial, already-correct
+   primitives) + a faithful port of `_rtl_pci_rx_interrupt()`'s
+   `pdesc`-branch ring walk + a small re-arm helper equivalent to
+   `_rtl_pci_init_one_rxdesc()`. Test on hardware incrementally —
+   confirm no storm recurs before declaring done, given 96.5.
+2. Once RX is flowing without storming: confirm whether
+   `processRxMgmt()` already correctly builds `_bssList` from beacon
+   frames, or whether `rtlpriv->scan_list` vs. `_bssList` (96.6) is a
+   second gap needing its own bridge.
+3. Only after 1-2: retest `ctl_rtw88 scan` + `ctl_rtw88 connect
+   "<realSSID>" "<realPassword>"` against a real, live AP — the
+   actual first end-to-end association attempt this codebase will
+   have ever made.
+4. `IO80211`/native-menu-bar integration (95.5's old #3) and
+   class-rename cleanup (95.5's old #4) remain valid, lower-priority,
+   unstarted.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

@@ -1929,17 +1929,28 @@ void RTW88IEEE80211::runManualScan()
 
 IOReturn RTW88IEEE80211::cmdConnect(const char *ssid, const char *password)
 {
-    if (_state == RTW88_STATE_SCANNING && !abortActiveScan(true))
+    IOLog("rtw88: cmdConnect ENTER state=%d\n", (int)_state);
+    if (_state == RTW88_STATE_SCANNING && !abortActiveScan(true)) {
+        IOLog("rtw88: cmdConnect -> kIOReturnBusy (scanning, abort failed)\n");
         return kIOReturnBusy;
-    if (_state != RTW88_STATE_IDLE) return kIOReturnBusy;
-    if (!ssid) return kIOReturnBadArgument;
+    }
+    if (_state != RTW88_STATE_IDLE) {
+        IOLog("rtw88: cmdConnect -> kIOReturnBusy (state != IDLE, state=%d)\n", (int)_state);
+        return kIOReturnBusy;
+    }
+    if (!ssid) {
+        IOLog("rtw88: cmdConnect -> kIOReturnBadArgument (null ssid)\n");
+        return kIOReturnBadArgument;
+    }
     clearKeys();
     releaseSta();
 
     /* Find the SSID in our BSS list */
     IOLockLock(_bssLock);
     RTW88BSS *target = nullptr;
+    int bss_count = 0;
     for (RTW88BSS *b = _bssList; b; b = b->next) {
+        bss_count++;
         if (strlen(b->ssid) == strlen(ssid) &&
             memcmp(b->ssid, ssid, strlen(ssid)) == 0) {
             target = b;
@@ -1948,8 +1959,10 @@ IOReturn RTW88IEEE80211::cmdConnect(const char *ssid, const char *password)
     }
     if (!target) {
         IOLockUnlock(_bssLock);
+        IOLog("rtw88: cmdConnect -> kIOReturnNotFound (ssid not in list, list had %d entries)\n", bss_count);
         return kIOReturnNotFound;
     }
+    IOLog("rtw88: cmdConnect found target BSS\n");
     memcpy(&_targetBSS, target, sizeof(_targetBSS));
     IOLockUnlock(_bssLock);
 

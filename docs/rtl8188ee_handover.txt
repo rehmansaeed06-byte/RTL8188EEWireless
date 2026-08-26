@@ -1,6 +1,133 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 ##Next updates are at the bottom
-## TWENTIETH UPDATE (read this first) -- Driver now runs on real
+
+## TWENTY-SECOND UPDATE (read this first) -- CONFIRMED FIXED on real
+## hardware: bsslist now returns real nearby networks for the first
+## time in this project's history.
+
+Direct continuation of the TWENTY-FIRST UPDATE's fix, now verified.
+
+`./ctl_rtw88 scan` + `bsslist` on real hardware: **4 real, named
+nearby networks returned** with plausible BSSIDs, RSSI (-44 to -84
+dBm), channels (1/6/8/11), and cipher-suite bitmasks. `[rxdiag]`
+capture confirms real, varying `frame_control` values (beacons,
+probe-responses, control frames, QoS data) instead of the old uniform
+`fc=0x0000`. `scan complete: rxFrameCount=22 rxScanRelevantCount=16
+bssCount=4`.
+
+**This closes out the entire fc=0x0000/"bsslist always empty"
+investigation that ran from Section 103 through Section 108** (six
+sections, several sessions) -- root cause was a missing
+`dma_sync_single_for_cpu()` call in the RX bounce-buffer path, fixed
+in Section 108, now confirmed correct end-to-end on real hardware
+against real over-the-air traffic.
+
+One small, non-blocking anomaly noted for later: one isolated frame in
+the verification capture read `fc=0x0000 len=16` (vs. every other
+frame showing real values) -- doesn't block `bsslist`'s core function,
+not chased further this session. Full detail: findings.md Section
+108.6.
+
+## Immediate next candidates
+1. **`ctl_rtw88 connect` against a real AP from `bsslist`** -- now
+   unblocked for the first time, and the natural next milestone.
+2. Full scan-to-connect validation once `connect` exists.
+3. `IO80211`/apple80211 interface work (interface is still
+   Ethernet-typed per the Twentieth Update's gap list) -- still a
+   separate, large, unstarted phase.
+4. Class-rename cleanup (RTW88* -> RTL8188EE*) -- still broken per the
+   Twentieth Update, still cosmetic/no functional impact.
+5. The isolated `fc=0x0000 len=16` frame noted above -- low priority,
+   revisit only if a pattern emerges.
+
+------------------------------------------------------------------------
+
+## TWENTY-FIRST UPDATE (read this first) -- Likely REAL root cause of
+## "bsslist always empty" found and fixed: RX bounce buffer was never
+## synced back to skb->data. NOT yet verified on hardware.
+
+This entry covers Sections 100-108 of findings.md, none of which were
+in the handover doc before this update (the doc had fallen behind —
+findings.md was already at Section 107 when this update was written;
+read findings.md directly, not just this file, if anything here seems
+to skip steps).
+
+**Since the TWENTIETH UPDATE**: RX interrupts were confirmed genuinely
+working on hardware (Section 97 — real root cause of "no RX ever" was
+`RTL_STATUS_INTERFACE_START` never being set, one-line fix).
+`rx_byte_count`/`tx_byte_count` stats bugs found and fixed (Sections
+100-101). A `ctl_rtw88 scan`/`bsslist` command pair was built and
+tested — `bsslist` came back consistently EMPTY even though real
+frames were confirmed arriving during scans. Sections 102-107 dug into
+why: real frames arrive (`rxFrameCount` > 0), but every single one's
+`frame_control` field reads as `fc=0x0000` — never a real beacon or
+probe-response pattern, always exactly zero, regardless of frame
+length (which varied normally, 16-622 bytes). Section 107 found and
+fixed a real, separate bug (this port was missing a filter for C2H
+firmware-report packets that share the RX ring with real 802.11
+frames) — tested on hardware, did NOT fix the symptom, but the test's
+own diagnostic output added a new data point (descriptor-level fields
+like `drvinfo_size` now confirmed non-zero/sane) that helped rule out
+several previously-open theories.
+
+**Section 108 — likely real root cause, found by reading this port's
+actual DMA architecture rather than continuing to audit frame-parsing
+logic that had already been checked repeatedly:** this port implements
+a real bounce-buffer DMA design (`RTW88PCIDevice.cpp`) — for RX, the
+hardware is handed a *separate* physically-contiguous buffer's address
+to DMA into (not the skb's own buffer), and a dedicated function,
+`syncBounceForCpu()`, exists specifically to copy that bounce buffer's
+contents into the skb afterward. **That copy function was never being
+called anywhere in the RX loop.** The RX code went straight from
+"unmap/free the bounce buffer" to "read the skb" — skipping the copy
+entirely — so `skb->data` only ever contained its own fresh, zeroed
+allocation, never the real received frame. This exactly explains every
+symptom: descriptor-ring fields (real DMA memory, unaffected) always
+looked correct, while payload bytes (never actually written into the
+skb) were always zero.
+
+**Fix**: added the missing `dma_sync_single_for_cpu(DMA_FROM_DEVICE)`
+call in `rtlwifi_compat.c`'s RX loop, immediately before the existing
+`dma_unmap_single()` call (order matters — unmap frees the tracking
+entry the sync needs). No changes needed elsewhere; the bounce-buffer
+machinery itself was already correctly implemented, just never
+invoked from the one call site that needed it.
+
+**Diagnostic cleanup done in the same pass**: removed several
+temporary log lines whose questions are now definitively answered and
+closed (interrupt/IRQ-mask/RCR/IQK health checks from Sections 97-99;
+the `[rxdesc]` descriptor-field dump from Section 105, now confirmed
+sane). Kept two diagnostics deliberately: the per-frame `[rxdiag]`
+log and the per-scan summary line, both in `RTW88IEEE80211.cpp` —
+these are the actual instruments needed to confirm whether this fix
+works on the next hardware test, so removing them now would be
+premature.
+
+**Status: CONFIRMED FIXED on real hardware — see TWENTY-SECOND UPDATE
+above.** This was a source-only change. Full detail: findings.md
+Section 108.
+
+## Immediate next step
+Rebuild (`make -f Makefile.rtl8188ee clean && make -f
+Makefile.rtl8188ee kext`), reinstall to `EFI/OC/Kexts/rtl8188ee.kext`,
+reboot, then:
+```
+./ctl_rtw88 scan
+sleep 5
+./ctl_rtw88 bsslist
+sudo dmesg | grep -E 'rxdiag|scan complete' | tail -60
+```
+Expect real, varying `fc`/`type`/`stype` values in `[rxdiag]` lines
+(not uniform `fc=0x0000`), and `bsslist` to show actual nearby
+networks for the first time in this project's history if the fix is
+correct. If frames now parse correctly but `bsslist` is still empty,
+the next gap is in `processScanResult()`/the `_bssList` build path
+(flagged open since Section 96.6, never reachable with real frame
+data until now). Full decision tree in findings.md Section 108.7.
+
+------------------------------------------------------------------------
+
+## TWENTIETH UPDATE -- Driver now runs on real
 ## hardware. 0 undefined symbols, kext loads, matches PCI device,
 ## survives start(), a new network interface appears. Interface is
 ## still Ethernet-typed, not Wi-Fi -- that's the next real gap.

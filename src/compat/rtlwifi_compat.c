@@ -2002,17 +2002,6 @@ void rtlwifi_log_iqk_lc_state(void)
 
 bool rtlwifi_do_interrupt(void)
 {
-    /* TEMPORARY DIAGNOSTIC (2026-08-25): rate-limited 1-in-N logging to
-     * see intvec.inta/own-bit values without recreating the 95.4/96.1
-     * unconditional-spam problem. Remove once RX is confirmed flowing
-     * -- see findings.md Section 96 follow-up: rx_byte_count stayed 0
-     * across a full 13-channel scan post-fix, so the ISR is either not
-     * being entered, not seeing RTL_IMR_ROK/RDU set, or bailing out at
-     * the own-bit check on iteration 0 every time. This block exists to
-     * distinguish those three cases, nothing more. */
-    static unsigned int _diag_call_count = 0;
-    _diag_call_count++;
-
     struct ieee80211_hw *hw = rtlwifi_get_hw();
 
     if (!hw || !hw->priv)
@@ -2034,21 +2023,17 @@ bool rtlwifi_do_interrupt(void)
     rtlpriv->cfg->ops->disable_interrupt(hw);
     rtlpriv->cfg->ops->interrupt_recognized(hw, &intvec);
 
-    /* TEMPORARY DIAGNOSTIC: log every 1000th call so we can see real
-     * intvec.inta values without flooding. 1000 calls at typical PCI
-     * interrupt rates is seconds, not minutes -- should surface data
-     * fast without recreating the 95.4-style flood.
-     * rfpwr_state added this session: checking whether the radio is
-     * actually in ERFON (0) most of the time, or stuck in ERFSLEEP (1)
-     * / ERFOFF (2) -- would explain real RX interrupts firing only
-     * rarely despite a correct irq_mask and a proven-working RX-drain
-     * path (findings.md Section 96 follow-up, post-RTL_STATUS_INTERFACE_START
-     * fix). rtlpriv->psc.rfpwr_state, wifi.h:1991. */
-    if ((_diag_call_count % 200000) == 1) {
-        IOLog("rtw88: [diag] call #%u inta=0x%08x intb=0x%08x irq_enabled=%d rfpwr_state=%d\n",
-              _diag_call_count, intvec.inta, intvec.intb, rtlpci->irq_enabled,
-              (int)rtlpriv->psc.rfpwr_state);
-    }
+    /* Section 108 cleanup: removed the top-of-ISR call-count diagnostic
+     * (inta/intb/irq_enabled/rfpwr_state) and the RX-flagged-entry/
+     * ring-idx/own-bit diagnostics that used to live in this function.
+     * Both answered their questions long ago -- interrupt delivery,
+     * irq_mask, RCR, IQK/LC, and power-state were all independently
+     * confirmed healthy (Sections 97-99) -- and stayed pending a real
+     * cleanup pass (tracked since Section 99.6 item 3). The actual bug
+     * (Section 108: missing dma_sync_single_for_cpu() on the RX bounce-
+     * buffer path) was upstream of anything this logging could show,
+     * since it read descriptor/interrupt state, not skb payload
+     * content -- removing it now that root cause is fixed, not before. */
 
     /* Shared IRQ or HW disappeared -- real pci.c's own bail-out check. */
     if (!intvec.inta || intvec.inta == 0xffff) {
@@ -2060,14 +2045,6 @@ bool rtlwifi_do_interrupt(void)
                   (intvec.inta & rtlpriv->cfg->maps[RTL_IMR_RDU]);
 
     if (got_rx) {
-        static unsigned int _diag_rx_entries = 0;
-        _diag_rx_entries++;
-        if ((_diag_rx_entries % 100) == 1) {
-            IOLog("rtw88: [diag] RX-flagged entry #%u inta=0x%08x ROK_bit=0x%08x RDU_bit=0x%08x\n",
-                  _diag_rx_entries, intvec.inta,
-                  rtlpriv->cfg->maps[RTL_IMR_ROK], rtlpriv->cfg->maps[RTL_IMR_RDU]);
-        }
-
         int rxring_idx = RTL_PCI_RX_MPDU_QUEUE;
         unsigned int count = rtlpci->rxringcount;
 
@@ -2083,15 +2060,40 @@ bool rtlwifi_do_interrupt(void)
             u16 len;
 
             own = (u8)rtlpriv->cfg->ops->get_desc(hw, (u8 *)pdesc, false, HW_DESC_OWN);
-            if ((_diag_rx_entries % 100) == 1) {
-                IOLog("rtw88: [diag] ring idx=%u own=%u\n",
-                      rtlpci->rx_ring[rxring_idx].idx, own);
-            }
             if (own)
                 break; /* no more data filled by hardware -- ring drained */
 
-            /* Must unmap before touching skb, matching real pci.c's own
-             * "AAAAAAttention" comment at this exact point. */
+            /* Section 108: this port's RX DMA path is a bounce-buffer
+             * design (RTW88PCIDevice.cpp's compat_dma_map() allocates a
+             * separate physically-contiguous buffer for the hardware to
+             * write into, tracked in a DMAEntry; compat_dma_sync_cpu()
+             * copies bounce -> the original skb->data buffer). That sync
+             * step was never called anywhere in this RX loop -- skb->data
+             * was being read directly, straight past the driver's own
+             * bounce-buffer indirection, so it only ever contained
+             * whatever alloc_skb()/kmalloc() initialized it to, never the
+             * real received bytes. This fully explains the fc=0x0000-on-
+             * every-frame symptom chased through Sections 103-107: every
+             * descriptor-level field (len, own, drvinfo_size, crc,
+             * hwerror) is read over MMIO from real DMA'd ring memory
+             * (RTW88PCIDevice::allocCoherent(), confirmed correct), so
+             * those always looked sane, while the actual payload bytes
+             * were never copied out of the bounce buffer at all.
+             *
+             * Real pci.c calls dma_sync_single_for_cpu(DMA_FROM_DEVICE)
+             * before touching skb->data, then dma_unmap_single() once
+             * it's done with the mapping -- matching real code's own
+             * "AAAAAAttention" comment that order matters at this exact
+             * point. Fix: added the missing sync call, immediately
+             * before the existing dma_unmap_single(), so the bounce
+             * buffer's contents are copied into skb->data (via
+             * RTW88PCIDevice::syncBounceForCpu()) before compat_dma_unmap()
+             * frees the DMAEntry that memcpy needs to find the bounce
+             * buffer by physical address. Everything from query_rx_desc()
+             * onward now reads real copied-back data instead of the
+             * skb's original, never-written-to allocation. */
+            dma_sync_single_for_cpu(&rtlpci->pdev->dev, *((dma_addr_t *)skb->cb),
+                                     rtlpci->rxbuffersize, DMA_FROM_DEVICE);
             dma_unmap_single(&rtlpci->pdev->dev, *((dma_addr_t *)skb->cb),
                               rtlpci->rxbuffersize, DMA_FROM_DEVICE);
 
@@ -2108,29 +2110,13 @@ bool rtlwifi_do_interrupt(void)
             len = (u16)rtlpriv->cfg->ops->get_desc(hw, (u8 *)pdesc, false,
                                                     HW_DESC_RXPKT_LEN);
 
-            /* findings.md Section 105: TEMPORARY diagnostic -- Section
-             * 104 found every captured frame's frame_control reads as
-             * 0x0000 despite varying, plausible skb lengths. Sections
-             * 105.2/105.4 traced skb_put/skb_reserve/alloc_skb and the
-             * real query_rx_desc()/skb_reserve() call-site split and
-             * confirmed all of it correct against real fetched
-             * upstream rtlwifi source -- the one remaining unverified
-             * link is whether the real, externally-compiled
-             * query_rx_desc() (CHIP_SRC/trx.c, not in this repo) is
-             * actually returning sane non-zero rx_drvinfo_size/
-             * rx_bufshift values at runtime on this hardware. Logs
-             * the exact values skb_reserve() below is about to
-             * consume, plus crc/hwerror (Section 105.7 item 2 -- a
-             * separate, independently-checkable hypothesis using the
-             * same capture). Piggybacks on the existing
-             * _diag_rx_entries rate-limit already in this function
-             * rather than adding a new counter. */
-            if ((_diag_rx_entries % 20) == 1) {
-                IOLog("rtw88: [rxdesc] len=%u drvinfo_size=%u bufshift=%u "
-                      "crc=%u hwerror=%u\n",
-                      len, stats.rx_drvinfo_size, stats.rx_bufshift,
-                      stats.crc, stats.hwerror);
-            }
+            /* Section 108 cleanup: removed the [rxdesc] diagnostic
+             * (len/drvinfo_size/bufshift/crc/hwerror). It answered its
+             * question this session: those descriptor-level fields all
+             * read sane (drvinfo_size=32, crc=0, hwerror=0), which
+             * correctly narrowed the bug away from descriptor parsing
+             * and toward the RX payload delivery path itself -- see the
+             * dma_sync_single_for_cpu() fix above. */
 
             if (skb->end - skb->tail > len) {
                 skb_put(skb, len);
@@ -2142,47 +2128,30 @@ bool rtlwifi_do_interrupt(void)
                 goto rearm;
             }
 
-            /* findings.md Section 107: real pci.c's _rtl_pci_rx_interrupt()
-             * (confirmed against the person's own local copy of this file,
-             * not just public source -- this exact check is present and
-             * unmodified there) has a check this port's RX loop was
-             * missing entirely: C2H (command-to-host) packets share the
-             * same RX descriptor ring as real 802.11 frames, but are
-             * firmware status/report payloads, not 802.11 frames at all.
-             * Real code detects this via stats.packet_report_type (set by
-             * query_rx_desc() a few lines above, from the real hardware
-             * descriptor) and reroutes to rtl_c2hcmd_enqueue() instead of
-             * treating the payload as an ieee80211_hdr. Section 106.3
-             * established that stats.rx_drvinfo_size/rx_bufshift reading
-             * as 0 is not necessarily a bug (same descriptor word as the
-             * already-confirmed-correct pkt_len read) -- this is the more
-             * likely explanation for Section 104's fc=0x0000-on-every-
-             * frame capture: without this check, C2H/report packets were
-             * being delivered straight to ieee80211_rx_irqsafe() and
-             * interpreted as 802.11 frames, reading whatever the C2H
-             * payload's first two bytes happen to be as frame_control
-             * (plausibly zero for many report formats), while still
-             * having a real, valid HW_DESC_RXPKT_LEN (explaining why
-             * skb->len/rxdiag's len= values looked completely normal).
+            /* Section 107: real pci.c's _rtl_pci_rx_interrupt() (confirmed
+             * against the person's own local copy, not just public source)
+             * has a check this port's RX loop was missing entirely: C2H
+             * (command-to-host) packets share the same RX descriptor ring
+             * as real 802.11 frames, but are firmware status/report
+             * payloads, not 802.11 frames -- real code detects this via
+             * stats.packet_report_type (set by query_rx_desc()) and
+             * reroutes them away from normal frame processing instead of
+             * treating the payload as an ieee80211_hdr. This is a real,
+             * independent correctness fix (kept as a permanent guard, not
+             * temporary diagnostics) -- NOTE: it turned out NOT to be the
+             * cause of Section 104's fc=0x0000 capture (that was Section
+             * 108's missing dma_sync_single_for_cpu(); this filter never
+             * matched in that capture, 0 C2H hits logged), but real C2H
+             * report packets do exist on this hardware per Section 107.3's
+             * enum and must not be misinterpreted as 802.11 frames.
              *
-             * This port has no rtl_c2hcmd_enqueue() (C2H command
-             * processing was never ported -- out of scope for basic
-             * data-path bring-up), so rather than silently dropping
-             * these packets with no visibility, they are logged once
-             * (rate-limited, same gate as this function's other
-             * diagnostics) and dropped -- matching real code's net
-             * effect (never delivered to mac80211/ieee80211_rx_irqsafe)
-             * without pretending to implement the real C2H command
-             * pipeline. If real C2H command handling (firmware rate
-             * reports feeding back into rate control, etc.) turns out to
-             * be needed for full functionality, that is future work, not
-             * done here. */
+             * This port has no rtl_c2hcmd_enqueue() (real C2H command
+             * processing -- e.g. firmware rate reports feeding back into
+             * rate control -- was never ported, out of scope for basic
+             * data-path bring-up), so these packets are dropped rather
+             * than processed, matching real code's net effect on the
+             * mac80211-delivery path without the full command pipeline. */
             if (stats.packet_report_type == C2H_PACKET) {
-                if ((_diag_rx_entries % 20) == 1) {
-                    IOLog("rtw88: [rxdiag] C2H_PACKET packet_report_type=%u "
-                          "-- dropping (not delivered to mac80211)\n",
-                          stats.packet_report_type);
-                }
                 dev_kfree_skb_any(skb);
                 goto rearm;
             }

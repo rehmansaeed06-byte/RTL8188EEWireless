@@ -9620,4 +9620,239 @@ reboot + `scan` + `bsslist` cycle, not just a log-line check.
 
 ------------------------------------------------------------------------
 
+# 108. ROOT CAUSE CONFIRMED AND FIXED: RX bounce buffer was never
+#      synced back to skb->data -- missing dma_sync_single_for_cpu()
+
+## 108.1 Section 107's C2H fix, tested on hardware, did NOT resolve the symptom
+
+Rebuilt with Section 107's C2H_PACKET filter in place, reinstalled,
+rebooted, ran `./ctl_rtw88 scan` + `bsslist` + a `dmesg` capture of
+`rxdiag|rxdesc|scan complete`. Result: `bsslist` still empty. All 20
+captured `[rxdiag]` frames still `fc=0x0000 type=0x0 stype=0x0
+ismgmt=1`, exactly as in Section 104/105 pre-fix. `scan complete`
+line: `rxFrameCount=29 rxScanRelevantCount=0 bssCount=0`. **Zero
+`[rxdiag] C2H_PACKET` lines logged at all** -- the C2H filter never
+matched a single frame in this capture, meaning C2H packets were not
+the (or at least not the only) cause of the original symptom.
+
+This session's capture did add one genuinely new data point beyond
+anything Section 105/106 had: **`[rxdesc]` now consistently showed
+`drvinfo_size=32` (non-zero) alongside `crc=0 hwerror=0`** on every
+sampled frame. This closes the door on Section 105/106's original
+worry (real `query_rx_desc()` returning all-zero descriptor fields at
+runtime) -- the descriptor-level values are demonstrably sane. The
+bug had to be somewhere between "descriptor fields read correctly"
+and "skb->data contains the real received bytes."
+
+## 108.2 Traced the actual RX DMA architecture, found the missing link
+
+Grepped `src/compat/linux/dma-mapping.h` and `RTW88PCIDevice.cpp` for
+the real `dma_map_single`/`dma_unmap_single`/`dma_sync_single_for_cpu`
+implementations (not assumed from the Linux compat header alone).
+Found this port has a real, deliberately-designed **bounce-buffer**
+DMA architecture, installed via an ops-table indirection
+(`rtw88_dma_ops`, installed in `RTW88PCIDevice::start()`):
+
+- `compat_dma_map()` (`RTW88PCIDevice.cpp`): for `DMA_FROM_DEVICE`
+  (RX), allocates a **separate**, physically-contiguous bounce buffer
+  via the same `allocCoherent()` used for descriptor rings, records
+  the *original* skb virtual address in a `DMAEntry.orig_va` field via
+  `setBounceOrigVA()`, and hands the hardware the bounce buffer's real
+  physical address -- NOT the skb's own buffer. The hardware DMAs
+  received frame data into the bounce buffer, never into `skb->data`
+  directly.
+- `compat_dma_sync_cpu()` / `RTW88PCIDevice::syncBounceForCpu()`: the
+  function whose entire documented purpose (own header comment,
+  `RTW88PCIDevice.cpp:909-914`) is to `memcpy()` the bounce buffer's
+  contents into `orig_va` (the real `skb->data`) -- explicitly
+  described as being "called by `dma_sync_single_for_cpu
+  (DMA_FROM_DEVICE)` after the chip has finished writing received
+  packet data into the bounce buffer."
+- `compat_dma_unmap()` / `RTW88PCIDevice::freeCoherentByPhys()`: frees
+  the bounce buffer's `DMAEntry` entirely. Does **not** copy anything
+  -- by design, that's `dma_sync_single_for_cpu`'s job alone, per the
+  comment above.
+
+**`dma_sync_single_for_cpu()` was never called anywhere in this port's
+RX loop (`rtlwifi_compat.c`).** Confirmed by grep: zero call sites for
+that symbol in the entire compat layer prior to this session's fix.
+The RX loop went straight from `dma_unmap_single()` (frees the bounce
+buffer, no copy) to reading `stats`/`skb->data` directly -- the copy
+that was supposed to happen in between never ran.
+
+## 108.3 Why this fully and exactly explains every observed symptom
+
+- **Descriptor-level fields always looked sane** (`len`, `own`,
+  `drvinfo_size`, `crc`, `hwerror`): these are read over MMIO from the
+  RX **descriptor ring**, which is real, correctly-DMA'd memory via
+  `RTW88PCIDevice::allocCoherent()` (`IOBufferMemoryDescriptor::
+  inTaskWithPhysicalMask`, confirmed correct many sessions ago and
+  again by this session's `drvinfo_size=32` reading). The descriptor
+  ring was never the affected code path.
+- **`skb->data` always read as clean, consistent zero** rather than
+  random garbage: `skb`'s backing buffer is allocated via plain
+  `kmalloc()`/`IOMalloc()` (`alloc_skb()`,
+  `src/compat/linux/skbuff.h`), which on first touch is typically
+  fresh, zeroed kernel memory -- and it was genuinely never written to
+  by the NIC at all (the NIC wrote to the bounce buffer instead, which
+  was then freed unread). A consistent `fc=0x0000` across every frame,
+  regardless of real content, is exactly the signature of "this memory
+  was simply never populated," not a corrupted or misparsed read.
+- **`HW_DESC_RXPKT_LEN` (`len=`) was always a real, varying, plausible
+  value** (16-622 bytes across every capture in Sections 104/105/this
+  session): this field is written by the hardware into the
+  **descriptor**, independent of whether the buffer-address field it
+  also wrote (now known to be the bounce buffer's physical address)
+  was ever read back correctly into `skb->data`.
+- **Section 107's C2H filter never matched**: consistent with this
+  being a real, separate, correct fix for actual C2H packets (Section
+  107.3's enum is real, this port's original gap was real) that
+  simply weren't present in this particular capture window -- not
+  evidence against Section 107's fix, just evidence it wasn't THE
+  cause of Section 104's original all-zero capture.
+
+## 108.4 Fix applied: `rtlwifi_compat.c`, `rtlwifi_do_interrupt()`
+
+Added the missing `dma_sync_single_for_cpu(DMA_FROM_DEVICE)` call
+immediately before the existing `dma_unmap_single()` call, matching
+real `pci.c`'s own documented ordering (sync-for-cpu before unmap) and
+its own "AAAAAAttention" comment that order matters at this exact
+point in the function:
+
+```c
+dma_sync_single_for_cpu(&rtlpci->pdev->dev, *((dma_addr_t *)skb->cb),
+                         rtlpci->rxbuffersize, DMA_FROM_DEVICE);
+dma_unmap_single(&rtlpci->pdev->dev, *((dma_addr_t *)skb->cb),
+                  rtlpci->rxbuffersize, DMA_FROM_DEVICE);
+```
+
+Placed before `query_rx_desc()`/`skb_put()`/`skb_reserve()` (all of
+which now operate on real, copied-back data) and before
+`dma_unmap_single()` frees the `DMAEntry` that `syncBounceForCpu()`
+needs to look up the bounce buffer by physical address -- reversing
+the order would free the entry the sync needs to find first.
+
+No changes needed to `RTW88PCIDevice.cpp` itself -- the bounce-buffer
+machinery (`compat_dma_sync_cpu`/`syncBounceForCpu`) was already fully
+implemented and correct; it was simply never being called from the
+one place (`rtlwifi_compat.c`'s RX loop) that needed to call it.
+
+TX was checked for the same-shaped gap and confirmed NOT affected:
+`compat_dma_map()`'s `DMA_TO_DEVICE`/`DMA_BIDIRECTIONAL` branch copies
+`ptr -> bounce` immediately at map time (`RTW88PCIDevice.cpp:147-148`),
+before the hardware ever reads it, so there is no missing "sync
+before use" step on the TX side the way there was for RX. Also, per
+Section 52.2/101.2, this port's TX path bypasses `dma_map_single`
+entirely for the data-frame case (direct `_hw->ops->tx()` dispatch),
+so the RX-side gap fixed here has no TX analogue to check further.
+
+## 108.5 Diagnostic cleanup performed this session
+
+Per this project's standing rule against permanent log spam (95.4/
+96.1 precedent) and now that root cause is confirmed and fixed,
+removed diagnostics whose questions are answered and closed:
+
+- **Removed** (`rtlwifi_compat.c`): top-of-ISR `[diag] call #...`
+  (inta/intb/irq_enabled/rfpwr_state) -- interrupt delivery, irq_mask,
+  RCR, IQK/LC, and power-state all independently confirmed healthy,
+  Sections 97-99.
+- **Removed**: `[diag] RX-flagged entry #...` and `[diag] ring
+  idx=...  own=...` -- RX drain loop / own-bit logic confirmed
+  correct, Sections 97.3/99.5.
+- **Removed**: `[rxdesc] len=... drvinfo_size=... bufshift=... crc=...
+  hwerror=...` -- this session's own capture answered the question
+  these were added for (all descriptor fields sane); keeping it now
+  would only add noise.
+- **Simplified**: the C2H-drop log line (`[rxdiag] C2H_PACKET ...`)
+  removed, but the underlying `packet_report_type == C2H_PACKET`
+  filter itself is KEPT as permanent code -- it's a real, independent
+  correctness fix (Section 107), not a diagnostic, even though it
+  turned out not to be this particular bug's cause.
+- **Removed**: the now-unused `_diag_rx_entries` counter (only
+  existed to rate-limit the two logs above).
+
+**Deliberately KEPT, not removed:**
+- `RTW88IEEE80211.cpp`'s `[rxdiag] frame #%u fc=... type=... stype=...
+  len=... ismgmt=... isdata=...` (in `rxFrame()`) -- this is the exact
+  instrument needed to verify THIS fix: `fc` should now show real,
+  varying values instead of uniform `0x0000` once retested on
+  hardware. Removing it now, before verification, would blind the
+  next session to whether the fix actually worked.
+- `RTW88IEEE80211.cpp`'s one-shot-per-scan `scan complete (aborted=%d):
+  rxFrameCount=... rxScanRelevantCount=... bssCount=...` line -- not a
+  flood risk (fires once per scan), and is the direct pass/fail
+  signal for this fix (`rxScanRelevantCount`/`bssCount` should finally
+  go non-zero if real beacons are now being parsed correctly).
+
+## 108.6 Status -- CONFIRMED FIXED on real hardware
+
+Rebuilt, reinstalled, rebooted, ran `./ctl_rtw88 scan` + `bsslist` +
+`dmesg | grep -E 'rxdiag|scan complete'`. Result: **fix confirmed
+working, unambiguously.**
+
+`[rxdiag]` now shows real, varying `frame_control` values across the
+capture -- beacons (`fc=0x0080`, `stype=0x80`), probe-responses
+(`fc=0x0050`/`0x0850`, `stype=0x50`), a control-frame cluster
+(`fc=0x00e4`, `type=0x4`, `stype=0xe0` -- RTS/CTS-family, `ismgmt=0`
+correctly), and one QoS data frame (`fc=0x4208`, `type=0x8`,
+`isdata=1` correctly) -- a realistic mix of real over-the-air traffic,
+not a uniform pattern of any kind. `scan complete` line:
+`rxFrameCount=22 rxScanRelevantCount=16 bssCount=4` -- 16 of 22
+captured frames correctly recognized as scan-relevant (beacon/
+probe-resp), building **4 real BSS entries**.
+
+`./ctl_rtw88 bsslist` (run before the diagnostic capture, same scan)
+returned 4 real, named nearby networks with plausible per-network
+data: `Umer home` (-84 dBm, ch 11), `NAYAtel-arsahd03369999259`
+(-54 dBm, ch 6), `Net Gate-03125333191-Ibraheem` (-74 dBm, ch 1),
+`Sahil` (-44 dBm, ch 8) -- all with real BSSIDs and a decoded cipher
+suite bitmask (`0xfac04` for all four, consistent with a real,
+shared RSN/WPA cipher-suite-list encoding rather than garbage). This
+is the first time in this project's entire history that `bsslist` has
+returned any real network at all.
+
+**One minor, non-blocking anomaly noted, not yet investigated:** frame
+#13 in the same capture read `fc=0x0000 type=0x0 stype=0x0 len=16
+ismgmt=1` -- a genuine zero, unlike every other frame in the capture.
+Unlike Section 104-107's symptom (EVERY frame reading zero,
+saturating), this is a single isolated occurrence with a short,
+plausible length (16 bytes -- shorter than a minimal real 802.11
+management frame's typical size). Two live hypotheses, neither
+confirmed: (a) a genuine all-zero or malformed frame type real
+hardware occasionally delivers (would not be a bug in this port), or
+(b) an edge case in the bounce-buffer sync/copy path for unusually
+short frames specifically. Not blocking -- `bsslist`'s core function
+is confirmed working -- but worth a note for whoever picks this up
+next; not chased further this session since it doesn't block the
+primary fix's validation.
+
+## 108.7 Updated remaining open items (supersedes the pre-verification list)
+
+1. ~~Rebuild + reboot + verify on hardware~~ -- **DONE, confirmed
+   working.**
+2. **Minor**: frame #13's isolated `fc=0x0000 len=16` (108.6) -- low
+   priority, does not block `bsslist`/scan functionality, worth
+   revisiting only if a pattern of similar short-frame anomalies
+   emerges later.
+3. Cipher suite values in `bsslist` output still shown as raw hex
+   (`0xfac04`), not decoded to human-readable names (e.g. "WPA2-PSK/
+   AES") -- cosmetic, low priority, unchanged from Section 102.5.
+4. **`ctl_rtw88 connect` against a real AP is now unblocked** and is
+   the natural next milestone -- `bsslist` now returns real, connectable
+   networks for the first time. Full scan-to-connect validation,
+   `IO80211`/apple80211 interface integration (still Ethernet-typed
+   per the Twentieth Update's gap list), and class-rename cleanup
+   (RTW88* -> RTL8188EE*, still broken per the Twentieth Update) all
+   remain valid, unstarted, and are now the most productive next
+   targets.
+5. Person's local `pci.c`/`sw.c` modifications (Section 106) -- the
+   REST of the diff beyond the RX-interrupt/C2H-enum sections already
+   reviewed remains unaudited. Low priority, unchanged.
+6. `dmesg`/ring-buffer unreliability for one-shot BOOT-time
+   diagnostics (Section 98) -- unchanged and unrelated; this
+   investigation's own diagnostics were scan-triggered and worked
+   reliably on demand throughout Sections 103-108.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

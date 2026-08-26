@@ -9,8 +9,10 @@
  *   kRTW88Connect     = 1   -- cmdConnect(ssid, password), input = RTW88ConnectArgs
  *   kRTW88Disconnect  = 2   -- cmdDisconnect(), no args
  *   kRTW88GetState    = 3   -- cmdGetState(), output = RTW88StateResult
- *   kRTW88GetBSSList  = 4   -- not yet wired up here (raw bytes, max 16KB;
- *                              layout not confirmed against source yet)
+ *   kRTW88GetBSSList  = 4   -- cmdGetBSSList(), output = raw packed bytes,
+ *                              wired up as `bsslist` -- see cmd_bsslist()'s
+ *                              own header comment for the confirmed wire
+ *                              format (findings.md Section 102)
  *   kRTW88GetRSSI     = 5   -- not yet wired up here (output scalar; simplest
  *                              to add once needed, see NOTE below)
  *   kRTW88SetDebug    = 6   -- not yet wired up here (input scalar)
@@ -29,6 +31,7 @@
  *   ./ctl_rtw88 state
  *   ./ctl_rtw88 poweron
  *   ./ctl_rtw88 scan
+ *   ./ctl_rtw88 bsslist
  *   ./ctl_rtw88 connect "MySSID" "MyPassword"
  *   ./ctl_rtw88 disconnect
  *   ./ctl_rtw88 poweroff
@@ -37,14 +40,16 @@
  *   ./ctl_rtw88 poweron
  *   ./ctl_rtw88 state        # confirm powered=1 before going further
  *   ./ctl_rtw88 scan
+ *   ./ctl_rtw88 bsslist      # confirm real APs were actually found before
+ *                             # trying to connect to one
  *   ./ctl_rtw88 connect "YourSSID" "YourPassword"
  *   ./ctl_rtw88 state        # watch `state` field transition, check bssid/rssi/channel
  *
- * NOTE on selectors 4-7 (GetBSSList / GetRSSI / SetDebug / GetLog):
- * their exact I/O shapes (scalar vs struct vs raw-bytes, and any
- * output struct layout for GetBSSList) weren't confirmed against
- * RTW88UserClient.cpp/.hpp before this tool was written. Adding them
- * is mechanical once confirmed -- see the stubs left below.
+ * NOTE on selectors 5-7 (GetRSSI / SetDebug / GetLog):
+ * their exact I/O shapes weren't confirmed against RTW88UserClient.cpp/
+ * .hpp before this tool was written. Adding them is mechanical once
+ * confirmed -- see the stubs left below. (GetBSSList, selector 4, WAS
+ * in this category until this session -- see cmd_bsslist().)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -201,6 +206,116 @@ static int cmd_scan(io_connect_t conn)
     return 0;
 }
 
+/*
+ * cmd_bsslist() -- kRTW88GetBSSList (selector 4), previously left as a
+ * stub (see this file's header comment) because the raw-bytes wire
+ * format wasn't confirmed against source. Confirmed this session
+ * directly against RTW88IEEE80211::cmdGetBSSList() (src/kext/
+ * RTW88IEEE80211.cpp): kIOUCVariableStructureSize output, no input.
+ *
+ * Wire format (all fields packed, no padding, little-endian for the
+ * multi-byte ones since this only ever runs on x86_64):
+ *   [0:4)   uint32_t total_len   -- total bytes written, INCLUDING this
+ *                                   4-byte prefix itself
+ *   repeating entries until total_len bytes consumed:
+ *     [0:1)     uint8_t  ssid_len
+ *     [1:+N)    char     ssid[ssid_len]      -- NOT NUL-terminated on
+ *                                                the wire; N = ssid_len
+ *     [+0:+6)   uint8_t  bssid[6]
+ *     [+0:+2)   int16_t  rssi                -- big-endian on the wire
+ *                                                (kext writes high byte
+ *                                                first: buf[written++] =
+ *                                                (rssi>>8)&0xff, then
+ *                                                rssi&0xff -- NOT a
+ *                                                straight memcpy of a
+ *                                                host-endian int16_t
+ *                                                the way bssid/cipher
+ *                                                are)
+ *     [+0:+1)   uint8_t  channel
+ *     [+0:+4)   uint32_t cipher              -- host-endian (straight
+ *                                                memcpy on the kext side)
+ *
+ * Kext caps the whole buffer at 4095 bytes internally
+ * (RTW88IEEE80211::cmdGetBSSList: "if (max > 4095) max = 4095;") even
+ * if a larger buffer is requested -- request exactly that size here
+ * rather than the 16KB this file's header comment originally
+ * speculated, since asking for more just wastes a stack buffer with
+ * no benefit.
+ */
+static int cmd_bsslist(io_connect_t conn)
+{
+    uint8_t buf[4095];
+    size_t outSize = sizeof(buf);
+
+    kern_return_t kr = IOConnectCallStructMethod(conn, kRTW88GetBSSList,
+                                                  NULL, 0,
+                                                  buf, &outSize);
+    if (kr != KERN_SUCCESS) {
+        fprintf(stderr, "kRTW88GetBSSList failed: 0x%x\n", kr);
+        return 1;
+    }
+
+    if (outSize < 4) {
+        printf("(no BSS list data returned)\n");
+        return 0;
+    }
+
+    uint32_t total_len;
+    memcpy(&total_len, buf, 4);
+    if (total_len > outSize)
+        total_len = (uint32_t)outSize; /* defensive: never read past what we got */
+
+    uint32_t off = 4;
+    int count = 0;
+
+    printf("%-4s %-33s %-17s %6s %4s %10s\n",
+           "#", "SSID", "BSSID", "RSSI", "CH", "CIPHER");
+
+    while (off + 1 <= total_len) {
+        uint8_t ssid_len = buf[off];
+        uint32_t entry_sz = 1 + ssid_len + 6 + 2 + 1 + 4;
+        if (off + entry_sz > total_len) {
+            fprintf(stderr, "(truncated entry at offset %u, stopping)\n", off);
+            break;
+        }
+
+        const uint8_t *p = buf + off + 1;
+        char ssid[34];
+        memcpy(ssid, p, ssid_len);
+        ssid[ssid_len] = '\0';
+        p += ssid_len;
+
+        uint8_t bssid[6];
+        memcpy(bssid, p, 6);
+        p += 6;
+
+        /* Big-endian on the wire -- see this function's header comment. */
+        int16_t rssi = (int16_t)(((int16_t)p[0] << 8) | p[1]);
+        p += 2;
+
+        uint8_t channel = p[0];
+        p += 1;
+
+        uint32_t cipher;
+        memcpy(&cipher, p, 4);
+
+        printf("%-4d %-33s %02x:%02x:%02x:%02x:%02x:%02x %6d %4u %#10x\n",
+               count, ssid,
+               bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+               rssi, channel, cipher);
+
+        off += entry_sz;
+        count++;
+    }
+
+    if (count == 0)
+        printf("(no BSS entries -- scan may not have found anything yet,\n"
+               " or hasn't been run: try `ctl_rtw88 scan` first and wait\n"
+               " a few seconds before checking again)\n");
+
+    return 0;
+}
+
 static int cmd_connect(io_connect_t conn, const char *ssid, const char *password)
 {
     if (strlen(ssid) >= sizeof(((struct RTW88ConnectArgs *)0)->ssid)) {
@@ -255,9 +370,10 @@ static void usage(const char *prog)
         "  %s poweron\n"
         "  %s poweroff\n"
         "  %s scan\n"
+        "  %s bsslist\n"
         "  %s connect <ssid> <password>\n"
         "  %s disconnect\n",
-        prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog);
 }
 
 int main(int argc, char **argv)
@@ -281,6 +397,8 @@ int main(int argc, char **argv)
         rc = cmd_poweroff(conn);
     } else if (strcmp(argv[1], "scan") == 0) {
         rc = cmd_scan(conn);
+    } else if (strcmp(argv[1], "bsslist") == 0) {
+        rc = cmd_bsslist(conn);
     } else if (strcmp(argv[1], "connect") == 0) {
         if (argc != 4) {
             fprintf(stderr, "connect requires <ssid> <password>\n");

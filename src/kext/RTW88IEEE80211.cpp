@@ -982,6 +982,27 @@ void RTW88IEEE80211::rxFrame(struct sk_buff *skb)
 
     _rxFrameCount++;
 
+    /* findings.md Section 104: temporary raw diagnostic -- Section 103
+     * found rxFrameCount=12 but rxScanRelevantCount=0 during a scan
+     * (frames arrive, none recognized as beacon/probe-resp). Every
+     * code-level check (ieee80211_is_mgmt/is_data masks, STYPE
+     * constants, le16_to_cpu, struct layout) read correct against real
+     * Linux kernel source and this port's own x86_64/little-endian
+     * assumptions -- so instead of continuing to audit in the
+     * abstract, log the raw frame_control + derived type/stype +
+     * skb->len for every RX'd frame, to see directly what's actually
+     * arriving rather than guessing further. Rate-limited to the
+     * first 20 frames per scan (via _rxFrameCount, reset at scan
+     * start) to avoid flooding the ring buffer the way the interrupt-
+     * loop diagnostic did in Section 98. */
+    if (_state == RTW88_STATE_SCANNING && _rxFrameCount <= 20) {
+        uint16_t raw_fc = le16_to_cpu(fc);
+        IOLog("rtw88: [rxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
+              "len=%u ismgmt=%d isdata=%d\n",
+              _rxFrameCount, raw_fc, raw_fc & 0x000c, raw_fc & 0x00f0,
+              skb->len, ieee80211_is_mgmt(fc), ieee80211_is_data(fc));
+    }
+
     if (ieee80211_is_mgmt(fc)) {
         processRxMgmt(skb);
     } else if (ieee80211_is_data(fc)) {
@@ -1000,9 +1021,10 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
     switch (stype) {
     case 0x0080: /* beacon */
     case 0x0050: /* probe response */
-        if (_state == RTW88_STATE_SCANNING)
+        if (_state == RTW88_STATE_SCANNING) {
+            _rxScanRelevantCount++;
             processScanResult(skb);
-        else
+        } else
             kfree_skb(skb);
         break;
 
@@ -1802,6 +1824,14 @@ void RTW88IEEE80211::scanDone(bool aborted)
         _scanReturnState = RTW88_STATE_IDLE;
         _manualScanOnHomeChannel = false;
     }
+
+    /* findings.md Section 103: distinguishes "no RX at all during the
+     * scan window" from "RX happened but none were beacon/probe-resp
+     * frames processScanResult() would have used" -- logged once per
+     * scan completion so this is visible without a separate query. */
+    IOLog("rtw88: scan complete (aborted=%d): rxFrameCount=%u "
+          "rxScanRelevantCount=%u bssCount=%u\n",
+          aborted, _rxFrameCount, _rxScanRelevantCount, _bssCount);
 }
 
 IOReturn RTW88IEEE80211::cmdScan()
@@ -1864,6 +1894,7 @@ IOReturn RTW88IEEE80211::cmdScan()
         _manualScanAbort = false;
         _manualScanOnHomeChannel = false;
         _rxFrameCount = 0;
+        _rxScanRelevantCount = 0;
 
         if (!_manualScanFallbackLogged) {
             IOLog("rtw88: scan offload unavailable, using passive channel scan (%d channels)\n",
@@ -1884,6 +1915,7 @@ IOReturn RTW88IEEE80211::cmdScan()
     req.req.n_channels = n_chans;
 
     _rxFrameCount = 0;  /* reset diagnostic counter at scan start */
+    _rxScanRelevantCount = 0;
 
     int hw_scan_ret = _hw->ops->hw_scan(_hw, _vif, &req);
     if (hw_scan_ret != 0) {
@@ -1896,6 +1928,7 @@ IOReturn RTW88IEEE80211::cmdScan()
             _manualScanAbort = false;
             _manualScanOnHomeChannel = false;
             _rxFrameCount = 0;
+            _rxScanRelevantCount = 0;
             thread_call_enter(_manualScanTC);
 
             _timeoutMs = (_scanReturnState == RTW88_STATE_CONNECTED) ?

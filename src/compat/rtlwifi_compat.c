@@ -2108,12 +2108,81 @@ bool rtlwifi_do_interrupt(void)
             len = (u16)rtlpriv->cfg->ops->get_desc(hw, (u8 *)pdesc, false,
                                                     HW_DESC_RXPKT_LEN);
 
+            /* findings.md Section 105: TEMPORARY diagnostic -- Section
+             * 104 found every captured frame's frame_control reads as
+             * 0x0000 despite varying, plausible skb lengths. Sections
+             * 105.2/105.4 traced skb_put/skb_reserve/alloc_skb and the
+             * real query_rx_desc()/skb_reserve() call-site split and
+             * confirmed all of it correct against real fetched
+             * upstream rtlwifi source -- the one remaining unverified
+             * link is whether the real, externally-compiled
+             * query_rx_desc() (CHIP_SRC/trx.c, not in this repo) is
+             * actually returning sane non-zero rx_drvinfo_size/
+             * rx_bufshift values at runtime on this hardware. Logs
+             * the exact values skb_reserve() below is about to
+             * consume, plus crc/hwerror (Section 105.7 item 2 -- a
+             * separate, independently-checkable hypothesis using the
+             * same capture). Piggybacks on the existing
+             * _diag_rx_entries rate-limit already in this function
+             * rather than adding a new counter. */
+            if ((_diag_rx_entries % 20) == 1) {
+                IOLog("rtw88: [rxdesc] len=%u drvinfo_size=%u bufshift=%u "
+                      "crc=%u hwerror=%u\n",
+                      len, stats.rx_drvinfo_size, stats.rx_bufshift,
+                      stats.crc, stats.hwerror);
+            }
+
             if (skb->end - skb->tail > len) {
                 skb_put(skb, len);
                 skb_reserve(skb, stats.rx_drvinfo_size + stats.rx_bufshift);
             } else {
                 IOLog("rtlwifi: rx desc len %u exceeds skb tailroom, dropping\n",
                       (unsigned int)len);
+                dev_kfree_skb_any(skb);
+                goto rearm;
+            }
+
+            /* findings.md Section 107: real pci.c's _rtl_pci_rx_interrupt()
+             * (confirmed against the person's own local copy of this file,
+             * not just public source -- this exact check is present and
+             * unmodified there) has a check this port's RX loop was
+             * missing entirely: C2H (command-to-host) packets share the
+             * same RX descriptor ring as real 802.11 frames, but are
+             * firmware status/report payloads, not 802.11 frames at all.
+             * Real code detects this via stats.packet_report_type (set by
+             * query_rx_desc() a few lines above, from the real hardware
+             * descriptor) and reroutes to rtl_c2hcmd_enqueue() instead of
+             * treating the payload as an ieee80211_hdr. Section 106.3
+             * established that stats.rx_drvinfo_size/rx_bufshift reading
+             * as 0 is not necessarily a bug (same descriptor word as the
+             * already-confirmed-correct pkt_len read) -- this is the more
+             * likely explanation for Section 104's fc=0x0000-on-every-
+             * frame capture: without this check, C2H/report packets were
+             * being delivered straight to ieee80211_rx_irqsafe() and
+             * interpreted as 802.11 frames, reading whatever the C2H
+             * payload's first two bytes happen to be as frame_control
+             * (plausibly zero for many report formats), while still
+             * having a real, valid HW_DESC_RXPKT_LEN (explaining why
+             * skb->len/rxdiag's len= values looked completely normal).
+             *
+             * This port has no rtl_c2hcmd_enqueue() (C2H command
+             * processing was never ported -- out of scope for basic
+             * data-path bring-up), so rather than silently dropping
+             * these packets with no visibility, they are logged once
+             * (rate-limited, same gate as this function's other
+             * diagnostics) and dropped -- matching real code's net
+             * effect (never delivered to mac80211/ieee80211_rx_irqsafe)
+             * without pretending to implement the real C2H command
+             * pipeline. If real C2H command handling (firmware rate
+             * reports feeding back into rate control, etc.) turns out to
+             * be needed for full functionality, that is future work, not
+             * done here. */
+            if (stats.packet_report_type == C2H_PACKET) {
+                if ((_diag_rx_entries % 20) == 1) {
+                    IOLog("rtw88: [rxdiag] C2H_PACKET packet_report_type=%u "
+                          "-- dropping (not delivered to mac80211)\n",
+                          stats.packet_report_type);
+                }
                 dev_kfree_skb_any(skb);
                 goto rearm;
             }

@@ -273,4 +273,10 @@ private:
 
     /* Diagnostics: periodic logging of RX activity during scan */
     uint32_t _rxFrameCount = 0;
+    /* findings.md Section 103: distinguishes "no RX at all during scan"
+     * from "RX happened but none were beacon/probe-response frames" --
+     * incremented only on the same two frame types processScanResult()
+     * actually handles (stype 0x0080 beacon, 0x0050 probe-resp), same
+     * reset points as _rxFrameCount (scan start). */
+    uint32_t _rxScanRelevantCount = 0;
 };

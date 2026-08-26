@@ -8745,4 +8745,879 @@ frames won't fire until the port is actually sending something).
 
 ------------------------------------------------------------------------
 
+# 102. `ctl_rtw88 bsslist` -- wired up kRTW88GetBSSList (selector 4),
+#      previously an unwired stub
+
+## 102.1 Context: RX now confirmed climbing on hardware
+
+`ctl_rtw88 state` re-run after Section 100's fix and a rebuild:
+`rx_byte_count` climbed from 399064 to 520139 across a `scan` command
+-- Section 100's fix confirmed working on real hardware, not just a
+plausible source read. `tx_byte_count` stayed 0, exactly as predicted
+in Section 101.4 (no data-TX event happened yet -- scanning alone
+doesn't trigger `txDataFrame()`).
+
+`state`/`ssid`/`bssid` were still 0/empty after the scan, which raised
+a question: did the scan actually find real APs, or is something still
+broken? `ctl_rtw88`'s own `RTW88StateResult` only reports the *active
+connection*'s ssid/bssid (all-zero is the correct, expected "not
+connected yet" default) -- it was never going to show scan results,
+because `ctl_rtw88.c` never wired up `kRTW88GetBSSList`
+(selector 4) at all. The kext side (`RTW88UserClient::sGetBSSList()`
+-> `RTW88IEEE80211::cmdGetBSSList()`) was already fully implemented;
+only the CLI tool's dispatch was missing, per this file's own
+long-standing header comment ("not yet wired up here ... layout not
+confirmed against source yet").
+
+## 102.2 Wire format, confirmed directly against
+##      `RTW88IEEE80211::cmdGetBSSList()` source
+
+```
+[0:4)   uint32_t total_len   -- includes this 4-byte prefix itself
+repeating entries until total_len bytes consumed:
+  [0:1)     uint8_t  ssid_len
+  [1:+N)    char     ssid[ssid_len]   -- NOT NUL-terminated on the wire
+  [+0:+6)   uint8_t  bssid[6]
+  [+0:+2)   int16_t  rssi             -- BIG-endian on the wire
+  [+0:+1)   uint8_t  channel
+  [+0:+4)   uint32_t cipher           -- host-endian (straight memcpy)
+```
+
+The RSSI field is the one easy-to-get-wrong detail: `cmdGetBSSList()`
+writes it as `buf[written++] = (rssi>>8)&0xff;` then `buf[written++] =
+rssi&0xff;` -- an explicit big-endian byte order -- while `bssid` and
+`cipher` are plain `memcpy()`s (host/little-endian on this x86_64
+target). Confirmed by reading the exact byte-construction code, not
+assumed from the surrounding fields' pattern.
+
+Kext-side cap confirmed too: `cmdGetBSSList()` clamps to 4095 bytes
+internally regardless of the caller's requested buffer size
+(`if (max > 4095) max = 4095;`) -- `ctl_rtw88`'s new `cmd_bsslist()`
+requests exactly that, rather than this file's original speculative
+16KB comment.
+
+## 102.3 `cmd_bsslist()` added, `bsslist` subcommand wired into `main()`/`usage()`
+
+Parses the wire format above into a table: index, SSID, BSSID, RSSI,
+channel, cipher (raw `WLAN_CIPHER_SUITE_*` value, not yet decoded to a
+friendly name -- future improvement, not done this session). Defensive
+against a truncated/malformed buffer (stops and reports rather than
+reading past `outSize`). Explicitly reports "(no BSS entries ...)"
+rather than an empty table when the list comes back empty, so a
+genuinely-empty scan result isn't silently indistinguishable from a
+tool bug.
+
+This file's header comment and its "typical first real association
+test" walkthrough were both updated to include `bsslist` as a step
+between `scan` and `connect` -- confirming real APs were actually
+found is a more meaningful pre-connect check than anything
+`ctl_rtw88 state` alone could show.
+
+## 102.4 Status -- NOT yet rebuilt or run
+
+`ctl_rtw88.c` is a standalone host tool (not part of the kext build --
+confirmed via this file's own header comment, `clang -o ctl_rtw88
+ctl_rtw88.c -framework IOKit -framework CoreFoundation`), so testing
+this doesn't require a kext rebuild/reboot cycle the way Sections
+100/101 did -- just a recompile of `ctl_rtw88` itself and a re-run
+against the kext already loaded from Section 100/101's rebuild.
+
+## 102.5 Updated remaining open items
+
+1. **Rebuild `ctl_rtw88` and run `./ctl_rtw88 scan` then
+   `./ctl_rtw88 bsslist`** -- immediate next step, not yet done. This
+   is the real test of whether this session's RX fix (Section 100)
+   translates into actually-usable scan results, not just a climbing
+   byte counter.
+2. Cipher suite values in `bsslist` output are raw hex, not decoded to
+   names (e.g. `WLAN_CIPHER_SUITE_CCMP` etc.) -- cosmetic, low
+   priority.
+3. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging) -- still not done.
+4. `ctl_rtw88 connect` against a real AP found via `bsslist`, full
+   scan-to-connect validation, `IO80211` integration, class-rename
+   cleanup all remain valid, unstarted.
+5. `dmesg`/ring-buffer unreliability for one-shot boot diagnostics --
+   unchanged, verbose-boot screen recording remains the only reliable
+   capture method.
+
+------------------------------------------------------------------------
+
+# 103. `bsslist` came back empty on real hardware -- diagnosing whether
+#      any beacon/probe-resp frames arrive during the scan window at all
+
+## 103.1 Confirmed on hardware: `ctl_rtw88 bsslist` returns zero entries
+
+`clang`-built `ctl_rtw88` ran cleanly (Section 102's tool works), but
+`./ctl_rtw88 scan` followed by a 5s wait then `./ctl_rtw88 bsslist`
+returned zero BSS entries -- despite Section 100's confirmed-working
+RX byte counter (399064 -> 520139 across that same scan). This is a
+new, more specific symptom: RX is demonstrably happening, but nothing
+is landing in `_bssList`.
+
+## 103.2 Traced the beacon -> BSS-list path; no correctness bug found in it
+
+`processRxMgmt()` (`RTW88IEEE80211.cpp`) only calls
+`processScanResult()` for beacon (stype 0x0080) / probe-response
+(stype 0x0050) frames, and only when `_state ==
+RTW88_STATE_SCANNING` -- everything else, including beacons received
+while idle, is silently `kfree_skb()`'d. `processScanResult()` itself
+(IE walk, SSID/channel/cipher extraction, dedup-by-BSSID,
+`_bssList` insertion) was read in full -- no bug found.
+
+`scanDone()`'s stale-entry pruning (`age = _scanGeneration -
+b->last_seen_scan; if (!isTarget && age > 3) { remove }`) was
+suspected initially, but traced through carefully and confirmed
+NOT buggy: `_scanGeneration` increments once per `cmdScan()` call, and
+`processScanResult()` stamps entries with the *current* generation at
+insert time, so an entry added during the scan that just ran has
+`age == 0` immediately after -- it would take 4 subsequent scans
+before that entry could be pruned as stale. This is not why
+`bsslist` came back empty after a single scan.
+
+## 103.3 Real question: did the scan's per-channel dwell actually catch
+##      a beacon, given the RX rate this port measured over the whole
+##      session?
+
+`runManualScan()` (confirmed by reading it in full) dwells 70ms
+(active channels, sends a probe request first) or 140ms (passive/DFS
+channels) per channel, walking every enabled channel -- roughly 13
+channels on 2.4GHz, so the whole scan should complete in ~1-2s, well
+within the 5s wait given.
+
+Real APs typically beacon every ~100ms, so a 70-140ms dwell window
+would normally be expected to catch at least one beacon per channel
+in a real RF environment. But Section 99.5's own dmesg capture (an
+*idle-window* capture, not scan-window-specific) showed RX-flagged
+interrupts firing only roughly every 6-10 seconds -- far sparser than
+a healthy radio hearing beacons from any nearby AP should be. If that
+same sparse rate holds during the scan's narrow per-channel dwell
+windows, it would explain zero beacons landing without any code bug
+at all: the dwell window may simply be too short relative to
+whatever is gating actual RX frequency.
+
+This is flagged as the leading hypothesis, NOT confirmed -- Section
+99.5's capture was during an idle/non-scanning window, so it doesn't
+directly prove the same sparse rate holds during active scanning.
+Untested whether RX rate is materially different (better or worse)
+while the radio is actively hopping channels and sending probe
+requests vs. sitting idle on one channel.
+
+## 103.4 Instrumentation added to test this directly, not yet run
+
+Existing-but-previously-unsurfaced `_rxFrameCount` (every RX frame,
+mgmt+data, counted in `processRx()`, reset at each of `cmdScan()`'s
+three scan-start code paths) was already present in the source before
+this session but never logged or exposed anywhere -- purely an unused
+internal counter. Added a second, more specific counter alongside it:
+
+```cpp
+uint32_t _rxScanRelevantCount = 0;   /* RTW88IEEE80211.hpp */
+```
+
+incremented only in `processRxMgmt()`'s beacon/probe-resp branch
+(same two stypes `processScanResult()` handles), reset at the same
+three sites as `_rxFrameCount`. Both are now logged once per scan
+completion, in `scanDone()`:
+
+```
+rtw88: scan complete (aborted=%d): rxFrameCount=%u rxScanRelevantCount=%u bssCount=%u
+```
+
+This distinguishes the two live hypotheses directly:
+- `rxFrameCount=0` -- no RX at all during the scan window (points at
+  103.3's dwell-window-too-short-for-sparse-RX-rate hypothesis, or an
+  RX gating issue specific to the scanning/channel-hopping state that
+  doesn't show up during idle capture).
+- `rxFrameCount>0` but `rxScanRelevantCount=0` -- frames arrived, but
+  none were beacon/probe-response frames (points somewhere else
+  entirely -- e.g. a stype-matching bug, or a genuinely quiet RF
+  environment with only data-frame traffic from other networks
+  visible, no beacons at all, which would be unusual but not
+  impossible).
+- `rxScanRelevantCount>0` but `bssCount=0` -- would mean
+  `processScanResult()` itself has a real bug despite the read-through
+  in 103.2 not finding one (a dedup/insert bug that doesn't remove
+  an already-checked path is still possible -- read-through isn't
+  proof).
+
+Did NOT add these to `RTW88StateResult` (the `ctl_rtw88 state`
+struct) -- that would require growing a struct shared across three
+files (`RTW88UserClient.hpp`, `RTW88IEEE80211.cpp`, `ctl_rtw88.c`)
+with real ABI-mismatch risk between them, for what is currently a
+one-off diagnostic, not a permanent feature. `IOLog` is sufficient
+here since (unlike Section 98's boot-time one-shot lines) this fires
+on every `scan` command, not just once at boot -- can be re-triggered
+and re-captured on demand without a reboot, so the ring-buffer-
+rotation problem is much less severe here: run `scan`, then
+immediately `dmesg | grep "scan complete"` before running anything
+else that would push the buffer further.
+
+## 103.5 Status -- NOT yet rebuilt or run
+
+Source change only. Needs the usual `make -f Makefile.rtl8188ee clean
+&& make -f Makefile.rtl8188ee kext`, reinstall, reboot, then:
+
+```
+./ctl_rtw88 scan
+dmesg | grep "scan complete"
+```
+
+run as close together as possible (same reasoning as always --
+grab the log line before anything else has a chance to push it out
+of the ring buffer).
+
+## 103.6 Updated remaining open items
+
+1. **Rebuild + reboot + run `scan` then immediately `dmesg | grep
+   "scan complete"`** -- immediate next step, not yet done. The
+   resulting three numbers (`rxFrameCount`, `rxScanRelevantCount`,
+   `bssCount`) will directly indicate which of 103.4's three
+   hypotheses is correct.
+2. Cipher suite values in `bsslist` output still raw hex, not decoded
+   to names -- cosmetic, low priority, unchanged from Section 102.5.
+3. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging, and now this session's new
+   scan-complete logging once its purpose is served) -- still not
+   done, growing list.
+4. `ctl_rtw88 connect` against a real AP found via `bsslist`, full
+   scan-to-connect validation, `IO80211` integration, class-rename
+   cleanup all remain valid, unstarted -- blocked on 103.1's empty
+   `bsslist` result until this is root-caused.
+5. `dmesg`/ring-buffer unreliability for one-shot BOOT-time
+   diagnostics (Section 98) -- unchanged and separate from this
+   section's diagnostic, which is NOT boot-time and can be re-
+   triggered on demand.
+
+------------------------------------------------------------------------
+
+# 104. §103 follow-up: `rxFrameCount=12, rxScanRelevantCount=0` --
+#      code audit found no bug, added raw per-frame diagnostic instead
+
+## 104.1 Captured result narrows this to "arrived but not classified as beacon/probe-resp"
+
+`rxFrameCount=12 rxScanRelevantCount=0 bssCount=0` (Section 103.4's
+log line, captured on hardware) rules out "no RX during scan at all" --
+12 real frames arrived during the scan window. None were recognized
+as beacon (stype 0x0080) or probe-response (stype 0x0050).
+
+## 104.2 Code audit -- everything checked out correct, no bug found
+
+Re-examined every layer of the classification path against real
+Linux kernel source (`torvalds/linux/include/linux/ieee80211.h`,
+confirmed via web search this session, not assumed from memory):
+
+- `IEEE80211_STYPE_BEACON=0x0080` / `IEEE80211_STYPE_PROBE_RESP=0x0050`
+  -- match real Linux exactly.
+- `IEEE80211_FTYPE_MGMT=0x0000` / `_DATA=0x0008` / `_CTL=0x0004` --
+  match real Linux exactly.
+- `ieee80211_is_mgmt()`'s `& 0x000c` type-field mask -- correct
+  (frame-control type occupies bits 2-3).
+- `processRxMgmt()`'s `& 0x00f0` stype mask -- initially suspected
+  (real `ieee80211_is_beacon()` masks `FCTL_FTYPE|FCTL_STYPE` =
+  `0x00fc` together, not `0x00f0` alone), but this is NOT a bug in
+  practice: `processRxMgmt()` is only ever reached after
+  `ieee80211_is_mgmt()` has already confirmed type bits are 0, so
+  stripping them again here is a harmless no-op, not a
+  false-match risk. Correctly ruled back out after closer
+  inspection, not left as an open suspicion.
+- `le16_to_cpu(x)` compat macro (`linux/types.h`) -- defined as a
+  bare `(u16)(x)` cast, no byte-swap. Initially suspected as a
+  correctness bug, but this is actually correct on this specific
+  target: 802.11 `frame_control` is transmitted/stored little-endian
+  on the wire, this port only ever runs on little-endian x86_64
+  Hackintosh hardware, and `hdr->frame_control` is read as a plain
+  struct field (not manually byte-assembled) -- so wire order already
+  equals host order here, making the "no-op conversion" correct by
+  construction for this platform, not a coincidence to worry about.
+- `struct ieee80211_hdr` layout (`frame_control`/`duration_id`/
+  addr1-3/`seq_ctrl`, `__packed`) -- matches real 802.11 header
+  layout.
+
+No bug found anywhere in this path after full read-through against
+real kernel source. Rather than keep auditing in the abstract with
+no further leads, switched to direct observation.
+
+## 104.3 Added raw per-frame diagnostic in `rxFrame()`
+
+Temporary `IOLog` in `RTW88IEEE80211::rxFrame()` (the actual RX
+dispatch function -- Section 103's `_rxFrameCount` increments here,
+one level above `processRxMgmt()`), logging every frame during an
+active scan (rate-limited to the first 20 frames per scan via the
+existing `_rxFrameCount` counter, matching Section 98's precedent of
+rate-limiting to avoid ring-buffer flooding):
+
+```
+rtw88: [rxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x len=%u ismgmt=%d isdata=%d
+```
+
+This will show, per frame, the raw frame_control value and its
+derived type/stype breakdown directly -- either confirming the 12
+frames really are something else entirely (e.g. all
+`ismgmt=0 isdata=1`, meaning they're genuinely data frames from
+other networks, not beacons -- a real possibility, not a bug, in a
+sparse-beacon RF environment or if the capture window's 12 frames
+happened to catch retries/ACKs misrouted here) or revealing a raw
+`fc` value that doesn't match any expected pattern at all (which
+would point at something upstream of this port's own code --
+possibly firmware-side frame delivery, descriptor parsing, or a
+genuinely garbled capture).
+
+## 104.4 Status -- NOT yet rebuilt or run
+
+Source change only, same rebuild/reboot cycle as before.
+
+## 104.5 Updated remaining open items
+
+1. **Rebuild + reboot + run `scan`, then `dmesg | grep rxdiag`** --
+   immediate next step. Up to 20 lines expected per scan; read through
+   all of them, not just the first, since a mix of frame types across
+   the 12 is possible and diagnostic.
+2. If `[rxdiag]` shows `ismgmt=0` for all 12 -- these are genuinely
+   not management frames at all, and the real question becomes why no
+   real beacons/probe-resps are visible in this RF environment during
+   a scan window (worth also checking `iw`/another known-working
+   adapter's scan results on the same machine at the same time, as an
+   independent sanity check on the RF environment itself -- not yet
+   done, no such comparison exists this session).
+3. If `[rxdiag]` shows `ismgmt=1` with an `stype` that doesn't match
+   `0x0080`/`0x0050` for some entries -- those are real other
+   management frame types (e.g. `0x00d0` action frames from nearby
+   networks), also not a bug, just genuinely not scan-relevant traffic.
+4. If `[rxdiag]` shows a raw `fc` that looks corrupted/implausible
+   (e.g. wildly inconsistent between calls, or high bits set that
+   shouldn't be) -- that would point upstream of this file, into
+   descriptor parsing or firmware delivery, a new investigation
+   thread not yet opened.
+5. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging, Section 103's scan-complete
+   logging, and now this section's rxdiag logging) once root-caused --
+   still not done, growing list.
+6. `ctl_rtw88 connect`, full scan-to-connect validation, `IO80211`
+   integration, class-rename cleanup all remain valid, unstarted --
+   still blocked on this investigation.
+7. `dmesg`/ring-buffer unreliability for one-shot BOOT-time
+   diagnostics (Section 98) -- unchanged, unrelated to this section's
+   on-demand (re-triggerable) diagnostics.
+
+------------------------------------------------------------------------
+
+# 105. §104 follow-up: ALL 20 captured frames show `fc=0x0000` --
+#      traced deep into skb/descriptor plumbing, found the real
+#      external-dependency boundary this investigation had been
+#      missing
+
+## 105.1 The `fc=0x0000` capture is a real, load-bearing finding
+
+All 20 `[rxdiag]` lines showed `fc=0x0000` with varying, plausible
+`len` values (16-392 bytes). Varying-but-plausible length + uniformly
+zero frame_control rules out "genuinely no beacons in range" (would
+show varied fc values, some matching real frame types) and points
+at `skb->data` pointing somewhere that reads as zero at the
+frame_control offset -- either wrong-offset data, or genuinely
+zeroed memory.
+
+## 105.2 Traced skb_put/skb_reserve/alloc_skb -- all three confirmed
+##      correct against real Linux kernel source
+
+- `skb_put()` (`linux/skbuff.h`): extends `tail`/`len`, does NOT move
+  `data` -- confirmed correct against real Linux semantics (multiple
+  independent sources, this session).
+- `skb_reserve()` (`linux/skbuff.h`): `data += len; tail += len;` --
+  confirmed **byte-for-byte identical** to real Linux
+  `net/core/skbuff.c`'s implementation (Huihoo kernel doxygen mirror,
+  cregit mirror, USAVPS technical writeup -- three independent
+  sources, this session).
+- `alloc_skb()` (`linux/skbuff.h`): sets `head==data==tail`, `len=0`
+  on a fresh buffer -- correct initial state, matches real semantics.
+- The call site order in `rtlwifi_do_interrupt()`
+  (`skb_put(skb, len)` then `skb_reserve(skb, drvinfo+bufshift)`) was
+  initially suspected as backwards, but confirmed CORRECT against a
+  real `rtw88/pci.c` mailing-list patch discussion (David
+  Laight/Tony Chuang thread, July 2019) showing the exact same
+  `skb_put(skb, pkt_stat.pkt_len); skb_reserve(skb, pkt_offset);`
+  sequence in real, accepted driver code.
+
+None of these three primitives, nor their call order, are the bug.
+This part of the investigation is now closed with high confidence --
+re-litigating skb_put/skb_reserve/alloc_skb correctness should not be
+revisited without new evidence.
+
+## 105.3 Traced `rx_drvinfo_size`/`rx_bufshift` -- found the actual
+##      project structure this investigation had been missing
+
+Grepped for every assignment to `stats.rx_drvinfo_size`/
+`rx_bufshift` and for `struct rtl_stats`'s definition anywhere in
+this repo's `src/` tree: **zero matches for either.** Initially
+misread this as "these fields are never set, root cause found" --
+but that conclusion was wrong. Checked `Makefile.rtl8188ee` directly
+and found the actual explanation:
+
+```makefile
+LINUX_SRC := $(PROJ_ROOT)/../linux-kernel/drivers/net/wireless/realtek/rtlwifi
+CHIP_SRC  := $(LINUX_SRC)/rtl8188ee
+```
+
+**This project compiles real, unmodified rtlwifi kernel source
+(`base.c`, `pci.c`, `rtl8188ee/trx.c`, `wifi.h`, etc.) from an
+external, out-of-tree sibling directory
+(`../linux-kernel/drivers/net/wireless/realtek/rtlwifi`) that is NOT
+part of this repo's zip/git tree** -- confirming Section 62-75's
+original architectural premise (compile real rtlwifi against this
+compat shim, don't hand-translate it) is still exactly what's
+happening. `struct rtl_stats`, `query_rx_desc()`,
+`rtl88ee_hal_cfg`, and everything else that "wasn't found" in this
+session's greps genuinely lives in that external tree, on the
+person's own machine, not in anything uploaded to this conversation.
+
+**This is an important standing fact for all future sessions working
+from just the uploaded zip**: this repo's own `src/` tree is
+intentionally incomplete by design -- it is the compat/glue layer
+ONLY, not a self-contained driver. Grepping this repo alone for real
+rtlwifi internals (anything in `base.c`/`pci.c`/`trx.c`/`wifi.h`'s
+real content) will always come up empty and should not be
+misinterpreted as "missing/unimplemented," the way this session
+initially misread it. Confirm against a fetched copy of real
+upstream Linux source (as done in 105.4 below) instead.
+
+## 105.4 Confirmed against real fetched `rtl8188ee/trx.c` source:
+##      `query_rx_desc()` DOES set both fields; the compat-layer
+##      call site is correct; the actual value flow is unverified,
+##      not the logic
+
+Fetched real `rtl8188ee/trx.c` (via `rtl8192ce/trx.c`'s near-identical
+sibling implementation, confirmed applicable -- same query_rx_desc
+pattern across the rtlwifi PCI family, and directly confirmed present
+in real `rtl8188ee/trx.c` too per a real accepted kernel patch
+touching that exact file/function, "rtlwifi: rtl8188ee: initialize
+packet_beacon", LKML archives, this session):
+
+```c
+stats->rx_drvinfo_size = (u8)get_rx_desc_drv_info_size(p_desc) *
+                          RX_DRV_INFO_SIZE_UNIT;
+stats->rx_bufshift = (u8)(get_rx_desc_shift(p_desc) & 0x03);
+```
+
+Real `query_rx_desc()` for this chip family DOES set both fields,
+reading them out of the real hardware RX descriptor
+(`get_rx_desc_drv_info_size`/`get_rx_desc_shift`, chip-specific
+descriptor-bitfield accessors). This is a real, non-trivial function
+this project's own compat layer does not and should not reimplement
+-- it's supplied by the external `$(CHIP_SRC)/trx.c` at build time.
+
+Also confirmed: real rtlwifi's OWN internal beacon-processing code
+(`_rtl88ee_translate_rx_signal_stuff`, called from within
+`query_rx_desc()` itself) independently computes
+`tmp_buf = skb->data + rx_drvinfo_size + rx_bufshift` as a LOCAL
+pointer for its own internal RSSI/signal-quality parsing -- this
+does NOT mutate `skb->data` itself. The actual `skb->data`
+advancement for frames handed onward to `ieee80211_rx_irqsafe()` is
+correctly this port's own job, done via `skb_reserve()` in
+`rtlwifi_do_interrupt()` AFTER `query_rx_desc()` returns -- confirmed
+correct in 105.2, and confirmed as the right architectural split (not
+a duplicate/conflicting operation) by seeing both code paths in full.
+
+**Conclusion: the logic on both sides of this boundary is correct.**
+The only unverified link left is runtime VALUES: does the real
+`get_rx_desc_drv_info_size()`/`get_rx_desc_shift()` -- reading the
+actual hardware descriptor bytes DMA'd by this specific card, on
+this specific machine -- actually return sane non-zero values at
+runtime? This cannot be determined by further source reading; it
+requires a targeted on-hardware capture of `stats.rx_drvinfo_size`/
+`rx_bufshift` themselves, immediately after the real
+`query_rx_desc()` call returns in `rtlwifi_do_interrupt()`.
+
+## 105.5 Instrumentation added: log the actual runtime values
+
+Added a temporary diagnostic immediately after the existing
+`query_rx_desc()` call in `rtlwifi_do_interrupt()`
+(`rtlwifi_compat.c`), logging the real values for the first few
+frames per scan:
+
+```c
+IOLog("rtw88: [rxdesc] len=%u drvinfo_size=%u bufshift=%u crc=%u hwerror=%u\n",
+      len, stats.rx_drvinfo_size, stats.rx_bufshift, stats.crc, stats.hwerror);
+```
+
+placed right after the `len = ... HW_DESC_RXPKT_LEN` read, before
+the `skb_put`/`skb_reserve` calls -- so this captures the exact
+values `skb_reserve()` will use, for direct before/after comparison
+against the already-confirmed-correct `rxdiag` log from Section 104.
+Rate-limited to 1-in-20 RX-flagged entries (loosened from the
+existing 1-in-100 gate already in this function -- a short ~2s scan
+window may not accumulate 100 RX-flagged interrupts at all, based on
+the ~6-10s-per-100 cadence observed in earlier idle-window captures,
+so 1-in-100 risked zero output during a scan-length test; 1-in-20 is
+far more likely to fire at least once within a single scan while
+still avoiding a flood).
+
+## 105.6 Status -- NOT yet rebuilt or run
+
+Source change only, same rebuild/reboot cycle as always.
+
+## 105.7 Updated remaining open items
+
+1. **Rebuild + reboot + run `scan`, then `dmesg | grep rxdesc`** --
+   immediate next step. If `drvinfo_size`/`bufshift` are both 0
+   consistently, that's the confirmed root cause (real descriptor
+   read returning zero -- would point at HW_DESC field IDs, MMIO
+   register mapping, or DMA coherency, a new investigation thread).
+   If they show real non-zero values, the bug is somewhere else
+   entirely not yet considered, and this whole skb/descriptor chain
+   should be considered cleared.
+2. Cross-reference `crc`/`hwerror` in the same log line: real
+   `query_rx_desc()` sets these from CRC/ICV descriptor bits (per
+   105.4's fetched source) -- if `hwerror=1` consistently, the RX
+   loop's own `if (!stats.crc && !stats.hwerror && ...)` gate
+   (confirmed present, Section 100's read-through) would be silently
+   dropping frames as corrupted before delivery even completes,
+   which is a distinct, separately-explainable failure mode from
+   the drvinfo/bufshift-zero hypothesis, worth ruling in/out with
+   the same capture.
+3. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging, Section 103's scan-complete
+   logging, Section 104's rxdiag logging, and now this section's
+   rxdesc logging) once root-caused -- still not done, growing list,
+   flagged again as needing a real cleanup pass once this
+   investigation concludes.
+4. `ctl_rtw88 connect`, full scan-to-connect validation, `IO80211`
+   integration, class-rename cleanup all remain valid, unstarted --
+   still blocked.
+5. `dmesg`/ring-buffer unreliability for one-shot BOOT-time
+   diagnostics (Section 98) -- unchanged, unrelated to this section's
+   on-demand diagnostics.
+6. **New standing note for future sessions**: this repo's `src/`
+   tree does not contain real rtlwifi driver internals
+   (`base.c`/`pci.c`/`trx.c`/`wifi.h` content) -- those are compiled
+   from an external `../linux-kernel/...` sibling directory per
+   `Makefile.rtl8188ee`'s `LINUX_SRC`/`CHIP_SRC` paths, not present
+   in the uploaded zip. Don't re-conclude "unimplemented" from an
+   empty grep of this repo alone for anything in that space --
+   confirm against fetched real upstream Linux source instead, as
+   this section did.
+
+------------------------------------------------------------------------
+
+# 106. Confirmed against the person's REAL local rtlwifi tree (not
+#      public GitHub) -- `trx.c` unmodified, `pci.c`/`sw.c` ARE
+#      locally modified (not yet reviewed); drvinfo_size=0 may be
+#      legitimate, not necessarily a bug
+
+## 106.1 Located and confirmed the real external source tree
+
+Person's actual `LINUX_SRC` (per Makefile.rtl8188ee):
+`~/Developer/rtl8188ee-port/rtl8188ee-macos/../linux-kernel/drivers/net/wireless/realtek/rtlwifi/`
+-- a full real rtlwifi tree, all chip variants present. Directory
+timestamps show almost everything at a uniform baseline (Aug 17),
+confirming most of this tree is stock/unmodified -- EXCEPT:
+
+- `pci.c` -- modified Aug 22 (person mentioned "a few changes... like
+  pci.h" when this session asked; pci.h itself shows the SAME Aug 17
+  baseline timestamp as everything else, so pci.h is likely NOT
+  actually modified despite being what the person recalled by name --
+  pci.c is the one that's actually different).
+- `rtl8188ee/sw.c` -- modified Aug 23, a SECOND locally-modified file
+  neither this session nor the person had mentioned before this
+  timestamp check.
+
+**Neither modified file's diff has been reviewed yet this session.**
+This is a real gap -- Section 105's whole audit trail was built
+against PUBLIC upstream trx.c/pci.c content (fetched via web search),
+which this section now confirms trx.c genuinely matches, but pci.c
+specifically is confirmed DIFFERENT from what was analyzed. Section
+105.2's confidence in the `skb_put`/`skb_reserve` call-site ordering
+was based on public pci.c AND on this project's own
+`rtlwifi_do_interrupt()` (which is this project's own reimplementation
+of that call site, not literally real pci.c) -- so 105.2's conclusion
+about the ORDERING doesn't need to be redone, but if the real,
+modified local pci.c has an *upstream* RX-interrupt path that also
+gets invoked (unlikely given Section 52's confirmed direct-dispatch
+architecture, but not 100% ruled out), that would be worth checking
+against the real local diff, not assumed clean.
+
+## 106.2 Confirmed `rtl8188ee/trx.c`'s real `rtl88ee_rx_query_desc()`
+##      against the person's own local (unmodified, Aug 17) copy --
+##      matches Section 105.4's public-source analysis exactly
+
+```c
+bool rtl88ee_rx_query_desc(struct ieee80211_hw *hw,
+    struct rtl_stats *status, struct ieee80211_rx_status *rx_status,
+    u8 *pdesc8, struct sk_buff *skb)
+{
+    ...
+    __le32 *pdesc = (__le32 *)pdesc8;
+    ...
+    status->rx_drvinfo_size = (u8)get_rx_desc_drv_info_size(pdesc) *
+        RX_DRV_INFO_SIZE_UNIT;
+    status->rx_bufshift = (u8)(get_rx_desc_shift(pdesc) & 0x03);
+    ...
+    hdr = (struct ieee80211_hdr *)(skb->data + status->rx_drvinfo_size
+                                    + status->rx_bufshift);
+```
+
+Confirms Section 105.4's public-source-based analysis was accurate:
+this file is genuinely unmodified locally, no surprises.
+
+## 106.3 New finding: `drv_info_size`/`shift`/`pkt_len` all read from
+##      the SAME first descriptor word -- since `pkt_len` is already
+##      confirmed correct, drvinfo_size=0 might be a REAL, legitimate
+##      hardware value, not a bug
+
+Read the real bitfield macros directly from the person's local
+`rtl8188ee/trx.h` (lines 257-297, confirmed unmodified, Aug 17
+baseline):
+
+```c
+get_rx_desc_pkt_len(pdesc)       -> le32_get_bits(*pdesc, GENMASK(13,0))
+get_rx_desc_drv_info_size(pdesc) -> le32_get_bits(*pdesc, GENMASK(19,16))
+get_rx_desc_shift(pdesc)         -> le32_get_bits(*pdesc, GENMASK(25,24))
+```
+
+**All three read from `*(__pdesc)` -- the same first 32-bit
+descriptor word**, just different bit ranges within it. Since
+`pkt_len` (this exact same word, bits 13:0) has already been
+independently confirmed reading real, correct, varying values
+(Section 100's byte-counter test passing + Section 104's `[rxdiag]`
+`len=` values: 16-392 bytes, all plausible) -- **the first descriptor
+word itself cannot be all-zero garbage.** If it were, `pkt_len` would
+also read as garbage/zero, and it doesn't.
+
+This means `drv_info_size`/`shift` reading as `0` would NOT indicate
+a broken/unpopulated descriptor -- it could simply mean this specific
+4-bit hardware field (`GENMASK(19,16)`) and 2-bit field
+(`GENMASK(25,24)`) genuinely ARE zero on real captured frames, which
+is a legitimate real-world value (not every frame/PHY-status-report
+mode necessarily attaches driver-info bytes). `RX_DRV_INFO_SIZE_UNIT
+= 8` confirmed universal across all 10 chip variants in this local
+tree (rtl8188ee through rtl8821ae) -- not chip-specific, so no
+per-chip quirk there either.
+
+**This revises Section 105's framing**: Section 105.7 item 1 treated
+"drvinfo_size/bufshift both 0" as presumptively the bug. That's no
+longer the safe assumption -- it may be entirely correct output. If
+Section 105.5's pending capture (still not run) comes back with both
+values at 0, that is NOT sufficient on its own to call this root-
+caused; it would mean skb_reserve(skb, 0) is a correct no-op and
+skb->data should already point directly at the real 802.11 header
+with no offset needed -- in which case the actual bug must be even
+earlier than this session had been assuming, somewhere in how the
+DMA buffer's memory is actually populated by the hardware (address
+programming, DMA coherency/cache sync on this specific platform, or
+the RX buffer virtual/physical address translation), not in any of
+the skb/descriptor-field logic this and Section 105 have been
+auditing.
+
+## 106.4 Status -- pci.c and sw.c diffs NOT YET reviewed; Section
+##      105.5's rxdesc capture NOT YET run
+
+Two concrete gaps remain before this can be root-caused:
+
+1. The actual local diff/content of the modified `pci.c` and
+   `rtl8188ee/sw.c` -- unreviewed. `sw.c` in particular is worth
+   checking since it's the chip's own setup/attach file for this
+   exact chip (`rtl8188ee_hal_cfg` and driver-level init typically
+   live there) and was modified a day after `pci.c`, suggesting an
+   intentional, possibly still-in-progress local change relevant to
+   this exact bring-up.
+2. Section 105.5's `[rxdesc]` diagnostic still needs to actually run
+   on hardware -- now doubly important given 106.3's reframing: the
+   result needs to be interpreted differently depending on whether
+   drvinfo_size/bufshift come back 0 (now: inconclusive on its own,
+   points further upstream) or non-zero (would mean skb_reserve
+   really should be moving skb->data somewhere non-trivial, and the
+   zero-fc symptom would then point at a possible mismatch between
+   what skb_reserve advances to and where the real frame actually
+   starts).
+
+## 106.5 Updated remaining open items
+
+1. **Review the actual local diff of `pci.c`** (modified Aug 22) --
+   command needed: something like `diff` against a fetched-clean
+   upstream copy, or just read the RX-interrupt-relevant sections
+   directly, since this session doesn't have a pristine-baseline
+   copy of this exact file to diff against locally. Not yet done.
+2. **Review the actual local diff/content of `rtl8188ee/sw.c`**
+   (modified Aug 23, one day after pci.c, never previously mentioned
+   in this session) -- not yet done, higher suspicion given the
+   timing and this file's role (chip attach/setup, likely including
+   `rtl88ee_hal_cfg` itself).
+3. **Still need to run Section 105.5's `[rxdesc]` capture** -- now
+   reframed per 106.3: a 0/0 result is inconclusive rather than
+   conclusive, so items 1-2 above may need to happen first or in
+   parallel rather than waiting on this capture alone.
+4. Strip all temporary diagnostic logging once root-caused -- still
+   not done, still growing.
+5. `ctl_rtw88 connect`, full scan-to-connect validation, `IO80211`
+   integration, class-rename cleanup all remain valid, unstarted --
+   still blocked.
+6. `dmesg`/ring-buffer unreliability for one-shot BOOT-time
+   diagnostics (Section 98) -- unchanged, unrelated to on-demand
+   diagnostics.
+7. **Standing note reinforced**: always confirm against the person's
+   OWN local copy of external-tree files (`../linux-kernel/...`) when
+   available, not just public GitHub/upstream mirrors -- this session
+   found two locally-modified files (`pci.c`, `sw.c`) that public-
+   source analysis alone would have completely missed, and would
+   have produced a confidently-wrong "confirmed correct against real
+   source" conclusion in Section 105 if those two files happened to
+   be the ones relevant to the bug.
+
+------------------------------------------------------------------------
+
+# 107. LIKELY ROOT CAUSE FOUND: this port's RX loop was missing real
+#      pci.c's C2H_PACKET filter -- fixed
+
+## 107.1 Confirmed against the person's own local `pci.c`
+##      (the Aug-22-modified file from Section 106) that the
+##      relevant check itself is unmodified/stock there
+
+Read `_rtl_pci_rx_interrupt()` in full from the person's real local
+`pci.c` (not public source -- this file IS one of the two locally
+modified files flagged in Section 106, so confirming this specific
+check is present and reads as stock/standard code there, not
+something altered by whatever the person's local edit actually
+touched, matters). Two real differences from this port's
+`rtlwifi_do_interrupt()` found:
+
+1. Real code calls `_rtl_pci_rx_to_mac80211()` (allocates a fresh
+   `uskb`, copies data in, delivers that instead of the original
+   `skb`) rather than delivering the original `skb` directly. Traced
+   this in detail -- NOT adopted as a fix this session (see 107.4),
+   flagged as a possible but unconfirmed-necessary difference.
+2. **Real code checks `stats.packet_report_type` and reroutes C2H
+   (command-to-host) packets away from normal frame processing,
+   BEFORE ever reading `hdr`/`fc` from the skb.** This port's RX loop
+   had no equivalent check at all -- confirmed by reading the whole
+   function, this check was simply absent.
+
+## 107.2 Why this fully explains Section 104's `fc=0x0000` capture
+
+C2H packets share the same RX descriptor ring and delivery path as
+real 802.11 frames on this hardware, but are firmware status/report
+payloads (rate reports, power-tracking info, etc.), not 802.11
+frames. `HW_DESC_RXPKT_LEN` is legitimately populated for these too
+(explaining Section 104's varying-but-plausible `len=16..392`
+values) -- but reading their payload as if it started with a real
+`ieee80211_hdr.frame_control` would produce whatever that report
+format's own first two bytes happen to be, plausibly `0x0000` for
+many report layouts. This account fits every observed fact from
+Sections 103-105 without requiring any of the skb_put/skb_reserve/
+alloc_skb chain (all independently confirmed correct in Section 105)
+to be wrong.
+
+Also directly explains why Section 106.3's reasoning about
+`rx_drvinfo_size`/`rx_bufshift` reading 0 being potentially
+legitimate turned out to be the right instinct: C2H packets likely
+don't carry the same driver-info-prefix structure real 802.11 frames
+do, so a 0/0 reading on THOSE specific packets is not a hardware
+malfunction -- it's a real, correct descriptor field for a packet
+type this port was never supposed to treat as a normal frame in the
+first place.
+
+## 107.3 `enum rx_packet_type` confirmed (real local `wifi.h`,
+##      not just public source)
+
+```c
+enum rx_packet_type {
+    NORMAL_RX,
+    TX_REPORT1,
+    TX_REPORT2,
+    HIS_REPORT,
+    C2H_PACKET,
+};
+```
+
+Five values, not a binary split. Real `_rtl_pci_rx_interrupt()` only
+explicitly special-cases `C2H_PACKET` (redirects to
+`rtl_c2hcmd_enqueue()`); `TX_REPORT1`/`TX_REPORT2`/`HIS_REPORT`
+fall through to normal processing in real code. This port's fix
+deliberately matches that exact scope -- filters only
+`C2H_PACKET`, not all four non-`NORMAL_RX` values -- rather than
+guessing a broader filter might be safer without evidence real code
+treats the other three the same way.
+
+## 107.4 Fix applied: `rtlwifi_compat.c`, right after `skb_put`/
+##      `skb_reserve`, matching real code's exact placement
+
+```c
+if (stats.packet_report_type == C2H_PACKET) {
+    /* logged once, rate-limited */
+    dev_kfree_skb_any(skb);
+    goto rearm;
+}
+```
+
+Deliberately did NOT port `rtl_c2hcmd_enqueue()`/real C2H command
+processing (real code's actual handling of these packets, e.g.
+feeding rate-control reports back into the driver) -- that's a real,
+separate subsystem, out of scope for basic data-path bring-up. This
+fix matches real code's NET EFFECT for the RX/mac80211-delivery path
+specifically (C2H packets never reach `ieee80211_rx_irqsafe()`/
+`mac80211`/this port's `rxFrame()`), without pretending to implement
+the command-processing side real code does after that redirect. If
+real C2H functionality turns out to be needed later, that's
+tracked as future work, not done here.
+
+Deliberately did NOT adopt 107.1 item 1 (the `_rtl_pci_rx_to_mac80211`
+fresh-uskb-copy pattern) this session -- no evidence yet that
+skipping it is actually causing a problem (Section 100's byte-counter
+test and Section 104's per-frame length captures both already showed
+correct, real values flowing through the direct-delivery path this
+port uses instead), and changing it without a confirmed reason would
+be a speculative, unmotivated architecture change to a part of this
+port (Section 52's direct-dispatch design) that multiple earlier
+sections have deliberately and explicitly relied on. Flagged for
+future reference, not acted on.
+
+## 107.5 Status -- NOT yet rebuilt or run
+
+Source change only. This is the first fix since Section 100/101 that
+has a specific, well-evidenced causal story for the actual symptom
+(rather than a diagnostic addition) -- real test is a full rebuild +
+reboot + `scan` + `bsslist` cycle, not just a log-line check.
+
+## 107.6 Updated remaining open items
+
+1. **Rebuild + reboot + run `./ctl_rtw88 scan` then
+   `./ctl_rtw88 bsslist`** -- immediate next step, and the real test
+   of this fix: if real beacons/probe-responses are now correctly
+   distinguished from C2H noise, `bsslist` should show actual nearby
+   networks for the first time this whole investigation
+   (Sections 102-107). Also worth re-running the `[rxdiag]` capture
+   from Section 104 (still present in `rxFrame()`, unchanged) to
+   directly confirm `ismgmt=1`/real `stype` values are now showing up
+   for at least some of the captured frames, rather than
+   `fc=0x0000` uniformly.
+2. If `bsslist` STILL comes back empty after this fix -- the
+   `[rxdiag]`/`[rxdesc]` logs added in Sections 104/105 are still in
+   place and will show whether frames are now correctly classified
+   but something else in the scan-result pipeline is the remaining
+   gap, narrowing further from here rather than restarting the
+   investigation.
+3. The `_rtl_pci_rx_to_mac80211` fresh-uskb-copy divergence
+   (107.1 item 1, 107.4's "deliberately not adopted") -- revisit ONLY
+   if this fix alone doesn't resolve the symptom, with actual
+   evidence pointing at it specifically, not preemptively.
+4. Real C2H command processing (`rtl_c2hcmd_enqueue()` and whatever
+   consumes it) -- not ported, flagged as known-missing functionality,
+   not blocking basic Wi-Fi data-path operation.
+5. Person's local `pci.c`/`sw.c` modifications (Section 106) -- the
+   specific RX-interrupt section of `pci.c` read this session is
+   confirmed unmodified/stock, but the REST of the diff (why was it
+   touched at all?) and `sw.c`'s diff entirely remain unreviewed.
+   Lower priority now that 107's fix has a strong causal story, but
+   still an open gap in this session's audit trail.
+6. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging, scan-complete logging, rxdiag
+   logging, rxdesc logging, and now this section's C2H-drop logging)
+   once this fix is confirmed working on hardware -- still not done,
+   real cleanup pass needed once the investigation concludes.
+7. `ctl_rtw88 connect`, full scan-to-connect validation, `IO80211`
+   integration, class-rename cleanup all remain valid, still blocked
+   pending 107.6 item 1's on-hardware confirmation.
+8. `dmesg`/ring-buffer unreliability for one-shot BOOT-time
+   diagnostics (Section 98) -- unchanged, unrelated.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

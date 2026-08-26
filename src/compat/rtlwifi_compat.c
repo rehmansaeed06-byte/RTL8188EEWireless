@@ -671,8 +671,24 @@ static void _rtlwifi_set_channel_and_bssid(struct ieee80211_hw *hw,
 
     mutex_lock(&rtlpriv->locks.conf_mutex);
 
-    if (hw->conf.chandef.chan && rtlpriv->cfg->ops->switch_channel)
+    /* BUGFIX (real-hardware connect investigation, post-108): real
+     * rtl_op_config() (core.c:752) sets rtlphy->current_channel from
+     * hw->conf.chandef BEFORE calling switch_channel() -- the chip-
+     * specific switch_channel() (e.g. rtl88e_phy_sw_chnl()) reads
+     * rtlphy->current_channel directly, NOT hw->conf.chandef.chan.
+     * This function set hw->conf.chandef.chan (via the caller's
+     * setConnectedChandef()) but never set rtlphy->current_channel,
+     * so switch_channel() was silently switching to whatever stale
+     * channel was already there instead of the target BSS's channel.
+     * Confirmed on real hardware: [authrxdiag] showed zero frames ever
+     * arriving from the target BSSID during the auth window, while
+     * beacons from other, unrelated APs kept arriving normally --
+     * i.e. we never actually left the old channel. */
+    if (hw->conf.chandef.chan && rtlpriv->cfg->ops->switch_channel) {
+        struct rtl_phy *rtlphy = &rtlpriv->phy;
+        rtlphy->current_channel = hw->conf.chandef.chan->hw_value;
         rtlpriv->cfg->ops->switch_channel(hw);
+    }
 
     if (rtlpriv->cfg->ops->set_hw_reg)
         rtlpriv->cfg->ops->set_hw_reg(hw, HW_VAR_BSSID, (u8 *)bssid);

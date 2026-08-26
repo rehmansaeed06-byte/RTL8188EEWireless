@@ -9855,4 +9855,211 @@ primary fix's validation.
 
 ------------------------------------------------------------------------
 
+# 109. `ctl_rtw88 connect` always timing out -- ROOT CAUSE CONFIRMED AND
+      FIXED: `switch_channel()` was silently a no-op because
+      `rtlphy->current_channel` was never set. Full WPA2 connect now
+      succeeds end-to-end on real hardware for the first time.
+
+## 109.1 Starting point
+
+Following Section 108's fix (bsslist now returns real networks),
+`ctl_rtw88 connect <ssid> <password>` against a real, strong-signal AP
+(`NAYAtel-arsahd03369999259`, `60:de:44:49:31:dc`, RSSI -50 to -52,
+channel 6, confirmed via `bsslist` moments before each connect
+attempt) consistently timed out. `doAuthenticate()`'s log sequence
+showed entry, scan-flag-clear, firmware-settle, `connect_hw_setup`
+completing, auth frame built and transmitted (30 bytes) -- then
+silence. `"auth timeout, retrying"` fired every ~3s, 4 times, no auth
+response ever logged, no `"ignoring"` log either (the BSSID-mismatch
+guard in `processRxMgmt()`'s `case 0x00B0` block never even ran).
+
+## 109.2 New diagnostic: unconditional `[authrxdiag]` RX log
+
+The existing `[rxdiag]` log (Section 104) is gated to
+`_state == RTW88_STATE_SCANNING` only -- zero visibility into RX
+activity during the auth/assoc window, which is exactly where this
+symptom lives. Added a new, separate, unconditional log covering
+`RTW88_STATE_AUTHENTICATING`/`RTW88_STATE_ASSOCIATING`, logging every
+RX'd frame's fc/type/stype/len plus addr1/addr2/addr3
+(`RTW88IEEE80211.cpp`'s RX path, new `_rxAuthFrameCount` counter in
+the header, reset in `doAuthenticate()`). No frame cap -- the
+auth/assoc window is short and bounded by the existing 3s per-attempt
+timeout, so unlike the interrupt-loop diagnostic in Section 98 this
+can't flood the ring buffer.
+
+## 109.3 First capture with the new diagnostic -- the real signature
+
+Two consecutive auth attempts captured, ~40 `[authrxdiag]` lines
+total. Every single frame came from other, unrelated nearby APs'
+BSSIDs (`b8:d6:f6:e1:5b:e8` "Umer home", `70:a8:e3:c4:bd:bc` "Sahil",
+`4c:b1:6c:a9:4a:8f`) -- all beacons, `stype=0x80`, correctly parsed,
+arriving at a normal cadence (dozens of frames across ~3-4 seconds,
+consistent with multiple APs each beaconing every ~100ms). **Not one
+single frame, of any type, ever arrived from the target BSSID
+`60:de:44:49:31:dc`** in either attempt -- despite that AP having just
+been seen at strong signal (-50 to -52 dBm) in the scan run
+immediately beforehand.
+
+This is a specific, diagnostic pattern: RX pipeline fully alive
+(proven by real frames from multiple other sources arriving
+correctly-parsed), but the *one* AP we just explicitly switched to its
+channel for is completely silent, while other APs (necessarily on
+other channels, given the AP list's spread across channels 1/3/6/8/11
+in prior scans) remain audible. The only physical explanation for
+"other APs audible, target AP silent, right after an explicit channel
+switch to the target's channel" is that **the channel switch did not
+actually happen** -- the radio never left whatever channel it was
+already on.
+
+## 109.4 Root cause -- confirmed via live upstream rtlwifi source read
+
+Traced the real call chain for `HW_VAR_BSSID`/channel-switch, both to
+rule out an earlier (wrong) theory that `set_hw_reg`/`cfg->ops` might
+be null/unwired in this port, and then to find the actual bug:
+
+- `rtl88ee_hal_cfg.ops = &rtl8188ee_hal_ops` (sw.c:248) and
+  `rtl8188ee_hal_ops.set_hw_reg = rtl88ee_set_hw_reg` (sw.c:211) are
+  both real, correctly-wired vendor function pointers -- confirmed via
+  grep against the person's local `linux-kernel` reference tree. (This
+  ruled out the initial theory that `set_hw_reg` might be null; it is
+  not, and `HW_VAR_BSSID`'s real body (`rtl88ee_set_hw_reg`, hw.c:383,
+  a plain per-byte `rtl_write_byte(rtlpriv, REG_BSSID + idx, ...)`
+  loop) does nothing unusual.)
+- `rtl8188ee_hal_ops.switch_channel = rtl88e_phy_sw_chnl` (sw.c:219).
+  **Confirmed by reading `rtl88e_phy_sw_chnl()`'s actual body
+  (phy.c:1182) that it reads the target channel from
+  `rtlphy->current_channel` -- it takes no channel parameter and never
+  reads `hw->conf.chandef` at all.**
+- Confirmed via real `rtl_op_config()` (core.c:625-753, the normal
+  mac80211-ops path this port's `rtlwifi_connect_hw_setup()`
+  deliberately bypasses -- see existing header comment re: the
+  `rtl_lps_leave()` stall hazard) that upstream sets
+  `rtlphy->current_channel = wide_chan` (core.c:752) **immediately
+  before** calling `rtlpriv->cfg->ops->switch_channel(hw)` -- this is
+  the one line this port's bypass path was missing.
+
+This port's `_rtlwifi_set_channel_and_bssid()`
+(`rtlwifi_compat.c`) set `hw->conf.chandef.chan` (via the kext-side
+caller `setConnectedChandef()`) and then called `switch_channel(hw)`
+directly -- but nothing in that call chain ever set
+`rtlphy->current_channel`. `switch_channel()` therefore ran
+successfully every time (no error, no log gap -- `"connect_hw_setup
+done"` always printed normally) but operated on whatever channel value
+was already sitting in `rtlphy->current_channel` from before, not the
+target BSS's channel. This exactly explains 109.3's signature: the
+radio genuinely never left its prior channel, so the target AP (now on
+a different channel from us) was never heard, while other APs already
+on our actual (unchanged) channel kept arriving normally.
+
+**This was flagged-but-mischaracterized in this port's own existing
+code comment.** `rtlwifi_compat.h`'s doc-comment for
+`rtlwifi_connect_hw_setup()`/`rtlwifi_restore_connected_hw()` already
+noted (from an earlier session) that these functions don't replicate
+real core.c's full 20/40/80MHz bandwidth-derivation logic, and framed
+that as an acceptable "known simplification, flagged not hidden"
+given this port has no 40/80MHz negotiation path elsewhere. That
+framing was itself incomplete: it correctly identified that
+*bandwidth* state wasn't being propagated, but missed that the
+*channel number itself* wasn't being propagated either -- a
+functional bug, not a scope simplification.
+
+## 109.5 Fix
+
+`_rtlwifi_set_channel_and_bssid()` (`rtlwifi_compat.c`) now sets:
+
+```c
+struct rtl_phy *rtlphy = &rtlpriv->phy;
+rtlphy->current_channel = hw->conf.chandef.chan->hw_value;
+```
+
+immediately before calling `rtlpriv->cfg->ops->switch_channel(hw)`,
+matching real `core.c:752`'s ordering. `hw_value` confirmed as the
+right field via this port's own existing precedent
+(`RTW88IEEE80211.cpp`'s channel-lookup loops already use
+`band->channels[j].hw_value == _targetBSS.channel`). One-line
+functional change; `rtlwifi_compat.h`'s doc-comment updated to
+describe the fix and correctly scope the *remaining* simplification
+(bandwidth/`set_channel_access()`/`set_bw_mode()` still not
+replicated -- unchanged from before, not newly discovered, and
+explicitly not blocking for the 20MHz case this section validates).
+
+## 109.6 CONFIRMED on real hardware: full WPA2 connect succeeds
+
+Immediately after rebuilding with the fix, ran the same
+scan -> bsslist -> connect sequence against the same AP.
+`[authrxdiag]` now shows, within ~13ms of the auth frame being
+transmitted:
+
+```
+frame #6 fc=0x00b0 ... addr2=60:de:44:49:31:dc addr3=60:de:44:49:31:dc
+rtw88: auth success, sending assoc
+frame #8 fc=0x0010 ... addr2=60:de:44:49:31:dc addr3=60:de:44:49:31:dc
+rtw88: associated! AID=0
+```
+
+followed immediately by the full WPA2 4-way handshake completing:
+
+```
+rtw88: WPA2 -- waiting for EAPOL M1
+rtw88: EAPOL key_info=0x008a key_data_len=0 M1=1 M3=0
+rtw88: EAPOL key_info=0x13ca key_data_len=104 M1=0 M3=1
+rtw88: installed pairwise CCMP key idx=0 hw_idx=0
+rtw88: installed group TKIP key idx=2 hw_idx=2
+rtw88: WPA2 connected! gtk_len=32 gtk_idx=2
+```
+
+`ctl_rtw88 state` immediately after showed `state: 5` (connected),
+correct `ssid`/`bssid`, `rssi: -48` (markedly healthier than the -78
+seen in pre-fix connect attempts -- itself a corroborating signal that
+we're now genuinely on the AP's real channel rather than guessing),
+`channel: 6`, and `rx_byte_count` actively climbing (393867 and
+rising) with real post-connect traffic. A follow-up log line, `"rx
+protected data includes CCMP IV, skipping it"`, confirms encrypted
+data RX is already being handled post-handshake.
+
+**This is the first fully successful RTL8188EE -> real AP WPA2
+connection (open-system auth + association + full 4-way handshake) in
+this project's history.**
+
+## 109.7 New open item, not yet investigated
+
+~20 seconds after the successful connect, log showed:
+
+```
+AP off, try to reconnect now
+```
+
+Not yet chased this session. Given 109.4's lesson (a channel-related
+bug can silently look like "the AP disappeared" without any error),
+default to skepticism that this is a genuine AP-side event rather than
+a false-positive detection on this port's side (e.g. a beacon-miss or
+off-channel heuristic misfiring) until the actual trigger condition is
+read from source. Natural first candidate for the next session, now
+that a working connect exists to reliably reproduce it against.
+
+## 109.8 Updated remaining open items
+
+1. ~~`ctl_rtw88 connect` times out, no auth response~~ -- **DONE,
+   confirmed fixed and verified end-to-end on real hardware.**
+2. **`"AP off, try to reconnect now"`** (109.7) -- root cause unknown,
+   most natural next investigation.
+3. Whether the reconnect logic that message implies actually recovers
+   the connection, or fails the same way `connect` used to pre-fix.
+4. Sustained-connection validation (ping, real data TX/RX volume,
+   longer soak) now that a connect can succeed at all.
+5. `IO80211`/apple80211 interface work (interface is still
+   Ethernet-typed per the Twentieth Update's gap list) -- unchanged,
+   still unstarted.
+6. Class-rename cleanup (RTW88* -> RTL8188EE*) -- unchanged, still
+   cosmetic.
+7. The isolated `fc=0x0000 len=16` frame noted in Section 108.6 --
+   unchanged, still low priority, still not chased.
+8. Remaining known simplification in `_rtlwifi_set_channel_and_bssid()`
+   per 109.5: no 20/40/80MHz bandwidth derivation or
+   `set_channel_access()`/`set_bw_mode()` calls after
+   `switch_channel()`. Not blocking for the 20MHz case just proven
+   working; revisit only if 40MHz-capable APs show connect issues.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

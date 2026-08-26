@@ -1003,6 +1003,37 @@ void RTW88IEEE80211::rxFrame(struct sk_buff *skb)
               skb->len, ieee80211_is_mgmt(fc), ieee80211_is_data(fc));
     }
 
+    /* TEMPORARY DIAGNOSTIC: `connect` times out on real hardware with no
+     * visibility into whether anything arrives after the auth frame is
+     * sent -- the [rxdiag] log above only fires during SCANNING. Log
+     * unconditionally (no 20-frame cap; the auth/assoc window is short
+     * and bounded by the 3s per-attempt timeout, so this can't flood the
+     * ring buffer the way the interrupt-loop diagnostic did in Section
+     * 98) whenever we're actually waiting on a response. Strip once the
+     * connect timeout root cause is found, per this project's standing
+     * rule about not leaving permanent unconditional log spam. */
+    if (_state == RTW88_STATE_AUTHENTICATING ||
+        _state == RTW88_STATE_ASSOCIATING) {
+        uint16_t raw_fc = le16_to_cpu(fc);
+        struct ieee80211_hdr_3addr *h3 = (struct ieee80211_hdr_3addr *)skb->data;
+        bool have_addrs = skb->len >= sizeof(*h3);
+        _rxAuthFrameCount++;
+        IOLog("rtw88: [authrxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
+              "len=%u ismgmt=%d isdata=%d addr1=%02x:%02x:%02x:%02x:%02x:%02x "
+              "addr2=%02x:%02x:%02x:%02x:%02x:%02x addr3=%02x:%02x:%02x:%02x:%02x:%02x\n",
+              _rxAuthFrameCount, raw_fc, raw_fc & 0x000c, raw_fc & 0x00f0,
+              skb->len, ieee80211_is_mgmt(fc), ieee80211_is_data(fc),
+              have_addrs ? h3->addr1[0] : 0, have_addrs ? h3->addr1[1] : 0,
+              have_addrs ? h3->addr1[2] : 0, have_addrs ? h3->addr1[3] : 0,
+              have_addrs ? h3->addr1[4] : 0, have_addrs ? h3->addr1[5] : 0,
+              have_addrs ? h3->addr2[0] : 0, have_addrs ? h3->addr2[1] : 0,
+              have_addrs ? h3->addr2[2] : 0, have_addrs ? h3->addr2[3] : 0,
+              have_addrs ? h3->addr2[4] : 0, have_addrs ? h3->addr2[5] : 0,
+              have_addrs ? h3->addr3[0] : 0, have_addrs ? h3->addr3[1] : 0,
+              have_addrs ? h3->addr3[2] : 0, have_addrs ? h3->addr3[3] : 0,
+              have_addrs ? h3->addr3[4] : 0, have_addrs ? h3->addr3[5] : 0);
+    }
+
     if (ieee80211_is_mgmt(fc)) {
         processRxMgmt(skb);
     } else if (ieee80211_is_data(fc)) {
@@ -2084,6 +2115,8 @@ void RTW88IEEE80211::connectTCFn(thread_call_param_t self, thread_call_param_t)
 void RTW88IEEE80211::doAuthenticate()
 {
     if (!_hw || !_vif) return;
+
+    _rxAuthFrameCount = 0;  /* reset [authrxdiag] counter for this attempt */
 
     IOLog("rtw88: doAuthenticate entry — BSSID %02x:%02x:%02x:%02x:%02x:%02x ch=%u\n",
           _targetBSS.bssid[0], _targetBSS.bssid[1], _targetBSS.bssid[2],

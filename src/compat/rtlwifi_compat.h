@@ -250,14 +250,25 @@ bool rtlwifi_hw_scan_supported(struct ieee80211_hw *hw);
  * rtlwifi_sw_scan_switch_channel()'s comment for the general rule) —
  * here it's the entire point, not a shortcut.
  *
- * Known simplification, flagged not hidden: real core.c's channel-
- * switch branch (core.c:625-753) also derives 20/40/80MHz bandwidth
- * state (mac->bw_40/bw_80, cur_40_prime_sc, etc.) from
- * hw->conf.chandef before calling switch_channel(). Neither function
- * below replicates that — they call switch_channel() using whatever
- * rtlphy->current_channel/bandwidth state is already set (this port
+ * FIXED (post-108 real-hardware connect investigation): this function
+ * now sets rtlphy->current_channel = hw->conf.chandef.chan->hw_value
+ * before calling switch_channel(), mirroring real core.c:752. Previously
+ * it called switch_channel() without ever setting current_channel first —
+ * the chip-specific switch_channel() (rtl88e_phy_sw_chnl()) reads
+ * rtlphy->current_channel directly, not hw->conf.chandef, so the channel
+ * switch was silently a no-op (stayed on whatever channel was already
+ * active). Confirmed via [authrxdiag]: zero frames ever arrived from the
+ * target BSSID during the auth window, while unrelated APs' beacons kept
+ * arriving normally, proving we never left the prior channel.
+ *
+ * Remaining known simplification, flagged not hidden: real core.c's
+ * channel-switch branch (core.c:625-753) also derives 20/40/80MHz
+ * bandwidth state (mac->bw_40/bw_80, cur_40_prime_sc, etc.) from
+ * hw->conf.chandef, and calls set_channel_access()/set_bw_mode() after
+ * switch_channel(). Neither function below replicates that (this port
  * has no 40/80MHz negotiation path elsewhere either, so this matches
- * the existing scope, not a new gap).
+ * the existing scope) — worth revisiting if 40MHz-capable APs show
+ * connect issues later, but not blocking for the 20MHz case.
  */
 void rtlwifi_connect_hw_setup(struct ieee80211_hw *hw,
                                struct ieee80211_vif *vif,

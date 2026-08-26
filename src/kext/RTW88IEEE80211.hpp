@@ -279,4 +279,14 @@ private:
      * actually handles (stype 0x0080 beacon, 0x0050 probe-resp), same
      * reset points as _rxFrameCount (scan start). */
     uint32_t _rxScanRelevantCount = 0;
+
+    /* Diagnostics: RX visibility during the auth/assoc window.
+     * findings.md TWENTY-SECOND UPDATE follow-up: bsslist now works, but
+     * `connect` times out on real hardware with zero insight into whether
+     * any frame at all is arriving after the auth request is sent -- the
+     * existing [rxdiag] log above is scan-gated only. Separate counter
+     * (not _rxFrameCount) so this doesn't interfere with the scan
+     * diagnostic's own reset points; reset when entering the
+     * authenticating/associating state in doAuthenticate(). */
+    uint32_t _rxAuthFrameCount = 0;
 };

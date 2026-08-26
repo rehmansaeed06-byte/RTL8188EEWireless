@@ -10062,4 +10062,202 @@ that a working connect exists to reliably reproduce it against.
 
 ------------------------------------------------------------------------
 
+# 110. "AP off, try to reconnect now" -- ROOT CAUSE CONFIRMED AND FIXED:
+      real rtlwifi's link-liveness watchdog was permanently starved of
+      both its inputs. CONFIRMED on real hardware: connection now
+      survives well past the old ~20s failure point.
+
+## 110.1 Starting point
+
+Section 109 closed out the connect-always-times-out bug and achieved
+the project's first full real-hardware WPA2 connect. That same
+capture showed, ~20s after a successful connect:
+
+```
+AP off, try to reconnect now
+```
+
+Flagged as an open item at the end of Section 109, not yet
+investigated there.
+
+## 110.2 Tracing the message to its real source
+
+Located the real upstream string via grep against the person's local
+`linux-kernel` reference tree: `base.c:2194`, inside
+`rtl_watchdog_wq_callback()` (base.c:2039). Read the enclosing
+function body directly:
+
+```c
+if (mac->link_state == MAC80211_LINKED &&
+    mac->opmode == NL80211_IFTYPE_STATION) {
+    if ((rtlpriv->link_info.bcn_rx_inperiod +
+         rtlpriv->link_info.num_rx_inperiod) == 0) {
+        rtlpriv->link_info.roam_times++;
+        /* "AP off for %d s\n" logged each tick */
+        if (rtlpriv->link_info.roam_times >= 5) {
+            pr_err("AP off, try to reconnect now\n");
+            rtlpriv->link_info.roam_times = 0;
+            ieee80211_connection_loss(rtlpriv->mac80211.vif);
+        }
+    } else {
+        rtlpriv->link_info.roam_times = 0;
+    }
+}
+```
+
+This is a genuine, real upstream liveness watchdog: if
+`bcn_rx_inperiod + num_rx_inperiod` reads exactly 0 on 5 consecutive
+~2s watchdog ticks (10s total) while linked in station mode, it
+declares the AP dead and fires `ieee80211_connection_loss()`.
+`rtl_watchdog_wq_callback()` is scheduled by a real, self-re-arming
+kernel `timer_list` (`rtl_watch_dog_timer_callback()`, base.c:2224,
+re-arms itself via `mod_timer()` every tick) queued onto a real
+Linux workqueue via `_rtl_init_deferred_work()` (base.c:442) --
+plausible this port reaches this via the vendored `pci.c`/`base.c`
+probe path, same as other real-code-reuse already confirmed this
+session (Section 109.4).
+
+Checked this port's `mac80211.h` compat shim: `ieee80211_connection_
+loss()` is a `static inline` no-op stub (already flagged in an
+earlier session, findings.md's prior "reconnect logic is already
+driver-side" note) -- but that note undersold the actual gap, since
+(per 110.3 below) the watchdog condition that triggers it should
+never even be true in real operation with correct RX accounting.
+
+## 110.3 Root cause -- both watchdog inputs permanently zero
+
+Checked where each of the two summed counters gets incremented in
+real upstream source (grep across `base.c`/`pci.c`/`usb.c`):
+
+- `num_rx_inperiod++` -- **only** at `pci.c:769`, inside real
+  rtlwifi's own PCI RX interrupt handler (and equivalently in
+  `usb.c` for USB chips, not relevant here). This port does not use
+  real `pci.c`'s RX interrupt handler -- RX is driven entirely by
+  this port's own custom IOKit-based interrupt/bounce-buffer pipeline
+  (`RTW88PCIDevice.cpp`, the same architecture whose missing
+  `dma_sync_single_for_cpu()` call was Section 108's fix). This path
+  is essentially certain to be unreachable in this port.
+- `bcn_rx_inperiod++` -- **only** inside `rtl_beacon_statistic(hw,
+  skb)` (base.c:1899, real, `EXPORT_SYMBOL_GPL`'d function), which
+  internally checks `opmode == STATION`, `link_state >= LINKED`, real
+  beacon/probe-resp frame type, minimum length, and BSSID match
+  against `rtlpriv->mac80211.bssid` before incrementing. This function
+  is meant to be called by each chip's own RX-mgmt-frame handling for
+  every beacon/probe-response received while connected. Confirmed via
+  grep across this port's entire `src/` tree: **never called
+  anywhere.** This port's own beacon/probe-resp RX case
+  (`RTW88IEEE80211.cpp`'s `processRxMgmt()`, `case 0x0080`/`0x0050`)
+  only did anything during `RTW88_STATE_SCANNING`
+  (`processScanResult()`); while connected, beacons from the
+  associated AP were simply `kfree_skb()`'d with no accounting at all.
+
+**Net effect**: both inputs to the watchdog's liveness check were
+permanently stuck at 0, regardless of how much real beacon/data
+traffic was actually arriving from the AP. The watchdog was
+guaranteed to fire exactly 10s into every single successful
+connection, unconditionally -- not a flaky timing issue, not
+AP-dependent, not related to Section 109's channel bug except in that
+no connection had ever survived long enough to reach this 10s mark
+before Section 109's fix existed.
+
+## 110.4 A concern checked and ruled out: `link_state`
+
+Before writing the fix, checked whether `rtl_beacon_statistic()`'s own
+first guard (`link_state >= MAC80211_LINKED`) would silently defeat
+the fix even after adding the missing call -- since this port
+deliberately bypasses the normal `rtl_op_config()`/
+`rtl_op_bss_info_changed()` mac80211-ops path during the auth/
+channel-setup step (Section 109.4, to avoid `rtl_lps_leave()`'s stall
+hazard), it seemed plausible `link_state` might never get set at all
+in this port. Grepped this port's entire `src/` tree for
+`link_state\s*=` -- zero matches, confirming it's never assigned
+directly. However, further tracing showed this doesn't actually
+matter: `processAssocResponse()` (`RTW88IEEE80211.cpp`) already calls
+the real `_hw->ops->bss_info_changed(_hw, _vif, bss, BSS_CHANGED_ASSOC
+| BSS_CHANGED_QOS)` unconditionally right after a successful
+association, for both open and WPA2 connections (before the
+`if (_wpa2)` branch). Confirmed via the person's local `linux-kernel`
+tree that `.bss_info_changed = rtl_op_bss_info_changed` (core.c:1899)
+is the real, correctly-wired vendor function -- and that its
+`BSS_CHANGED_ASSOC` branch (core.c:1061-1080) does set `mac->
+link_state = MAC80211_LINKED` when `vif->cfg.assoc` is true (which
+`processAssocResponse()` sets just before the call). So `link_state`
+is already correct via an existing, unrelated call site -- no separate
+fix needed.
+
+## 110.5 Fix
+
+`processRxMgmt()`'s beacon/probe-response case
+(`RTW88IEEE80211.cpp`) now calls `rtl_beacon_statistic(_hw, skb)`
+whenever `_state == RTW88_STATE_CONNECTED`, alongside the existing
+`RTW88_STATE_SCANNING` branch that calls `processScanResult()`. Given
+`rtl_beacon_statistic()`'s own internal BSSID-match guard, this is
+safe to call unconditionally on every beacon/probe-resp received while
+connected -- it silently no-ops for frames from other nearby APs.
+`rtl_beacon_statistic()` forward-declared in `rtlwifi_compat.h`
+(real function, already compiled in via `base.o` per the Twentieth
+Update's "0 undefined symbols" milestone; `base.h` itself isn't
+included anywhere in this port's kext sources, hence the need for an
+explicit forward declaration rather than an existing header pulling it
+in transitively).
+
+`num_rx_inperiod`'s gap (real `pci.c`'s RX interrupt handler being
+unreachable in this port) was not separately fixed -- `bcn_rx_
+inperiod` alone is sufficient to keep the watchdog's sum non-zero as
+long as beacons keep arriving, which they reliably do (~100ms
+interval) whenever the link is actually healthy. Revisit only if a
+new liveness gap emerges under conditions where beacons might be
+legitimately sparse (aggressive power-save states, etc.) without
+`num_rx_inperiod` to compensate.
+
+## 110.6 CONFIRMED on real hardware
+
+Same scan -> bsslist -> connect sequence, same target AP
+(`NAYAtel-arsahd03369999259`, `60:de:44:49:31:dc`, RSSI -52, ch 6).
+Full auth -> assoc -> WPA2 4-way handshake completed identically to
+Section 109.6 (same log sequence: `fc=0x00b0` auth response ->
+`"auth success"` -> `fc=0x0010` assoc response -> `"associated!
+AID=0"` -> EAPOL M1/M3 -> `"WPA2 connected!"`).
+
+This time, **no `"AP off"` message anywhere in the log.** Connect
+completed at `t=120s` (dmesg timestamp); the `dmesg` capture window
+(run after an explicit 30s `sleep` following the connect command)
+shows continued clean activity through at least `t=127s` -- 7+
+seconds past the old ~20s failure point that Section 109.7 first
+observed, with no disconnect. `ctl_rtw88 state`, captured after the
+full 30s sleep, showed a healthy, stable, still-connected link:
+`state: 5`, correct SSID/BSSID, `rssi: -48`, `channel: 6`, and
+`rx_byte_count` substantially higher than the pre-connect baseline
+(648281 vs. an earlier ~394K baseline from a shorter-lived Section
+109 connection) -- real traffic continuing to flow throughout the
+30s window.
+
+## 110.7 Updated remaining open items
+
+1. ~~"AP off, try to reconnect now" false disconnect~~ -- **DONE,
+   confirmed fixed and verified on real hardware.**
+2. Longer soak test (multi-minute, not just the 30s validated here) --
+   worth more confidence before calling connection stability fully
+   closed.
+3. Real data-plane validation (ping, throughput, sustained TX/RX
+   volume) now that a connection can both establish and survive.
+4. `IO80211`/apple80211 interface work (interface is still
+   Ethernet-typed) -- unchanged, still unstarted.
+5. Class-rename cleanup (RTW88* -> RTL8188EE*) -- unchanged, still
+   cosmetic.
+6. The isolated `fc=0x0000 len=16` frame (Section 108.6) -- still low
+   priority. Recurred again this session (scan's `[rxdiag]` frame
+   #18) -- still an isolated single occurrence per capture, not a
+   pattern, still not chased.
+7. `num_rx_inperiod`'s underlying gap (110.5) -- not fixed, judged
+   non-blocking given `bcn_rx_inperiod` alone keeps the watchdog
+   satisfied under normal beacon cadence. Revisit only if a liveness
+   gap emerges under sparse-beacon conditions.
+8. Remaining known simplification in `_rtlwifi_set_channel_and_bssid()`
+   (Section 109.5): no 20/40/80MHz bandwidth derivation or
+   `set_channel_access()`/`set_bw_mode()` calls after
+   `switch_channel()`. Unchanged, not blocking for 20MHz.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

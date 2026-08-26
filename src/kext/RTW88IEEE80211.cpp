@@ -1055,6 +1055,22 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
         if (_state == RTW88_STATE_SCANNING) {
             _rxScanRelevantCount++;
             processScanResult(skb);
+        } else if (_state == RTW88_STATE_CONNECTED) {
+            /* findings.md Section 109.7-109.8: feed real upstream's own
+             * link-liveness counter. rtl_beacon_statistic() internally
+             * verifies link_state/opmode/frame-type/length/BSSID match
+             * against rtlpriv->mac80211.bssid before incrementing
+             * anything, so this is safe to call unconditionally here --
+             * it silently no-ops for beacons from other nearby APs.
+             * Without this, rtl_watchdog_wq_callback()'s "AP off, try to
+             * reconnect now" 10s liveness check false-positives on every
+             * connection regardless of real traffic (this port also
+             * never reaches the num_rx_inperiod++ in real pci.c's RX
+             * interrupt handler, the watchdog's other input -- see the
+             * rtl_beacon_statistic() declaration in rtlwifi_compat.h for
+             * the full trail). Does not consume/free skb. */
+            rtl_beacon_statistic(_hw, skb);
+            kfree_skb(skb);
         } else
             kfree_skb(skb);
         break;

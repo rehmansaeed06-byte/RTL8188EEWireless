@@ -278,6 +278,44 @@ void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
                                    const u8 *bssid);
 
 /*
+ * rtl_beacon_statistic() -- real upstream function, EXPORT_SYMBOL_GPL'd
+ * from base.c:1899, already compiled into this port (base.o links in
+ * cleanly, confirmed 0 undefined symbols per the Twentieth Update).
+ * Forward-declared here (base.h itself is not included anywhere in this
+ * port's kext sources) purely to give RTW88IEEE80211.cpp visibility to
+ * call it.
+ *
+ * findings.md Section 109.7-109.8 ("AP off, try to reconnect now" false
+ * disconnect): confirmed via source read that rtl_watchdog_wq_callback()
+ * (base.c:2039) declares the link dead after 10s of
+ * (link_info.bcn_rx_inperiod + link_info.num_rx_inperiod) == 0.
+ * num_rx_inperiod is only ever incremented in real rtlwifi's own PCI/USB
+ * RX interrupt handlers (pci.c:769, usb.c:404/446) -- neither of which
+ * this port uses, since RX is driven by this port's own IOKit interrupt
+ * path (RTW88PCIDevice.cpp) instead. bcn_rx_inperiod is only ever
+ * incremented by THIS function, which real per-chip RX-mgmt-frame
+ * handling is expected to call for every beacon/probe-response received
+ * from the currently-associated BSSID while linked -- this port's own
+ * processRxMgmt() beacon/probe-resp case (RTW88IEEE80211.cpp) never
+ * called it. Net effect: both counters were permanently stuck at 0
+ * regardless of real traffic, so this watchdog was guaranteed to
+ * false-positive exactly 10s into every single successful connection,
+ * independent of actual link health. Fix: call this from
+ * processRxMgmt()'s beacon/probe-resp case whenever _state ==
+ * RTW88_STATE_CONNECTED, mirroring real per-chip call sites (e.g.
+ * rtl_pci_rx_interrupt() calling it for every RX'd beacon/probe-resp,
+ * regardless of PCI-specific vs. this port's IOKit-specific RX plumbing
+ * around it -- the call itself is generic mac80211/rtlwifi-layer code,
+ * not PCI-interrupt-specific). This function already internally checks
+ * link_state >= MAC80211_LINKED, opmode == STATION, real beacon/
+ * probe-resp frame type, minimum length, and BSSID match against
+ * rtlpriv->mac80211.bssid -- so it is safe to call unconditionally on
+ * every beacon/probe-resp RX'd while connected; it no-ops correctly on
+ * anything not actually from our own AP.
+ */
+void rtl_beacon_statistic(struct ieee80211_hw *hw, struct sk_buff *skb);
+
+/*
  * findings.md Section 87 (RTW88PCIDevice.cpp's own unported-symbol
  * gap, Section 77's original catalogue corrected and closed). Each
  * function below grepped against real rtlwifi source before writing,

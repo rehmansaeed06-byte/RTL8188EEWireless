@@ -1,7 +1,94 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
 ##Next updates are at the bottom
 
-## TWENTY-THIRD UPDATE (read this first) -- CONFIRMED on real hardware:
+## TWENTY-FOURTH UPDATE (read this first) -- CONFIRMED FIXED on real
+## hardware: the "AP off, try to reconnect now" false disconnect is
+## gone. WPA2 connect now survives well past the old ~20s failure
+## point with no disconnect and real traffic flowing.
+
+Direct continuation of the TWENTY-THIRD UPDATE's connect-success
+milestone, closing out that update's one open item.
+
+**Root cause, confirmed via live upstream source read**: real
+rtlwifi's `rtl_watchdog_wq_callback()` (base.c:2039) declares the
+link dead (`"AP off, try to reconnect now"`, base.c:2194) after 10s
+of `link_info.bcn_rx_inperiod + link_info.num_rx_inperiod == 0`.
+`num_rx_inperiod` only increments inside real rtlwifi's own PCI/USB
+RX interrupt handlers (pci.c:769 / usb.c), which this port doesn't
+use -- RX is driven by this port's own IOKit interrupt path
+(`RTW88PCIDevice.cpp`) instead. `bcn_rx_inperiod` only increments
+inside `rtl_beacon_statistic()` (base.c:1899, `EXPORT_SYMBOL_GPL`),
+which real per-chip RX code is expected to call for every beacon/
+probe-response received from the connected BSSID while linked --
+this port's `processRxMgmt()` never called it. **Both counters were
+permanently stuck at 0 regardless of real traffic**, so this
+watchdog was guaranteed to false-positive exactly 10s into every
+single successful connection, independent of actual link health --
+unrelated to the TWENTY-THIRD UPDATE's channel-switch bug, just
+uncovered by it (no connect had ever survived long enough to hit
+this 10s mark before).
+
+Also checked (and ruled out as *not* a bug): whether
+`rtlpriv->mac80211.link_state` -- one of `rtl_beacon_statistic()`'s
+own internal guards -- ever gets set to `MAC80211_LINKED` in this
+port, since this port deliberately bypasses the normal
+`rtl_op_bss_info_changed()` path during the earlier auth/channel-setup
+step (TWENTY-THIRD UPDATE). Confirmed this concern doesn't apply here:
+`processAssocResponse()` already calls the real
+`_hw->ops->bss_info_changed(..., BSS_CHANGED_ASSOC | BSS_CHANGED_QOS)`
+unconditionally after a successful association (for both open and
+WPA2 connections), which does reach real `rtl_op_bss_info_changed()`'s
+`BSS_CHANGED_ASSOC` branch and correctly sets `link_state =
+MAC80211_LINKED` -- so no separate fix was needed there.
+
+**Fix**: `processRxMgmt()`'s beacon/probe-response case
+(`RTW88IEEE80211.cpp`) now calls `rtl_beacon_statistic(_hw, skb)`
+whenever `_state == RTW88_STATE_CONNECTED`. That function has its own
+internal guards (link state, opmode, frame type/length, BSSID match
+against `rtlpriv->mac80211.bssid`) so it's safe to call
+unconditionally -- it silently no-ops for beacons from other nearby
+APs. `rtl_beacon_statistic()` forward-declared in `rtlwifi_compat.h`
+(it's real, already-linked code from `base.o`; `base.h` itself isn't
+included anywhere in this port's kext sources).
+
+**Verified on real hardware**: same scan -> bsslist -> connect
+sequence as the TWENTY-THIRD UPDATE, same target AP. Full auth ->
+assoc -> WPA2 4-way handshake sequence completed identically. This
+time, **no "AP off" message anywhere in the log**, with `dmesg`
+activity continuing cleanly at least 6+ seconds past the old ~20s
+failure point (connect logged at t=120s, `dmesg` capture window
+extends past t=127s with only expected post-handshake activity, no
+disconnect). `ctl_rtw88 state`, captured after a full 30s sleep
+post-connect, showed a healthy, stable link: `state: 5` (connected),
+correct SSID/BSSID, `rssi: -48`, `channel: 6`, and `rx_byte_count`
+substantially higher than pre-connect baseline (real traffic
+flowing).
+
+## Immediate next candidates
+1. Longer soak test (multi-minute, not just 30s) to build more
+   confidence the false disconnect is fully gone and no *other*
+   liveness/watchdog gap exists.
+2. Real data-plane validation -- ping, throughput, actual TX/RX volume
+   beyond passive byte-count observation -- now that a connection can
+   both establish and survive.
+3. `IO80211`/apple80211 interface work (interface is still
+   Ethernet-typed per the Twentieth Update's gap list) -- still a
+   separate, large, unstarted phase.
+4. Class-rename cleanup (RTW88* -> RTL8188EE*) -- still cosmetic/no
+   functional impact.
+5. The isolated `fc=0x0000 len=16` frame first noted in the
+   TWENTY-SECOND UPDATE -- still low priority, still recurring
+   (seen again this session, frame #18 in the scan's `[rxdiag]`
+   capture), still not chased.
+6. Known remaining simplification in `_rtlwifi_set_channel_and_bssid()`
+   (TWENTY-THIRD UPDATE): no 20/40/80MHz bandwidth derivation or
+   `set_channel_access()`/`set_bw_mode()` calls after
+   `switch_channel()`. Not blocking for the 20MHz case proven working;
+   revisit only if 40MHz-capable APs show connect issues.
+
+------------------------------------------------------------------------
+
+## TWENTY-THIRD UPDATE -- CONFIRMED on real hardware:
 ## full WPA2 connect (auth + assoc + 4-way handshake) succeeded for the
 ## first time in this project's history. Root cause of "connect always
 ## times out" was a missing rtlphy->current_channel assignment --

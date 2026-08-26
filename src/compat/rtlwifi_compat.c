@@ -73,6 +73,19 @@
  */
 #include "pci.h"
 
+/*
+ * REG_RCR, RCR_CBSSID_DATA, RCR_CBSSID_BCN (used by
+ * rtlwifi_log_rcr_state() below) live in rtl8188ee/reg.h, the
+ * chip-specific register/bit-definition header — not in the generic
+ * wifi.h already included above. Confirmed no shadow risk the way
+ * pci.h/usb.h have above: grepped this port's own src/compat/ tree
+ * for a same-named reg.h and found none, so a plain quote-include
+ * resolves straight to the real rtl8188ee/reg.h via the CHIP_SRC
+ * -I path (already ordered ahead of COMPAT_FLAGS per the pci.h fix
+ * documented above this file's own Makefile.rtl8188ee).
+ */
+#include "reg.h"
+
 /* ------------------------------------------------------------------ */
 /* Globals — mirrors rtw88_compat.c's g_rtw88_hw pattern               */
 /* (findings.md Section 50.3-50.4, Section 51.2)                       */
@@ -1799,6 +1812,157 @@ void rtlwifi_mark_interface_started(void)
     set_bit(RTL_STATUS_INTERFACE_START, &rtlpriv->status);
 }
 
+/*
+ * rtlwifi_log_rcr_state() -- TEMPORARY DIAGNOSTIC (2026-08-26).
+ *
+ * findings.md Section 97.3: the interrupt->recognize->drain->deliver
+ * pipeline is proven correct end-to-end (one real frame drained cleanly),
+ * mask (IMR_ROK|IMR_RDU) and power-state (rfpwr_state == ERFON) are both
+ * confirmed correct, yet RX events are far too rare given a confirmed-
+ * dense RF environment. Next suspect per that section: whether this
+ * port's compat build of hw_init() actually reaches the same RX-filter
+ * (REG_RCR) configuration real rtl88ee_hw_init() does, the same way
+ * 97.2 found RTL_STATUS_INTERFACE_START was being silently skipped.
+ *
+ * Real rtl88ee_hw_init() (hw.c) writes REG_RCR from rtlpci->receive_config
+ * THREE times total across init: once in _rtl88ee_init_mac() (hw.c:884,
+ * the sw.c:78-90 wide-open default -- AM|AB|ACF|ADF|AAP-family bits, no
+ * BSSID filtering), once again right after rtl88e_phy_mac_config() (hw.c:
+ * 1096-1097, a corrective &= ~(RCR_ACRC32|RCR_AICV) -- the *authoritative*
+ * value, per that function's own comment: phy_mac_config silently touches
+ * RCR internally, so this second write exists specifically to fix it back
+ * up), and conditionally again via rtl88ee_set_check_bssid() (hw.c:1262,
+ * toggles RCR_CBSSID_DATA|RCR_CBSSID_BCN) -- called only from
+ * rtl88ee_set_network_type() (hw.c:1290-1298), itself only reachable from
+ * real core.c's rtl_op_add_interface()/rtl_op_bss_info_changed(). This
+ * port's RTW88IEEE80211::start() does call hw->ops->add_interface() (line
+ * ~835) before hw->ops->start() (line ~842), and rtl_pci_probe() (called
+ * even earlier, before both) is what runs init_sw_vars() and first sets
+ * rtlpci->receive_config's default -- so ordering looks correct on paper.
+ * This function exists to confirm that on real hardware rather than by
+ * source-reading alone: it reads back the LIVE register value actually
+ * sitting in hardware right now via the same MMIO path real
+ * rtl_read_dword()/rtl_write_dword() use, and logs it next to the
+ * software's own believed value (rtlpci->receive_config). If they match
+ * and look like the wide-open sw.c default (no CBSSID bits), RCR is fully
+ * cleared as a suspect and the investigation moves to IQK/LC calibration
+ * instead. If they diverge, or CBSSID bits are unexpectedly set/unset,
+ * that is the smoking gun this section's "single next step" was looking
+ * for. Call once, right after hw->ops->start() returns in
+ * RTW88IEEE80211::start() -- not in a hot path, no rate-limiting needed.
+ * Strip once RCR is confirmed correct or the real bug is found here,
+ * per this project's own standing rule about not leaving permanent
+ * unconditional log spam (95.4/96.1 precedent).
+ */
+void rtlwifi_log_rcr_state(void)
+{
+    struct ieee80211_hw *hw = rtlwifi_get_hw();
+
+    if (!hw || !hw->priv) {
+        rtw88_printk(0, "rtw88: rcr-diag: no hw/priv yet, skipping\n");
+        return;
+    }
+
+    struct rtl_priv *rtlpriv = rtl_priv(hw);
+    struct rtl_pci *rtlpci = rtl_pcidev(rtl_pcipriv(hw));
+
+    if (!rtlpriv || !rtlpci) {
+        rtw88_printk(0, "rtw88: rcr-diag: rtlpriv/rtlpci not ready, skipping\n");
+        return;
+    }
+
+    u32 sw_believed = rtlpci->receive_config;
+    u32 hw_live = rtl_read_dword(rtlpriv, REG_RCR);
+
+    rtw88_printk(0,
+        "rtw88: rcr-diag: sw_receive_config=0x%08x hw_live_REG_RCR=0x%08x "
+        "cbssid_data=%d cbssid_bcn=%d match=%d\n",
+        sw_believed, hw_live,
+        !!(hw_live & RCR_CBSSID_DATA), !!(hw_live & RCR_CBSSID_BCN),
+        sw_believed == hw_live);
+}
+
+/*
+ * rtlwifi_log_iqk_lc_state() -- TEMPORARY DIAGNOSTIC (2026-08-26).
+ *
+ * findings.md Section 98: RCR is now fully ruled out (rcr-diag showed
+ * sw_receive_config == live REG_RCR, match=1, wide-open filter as
+ * intended). Per real rtl88ee_hw_init() (hw.c, confirmed against
+ * upstream this session -- see 98's citation), the next step in that
+ * function after the RCR/BB/RF config block, gated behind
+ * ppsc->rfpwr_state == ERFON, is:
+ *
+ *     if (rtlphy->iqk_initialized)
+ *         rtl88e_phy_iq_calibrate(hw, true);
+ *     else {
+ *         rtl88e_phy_iq_calibrate(hw, false);
+ *         rtlphy->iqk_initialized = true;
+ *     }
+ *     rtl88e_dm_check_txpower_tracking(hw);
+ *     rtl88e_phy_lc_calibrate(hw);
+ *
+ * If IQ/LC calibration silently fails or never runs, the RF front-end
+ * can be mistuned (wrong LO frequency, poor image rejection) even
+ * though every software-side register write this port makes is
+ * correct -- which would explain rare RX despite a confirmed-dense
+ * RF environment without RCR, IMR, or the ring-drain logic being at
+ * fault.
+ *
+ * struct rtl_phy (real wifi.h, confirmed against upstream mirrors
+ * this session) exposes iqk_initialized (bool, set true once the
+ * *first* full calibration completes -- does not by itself mean that
+ * calibration succeeded, only that it ran), lck_inprogress (bool, LC
+ * calibration's own busy/in-progress flag -- should read false by
+ * the time hw_init() returns, since LC calibrate is called
+ * synchronously with no async completion path in real phy.c), and
+ * the eight power-tracking registers reg_e94/e9c/ea4/eac/eb4/ebc/
+ * ec4/ecc, which mirror exactly the vendor driver's own IQK debug
+ * output style (e.g. "RegE94=103 RegE9C=f ... IQK: final_candidate is
+ * 0" from real-hardware vendor logs) -- non-zero/non-default values
+ * here are the closest signal available to a pass/fail result without
+ * re-deriving real phy.c's internal IQK math, which is not vendored
+ * in this port and out of scope for a diagnostic.
+ *
+ * This function reads all of the above back from the live rtlphy
+ * struct -- not a register read via MMIO like rcr-diag, since IQK/LC
+ * state lives in software bookkeeping in rtl_phy, not a single
+ * hardware register -- and logs it once, same call site and same
+ * one-shot-after-start() discipline as rtlwifi_log_rcr_state().
+ * Catching this log line requires the same verbose-boot capture
+ * workflow documented in 98 (dmesg/log show both proved unreliable
+ * for this kext's one-shot early-boot IOLog output).
+ *
+ * Strip once IQK/LC is confirmed correct or the real bug is found
+ * here, per this project's own standing rule about not leaving
+ * permanent unconditional log spam (95.4/96.1 precedent).
+ */
+void rtlwifi_log_iqk_lc_state(void)
+{
+    struct ieee80211_hw *hw = rtlwifi_get_hw();
+
+    if (!hw || !hw->priv) {
+        rtw88_printk(0, "rtw88: iqklc-diag: no hw/priv yet, skipping\n");
+        return;
+    }
+
+    struct rtl_priv *rtlpriv = rtl_priv(hw);
+
+    if (!rtlpriv) {
+        rtw88_printk(0, "rtw88: iqklc-diag: rtlpriv not ready, skipping\n");
+        return;
+    }
+
+    struct rtl_phy *rtlphy = &rtlpriv->phy;
+
+    rtw88_printk(0,
+        "rtw88: iqklc-diag: iqk_initialized=%d lck_inprogress=%d "
+        "regE94=%d regE9C=%d regEA4=%d regEAC=%d "
+        "regEB4=%d regEBC=%d regEC4=%d regECC=%d\n",
+        !!rtlphy->iqk_initialized, !!rtlphy->lck_inprogress,
+        rtlphy->reg_e94, rtlphy->reg_e9c, rtlphy->reg_ea4, rtlphy->reg_eac,
+        rtlphy->reg_eb4, rtlphy->reg_ebc, rtlphy->reg_ec4, rtlphy->reg_ecc);
+}
+
 bool rtlwifi_do_interrupt(void)
 {
     /* TEMPORARY DIAGNOSTIC (2026-08-25): rate-limited 1-in-N logging to
@@ -1843,7 +2007,7 @@ bool rtlwifi_do_interrupt(void)
      * rarely despite a correct irq_mask and a proven-working RX-drain
      * path (findings.md Section 96 follow-up, post-RTL_STATUS_INTERFACE_START
      * fix). rtlpriv->psc.rfpwr_state, wifi.h:1991. */
-    if ((_diag_call_count % 1000) == 1) {
+    if ((_diag_call_count % 200000) == 1) {
         IOLog("rtw88: [diag] call #%u inta=0x%08x intb=0x%08x irq_enabled=%d rfpwr_state=%d\n",
               _diag_call_count, intvec.inta, intvec.intb, rtlpci->irq_enabled,
               (int)rtlpriv->psc.rfpwr_state);

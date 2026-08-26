@@ -8371,19 +8371,111 @@ solved yet. Strip once RX frequency is understood/fixed, per this
 project's own standing rule about not leaving permanent unconditional
 log spam (95.4/96.1 precedent).
 
-### Single next step (explicit, supersedes 96's list)
-1. Grep real `rtl88ee_hw_init()` (`rtl8188ee/hw.c`) for its RX-config
-   sequence — `REG_RCR` writes, any RX-filter or BB/RF bring-up steps
-   — and confirm this port's compat build reaches all of them, the
-   same way 97.2 confirmed `RTL_STATUS_INTERFACE_START` was being
-   silently skipped.
-2. Once RX frequency looks right (or a further gap is found and
+### 98. RCR diagnostic result: RCR ruled out, IQK/LC calibration is next suspect
+Added `rtlwifi_log_rcr_state()` (`rtlwifi_compat.c`) — reads the live
+`REG_RCR` register straight off hardware via `rtl_read_dword()` and
+compares it against what software believes it wrote
+(`rtlpci->receive_config`), called once from
+`RTW88IEEE80211::start()` right after `hw->ops->start()` returns 0.
+
+**Catching the output required working around three separate
+logging-visibility problems, in order**, before the diagnostic itself
+could even be evaluated:
+1. `dmesg`/`log show` read after the fact always missed it — the
+   kernel ring buffer is small, and this port's own 1-in-1000
+   interrupt-loop diagnostic (97.3) was filling it faster than a
+   human could open a terminal and read it, even long after `start()`
+   had already run. Confirmed by temporarily widening that sampling
+   divisor to 1-in-200000 (revert once fully done with this — see
+   below) — this did *not* surface the line either.
+2. Kernel `IOLog` from this kext does not appear to reach the
+   unified-log persistent store at all (`log show --info --debug`
+   over a 30-minute window found nothing, despite correctly
+   surfacing unrelated `sudo` command-history entries from the same
+   window) — it appears to live only in the small `dmesg` ring
+   buffer.
+3. The kext is KC-injected via OpenCore, so it is **not unloadable at
+   runtime** (`kextunload` reliably fails with "kext is in use or
+   retained" regardless of interface state) — the only way to force
+   a fresh `RTW88IEEE80211::start()` call with new code is a full
+   reboot, and `start()`'s one-shot log lines only survive if read
+   almost immediately, before ordinary boot log volume (unrelated to
+   this driver) pushes them out.
+
+Root cause of the *last* barrier: verbose boot (`-v debug=0x100
+keepsyms=1`) streams the kernel log to the display in real time,
+independent of any buffer, so it's the only way to reliably observe
+one-shot early-boot lines from this kext. Confirmed on video:
+`RTW88_STAGE` sequence runs cleanly start to finish (`chip matched`
+→ `rtl_pci_probe returned 0` → `adding STA interface` →
+`add_interface done` → `hw->ops->start returned 0`), followed by the
+actual diagnostic line.
+
+**Result:**
+```
+sw_receive_config = 0xf000700e
+hw_live_REG_RCR   = 0xf000700e   (identical — match=1)
+cbssid_data        = 0
+cbssid_bcn          = 0
+```
+Software and hardware fully agree on RCR. All three of
+`_rtl88ee_init_mac()`'s wide-open default write, `rtl88e_phy_mac_config()`'s
+corrective `RCR_ACRC32`/`RCR_AICV`-clearing rewrite, and
+`rtl88ee_set_check_bssid()`'s conditional BSSID-filter toggle are
+landing correctly and staying landed — this port's compat build
+reaches and correctly executes every real `REG_RCR` write site.
+`cbssid_data=0`/`cbssid_bcn=0` confirm the hardware is in its
+intended wide-open, unfiltered receive mode. **RCR is ruled out as
+the cause of RX rarity.**
+
+**Next suspect, per real `rtl88ee_hw_init()` source (confirmed via
+upstream mirror this session, not from memory) — the calibration
+sequence that runs immediately after the BB/RF config, gated behind
+`rfpwr_state == ERFON`:**
+```c
+if (rtlphy->iqk_initialized)
+    rtl88e_phy_iq_calibrate(hw, true);
+else {
+    rtl88e_phy_iq_calibrate(hw, false);
+    rtlphy->iqk_initialized = true;
+}
+rtl88e_dm_check_txpower_tracking(hw);
+rtl88e_phy_lc_calibrate(hw);
+```
+If IQ or LC calibration fails or is skipped, the RF front-end can be
+mistuned (wrong frequency lock, poor image rejection/sensitivity)
+even though every software-side register write is correct — which
+would produce exactly this port's symptom (rare RX despite confirmed
+dense nearby APs) without RCR, the interrupt mask, or the ring-drain
+logic being at fault. Not yet instrumented this session.
+
+### Single next step (supersedes 97's list)
+1. Add an IQK/LC diagnostic analogous to `rtlwifi_log_rcr_state()` —
+   call `rtl88e_phy_iq_calibrate()`'s real return/status path (check
+   `rtlphy->iqk_initialized`, and whether real `phy.c`'s IQK routine
+   exposes a pass/fail signal per-path, the way the TI forum capture
+   in this session's research showed `"Path A IQ Calibration
+   Success"` style logging exists in the vendor driver) and log it
+   once from the same `start()` call site, right after
+   `rtlwifi_log_rcr_state()`.
+2. Catching this diagnostic's output will need the same verbose-boot
+   capture workflow used for RCR (see barriers 1-3 above) — plan for
+   it up front rather than rediscovering the same three blockers.
+3. Once RX frequency looks right (or a further gap is found and
    fixed): re-test `ctl_rtw88 scan`, confirm `rx_byte_count` climbs
    and multiple frames drain per scan, *then* check the
    `_bssList`-vs-`scan_list` question from 96.6 (still open,
    untouched this session).
-3. Strip the temporary diagnostic logging once the above is settled.
-4. `ctl_rtw88 connect` against a real AP, `IO80211` integration,
+4. Strip all temporary diagnostic logging (RCR diag, the widened
+   1-in-200000 interrupt sampling, and whatever IQK/LC diagnostic
+   gets added) once the above is settled — revert 97.3's interrupt
+   sampling back to 1-in-1000 as part of this cleanup, not before.
+5. Separately noted this session, not yet investigated:
+   `ctl_rtw88 state` reports `rx_byte_count: 0` even during a capture
+   window where RX-flagged ring-drain events were clearly firing
+   (own-bit advancing) — the byte counter isn't being incremented on
+   the drain path. Small, likely independent bug.
+6. `ctl_rtw88 connect` against a real AP, `IO80211` integration,
    class-rename cleanup all remain valid, lower-priority, unstarted.
 
 ------------------------------------------------------------------------

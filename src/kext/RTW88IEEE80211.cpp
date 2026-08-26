@@ -845,6 +845,19 @@ IOReturn RTW88IEEE80211::start()
                 IOLog("rtw88: hw->ops->start failed: %d\n", ret);
             } else {
                 _powered = true;
+                /* TEMPORARY DIAGNOSTIC (2026-08-26) -- see
+                 * rtlwifi_log_rcr_state() in rtlwifi_compat.c/.h for the
+                 * full findings.md Section 97 follow-up rationale.
+                 * Strip once RCR is confirmed correct or the real bug
+                 * is found here. */
+                rtlwifi_log_rcr_state();
+                /* TEMPORARY DIAGNOSTIC (2026-08-26) -- see
+                 * rtlwifi_log_iqk_lc_state() in rtlwifi_compat.c/.h for
+                 * the full findings.md Section 98 follow-up rationale.
+                 * Next suspect after RCR was ruled out. Strip once
+                 * IQK/LC is confirmed correct or the real bug is found
+                 * here. */
+                rtlwifi_log_iqk_lc_state();
             }
         }
     }

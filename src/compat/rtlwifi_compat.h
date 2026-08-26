@@ -374,4 +374,40 @@ bool rtlwifi_do_interrupt(void);
  */
 void rtlwifi_mark_interface_started(void);
 
+/*
+ * rtlwifi_log_rcr_state() -- TEMPORARY DIAGNOSTIC (2026-08-26). Logs the
+ * software-believed rtlpci->receive_config next to a live MMIO readback
+ * of REG_RCR, plus the two RCR_CBSSID_* bits, via IOLog/dmesg (prefix
+ * "rtw88: rcr-diag:"). See the definition in rtlwifi_compat.c for the
+ * full findings.md Section 97 follow-up rationale. Call once, right
+ * after hw->ops->start() returns in RTW88IEEE80211::start() -- not a
+ * hot path, no rate-limiting needed. Kext .cpp files can't read
+ * rtlpci->receive_config or call rtl_read_dword() directly: struct
+ * rtl_priv/rtl_pci are only forward-declared on that side, not fully
+ * visible the way they are here (this file already #includes the real
+ * wifi.h) -- same reason rtlwifi_mark_interface_started() above exists
+ * as an exported compat function instead of inline kext code. Strip
+ * once RCR is confirmed correct or the real bug is found here, per this
+ * project's own standing rule about not leaving permanent unconditional
+ * log spam (95.4/96.1 precedent).
+ */
+void rtlwifi_log_rcr_state(void);
+
+/*
+ * rtlwifi_log_iqk_lc_state() -- TEMPORARY DIAGNOSTIC (2026-08-26). Logs
+ * struct rtl_phy's IQK/LC calibration bookkeeping (iqk_initialized,
+ * lck_inprogress, and the eight power-tracking registers reg_e94
+ * through reg_ecc) via IOLog/dmesg (prefix "rtw88: iqklc-diag:"). See
+ * the definition in rtlwifi_compat.c for the full findings.md Section
+ * 98 follow-up rationale -- this is the next suspect after RCR was
+ * ruled out. Call once, same call site and same one-shot-after-
+ * start() discipline as rtlwifi_log_rcr_state() immediately above.
+ * Kext .cpp files can't reach rtlpriv->phy directly for the same
+ * struct-visibility reason documented on rtlwifi_log_rcr_state().
+ * Strip once IQK/LC is confirmed correct or the real bug is found
+ * here, per this project's own standing rule about not leaving
+ * permanent unconditional log spam (95.4/96.1 precedent).
+ */
+void rtlwifi_log_iqk_lc_state(void);
+
 #endif /* RTLWIFI_COMPAT_H */

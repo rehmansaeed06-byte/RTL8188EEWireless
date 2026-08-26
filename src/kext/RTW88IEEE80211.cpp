@@ -3033,6 +3033,14 @@ bool RTW88IEEE80211::txDataFrame(mbuf_t m)
 
     struct ieee80211_tx_control ctrl = { .sta = _sta };
     _hw->ops->tx(_hw, &ctrl, skb);
+    /* findings.md Section 100: tx_byte_count's RX-side counterpart bug.
+     * paylen is the real IP-payload data length (mbuf's 14-byte Ethernet
+     * header already excluded above), matching txbytesunicast's real
+     * semantic (unicast *data* bytes, not the 802.11/LLC framing this
+     * function adds on top). Deliberately not called from
+     * txMgmtFrame()/txNullFunc() -- see rtlwifi_add_tx_bytes()'s header
+     * comment. */
+    rtlwifi_add_tx_bytes(paylen);
     mbuf_freem(m);
     return true;
 }

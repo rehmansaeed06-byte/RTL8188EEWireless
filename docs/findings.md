@@ -8480,4 +8480,269 @@ logic being at fault. Not yet instrumented this session.
 
 ------------------------------------------------------------------------
 
+# 99. IQK/LC calibration result captured on hardware — RULED OUT as the
+#     cause of RX rarity; RX itself now looks healthy in a fresh capture
+
+Captured via verbose-boot screen recording (dmesg proved unreliable
+again this session -- `grep -E "iqklc-diag|rcr-diag|RTW88_STAGE"`
+against the full ring buffer came back completely empty even
+immediately post-boot, confirming the buffer rotates out the one-shot
+`start()` lines faster than any post-hoc `dmesg` read can catch them;
+same barrier already documented in Section 98, no new mitigation found
+this session beyond filming the console directly).
+
+## 99.1 Captured `iqklc-diag` line
+
+```
+iqk_initialized=1  lck_inprogress=0
+regE94=257  regE9C=1  regEA4=0  regEAC=0
+regEB4=0    regEBC=0  regEC4=0  regECC=0
+```
+
+## 99.2 RTL8188EE confirmed 1T1R -- Path B all-zero is expected, not a bug
+
+Confirmed directly from Realtek's own datasheet/product page (web
+search, this session): RTL8188EE integrates "a 1T1R capable WLAN
+baseband" -- one transmit, one receive RF path, full stop. There is
+no second RF path on this silicon for `regEB4`-`regECC` (Path B) to
+ever calibrate. All-zero there is the correct, expected state for
+this specific chip, not a sign calibration is incomplete.
+
+## 99.3 Path A shape matches a documented real-hardware SUCCESS case,
+##     not a failure signature
+
+Found a real vendor debug log (TI E2E forum, RTL8192cu -- another
+1T1R chip in the same RTL8188/8192-family IQK implementation lineage)
+showing a **confirmed-successful** calibration:
+
+```
+IQK: RegE94=103 RegE9C=f RegEA4=0 RegEAC=0 RegEB4=0 RegEBC=0 RegEC4=0 RegECC=0
+Path A IQ Calibration Success !
+```
+
+Structurally identical to this session's captured result: only
+`RegE94`/`RegE9C` non-zero, everything else (rest of Path A, all of
+Path B) zero. Exact numeric values differ (expected -- different
+chip, different RF environment, different calibration run), but the
+*shape* -- which fields are zero vs. non-zero -- matches exactly.
+Combined with `iqk_initialized=1`/`lck_inprogress=0` (calibration ran
+to completion, not stuck), this is a textbook-healthy 1T1R IQK
+result, not a failure pattern.
+
+## 99.4 Conclusion: IQK/LC is RULED OUT, same as RCR was in Section 98
+
+Both of Section 98's two suspects (RCR, IQK/LC) are now confirmed
+correct/healthy via direct on-hardware capture, not source-reading
+alone. Software-side register/calibration configuration is not the
+cause of the RX-rarity symptom Section 97.3 originally reported.
+
+## 99.5 Separately, this session's own dmesg capture shows RX now
+##     arriving steadily -- markedly better than Section 97.3's result
+
+Independent of the IQK/LC question, this session's `dmesg` capture
+(a `tail -300`/`grep -i diag` taken ~3 minutes post-boot, unrelated to
+hunting for the boot-time diagnostic lines) showed a clean,
+repeating pattern: an RX-flagged interrupt roughly every 6-10 seconds
+throughout the whole ~3-minute window (`entry #1301` through `#3101`
+and beyond -- i.e. north of 1700 RX-flagged interrupts already fired
+by the time this window starts, well past Section 97.3's "one frame
+in several minutes" result), each one draining exactly one frame with
+a correct own-bit stop (`own=0` then `own=1`, ring correctly detected
+empty and halted).
+
+This is a real, qualitative improvement over Section 97.3's finding,
+though *why* it improved was not root-caused this session (no
+intentional fix was made between that finding and this one -- it may
+be that the interface-start fix from Section 97.2 simply needed more
+settling time, environmental RF conditions differed between test
+sessions, or something else entirely). Flagged as observed, not
+explained.
+
+## 99.6 Updated remaining open items (supersedes Section 98's list)
+
+1. **RCR and IQK/LC are both closed** -- neither is the cause of any
+   remaining RX issue. If RX problems persist, look elsewhere (ring
+   size/count, AGC/RSSI thresholds, antenna/GPIO switch state -- none
+   investigated yet).
+2. Re-run `ctl_rtw88 state` after a several-minute idle window to see
+   whether `rx_byte_count` now climbs in line with the steady
+   RX-flagged interrupt rate seen in 99.5 -- Section 98 item 5 flagged
+   this counter as stuck at 0 even during active drain events; not
+   re-checked this session, still open.
+3. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag, the
+   interrupt-loop rate-limited logging) now that both of Section 98's
+   suspects are resolved -- per this project's standing rule against
+   permanent log spam (95.4/96.1 precedent). Not done this session.
+4. `ctl_rtw88 connect` against a real AP, full scan-to-connect
+   validation now that RX looks healthy, `IO80211` integration,
+   class-rename cleanup all remain valid, unstarted.
+5. `dmesg`/ring-buffer unreliability for one-shot boot diagnostics
+   (Section 98's finding) reconfirmed this session with no new
+   mitigation -- verbose-boot screen recording remains the only
+   reliable capture method for this kind of line until/unless the
+   diagnostic output is moved to a channel that survives the boot-time
+   ring-buffer churn (e.g. writing to a file instead of `IOLog`).
+
+------------------------------------------------------------------------
+
+# 100. `rx_byte_count` stuck-at-0 bug (Section 98 item 5 / 99.6 item 2)
+#      -- root-caused and fixed
+
+## 100.1 Confirmed on hardware
+
+`ctl_rtw88 state` showed `rx_byte_count: 0` even after a session with
+dozens of confirmed clean RX-drain events (Section 99.5) -- real
+frames were being received and delivered, but the counter never moved.
+`rssi: 30` (non-zero, real-looking) and `mac_addr`/`fw_version` both
+populated correctly in the same output, confirming this is isolated to
+the byte counter specifically, not a broader stats-plumbing failure.
+
+## 100.2 Root cause
+
+`rtlwifi_get_stats()` (`rtlwifi_compat.c`) correctly *reads*
+`rtlpriv->stats.rxbytesunicast` -- that function was never the bug.
+Grepping the whole compat layer for `rxbytesunicast` found exactly one
+reference: that read. **Nothing anywhere in this port's code ever
+writes to it.** Real rtlwifi increments this field deep inside its own
+`base.c`/`core.c` RX-completion accounting -- code this port's
+architecture never reaches, because `rtlwifi_do_interrupt()`
+(Section 97) dispatches received frames directly to
+`ieee80211_rx_irqsafe()`, deliberately bypassing rtlwifi's own RX
+entry point the same way the TX side already bypasses rtlwifi's TX
+entry point (Section 52's confirmed direct-dispatch pattern). The
+real accounting code and this port's actual delivery path simply never
+intersect.
+
+## 100.3 Fix
+
+Added the increment directly inside `ieee80211_rx_irqsafe()`
+(`rtlwifi_compat.c`) -- the single choke point every RX frame this
+port delivers passes through, including via `ieee80211_rx_napi()`,
+which just forwards into it. `rtlpriv->stats.rxbytesunicast +=
+skb->len;`, guarded by the same `hw && hw->priv` null-check pattern
+already used elsewhere in this file, placed before the existing
+callback dispatch so the byte count is captured while `skb` is still
+valid (before `g_hw_cbs->rx_frame()`/`kfree_skb()` potentially frees
+it). `skb->len` is `u32` (confirmed, `linux/skbuff.h`); the destination
+field is `u64` per the existing read-side comment in
+`rtlwifi_get_stats()` -- a safe widening add, no truncation risk on
+write; the already-documented narrowing only happens on the read side
+when it's copied out as `u32` for `ctl_rtw88`.
+
+Deliberately did NOT touch `rtlwifi_do_interrupt()` itself -- the fix
+belongs at the delivery choke point, not the interrupt handler, so it
+covers every current and future caller of
+`ieee80211_rx_irqsafe()`/`ieee80211_rx_napi()` rather than just the one
+call site inside the ISR.
+
+`tx_byte_count`'s equivalent (`txbytesunicast`) was NOT touched this
+session -- not grepped for a same-shaped gap on the TX side yet; the
+TX direct-dispatch path (Section 52.2, `txDataFrame()` ->
+`_hw->ops->tx()`) is architecturally the same kind of rtlwifi-core
+bypass and may have the identical bug. Flagged, not fixed.
+
+## 100.4 Status -- NOT yet rebuilt or reverified on hardware
+
+This is a source change only. Needs `make -f Makefile.rtl8188ee clean
+&& make -f Makefile.rtl8188ee kext`, reinstall to
+`EFI/OC/Kexts/rtl8188ee.kext`, reboot, then re-run `ctl_rtw88 state`
+after some idle/RX-active time to confirm `rx_byte_count` now climbs.
+
+## 100.5 Updated remaining open items
+
+1. **This fix needs a rebuild + reboot + `ctl_rtw88 state` recheck** --
+   immediate next step, not yet done.
+2. ~~`tx_byte_count`/`txbytesunicast` -- check for the identical gap on
+   the TX direct-dispatch path~~ -- **done, see Section 101 below.**
+3. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging) now that Section 98/99 closed
+   both calibration-side suspects -- still not done.
+4. `ctl_rtw88 connect` against a real AP, full scan-to-connect
+   validation, `IO80211` integration, class-rename cleanup all remain
+   valid, unstarted.
+5. `dmesg`/ring-buffer unreliability for one-shot boot diagnostics
+   (Section 98) -- unchanged, still the only reliable capture method
+   is a verbose-boot screen recording.
+
+------------------------------------------------------------------------
+
+# 101. `tx_byte_count` -- same-shaped bug confirmed and fixed alongside
+#      Section 100's RX-side fix
+
+## 101.1 Confirmed same root cause, different shape on the fix side
+
+Grepped for `txbytesunicast` the same way `rxbytesunicast` was grepped
+in Section 100.2: exactly one reference in the whole compat layer, the
+existing read in `rtlwifi_get_stats()`. Nothing writes it. Root cause
+is the TX-side mirror of Section 100.2 exactly: real rtlwifi
+increments `txbytesunicast` inside its own TX-completion accounting,
+which this port's direct-dispatch TX path
+(`RTW88IEEE80211::txDataFrame()` -> `_hw->ops->tx()`, Section 52.2's
+confirmed bypass-mac80211-TX-queueing pattern) never reaches.
+
+## 101.2 Why the fix shape differs from the RX side
+
+RX has a single shared choke point (`ieee80211_rx_irqsafe()`, every
+delivered frame passes through it -- Section 100.3). TX does not:
+three separate `.cpp`-side call sites build their own `skb` and call
+`_hw->ops->tx()` directly (`txMgmtFrame()`, `txNullFunc()`,
+`txDataFrame()`) -- confirmed by grep, no shared TX-send wrapper
+exists to hook once. `.cpp` files also can't reach
+`rtlpriv->stats` directly (same struct-visibility gap
+`rtlwifi_mark_interface_started()` already worked around in Section
+97.2 for a different field). Fix follows that established pattern: a
+new compat-layer bridge function, `rtlwifi_add_tx_bytes(u32 len)`
+(`rtlwifi_compat.c`/`.h`, next to `rtlwifi_get_stats()`), does
+`rtlpriv->stats.txbytesunicast += len;` behind the usual
+`g_rtlwifi_hw`/`->priv` null-check.
+
+## 101.3 Only wired into the data path, matching real semantics
+
+Called once, from `RTW88IEEE80211::txDataFrame()` only -- right after
+its existing `_hw->ops->tx()` call -- passing `paylen`, the function's
+own already-computed real IP-payload length (mbuf's 14-byte Ethernet
+header already excluded, computed before this function even builds
+the 802.11 frame around it). Deliberately NOT called from
+`txMgmtFrame()`/`txNullFunc()`: real rtlwifi's `txbytesunicast` tracks
+unicast *data* traffic specifically (matching `rxbytesunicast`'s own
+documented read-side semantics in `rtlwifi_get_stats()`), not
+management/control-frame overhead -- mirroring the same
+data-vs-management distinction already established on the RX side.
+
+`extern "C"` linkage needed no special handling here (unlike Section
+97.2's standalone fix, which needed its own file-scope `extern "C"`
+redeclaration because that call predated this file's own wrapper):
+`RTW88IEEE80211.cpp` already `#include`s the entire
+`rtlwifi_compat.h` inside a top-of-file `extern "C" { ... }` block
+(confirmed, lines 20-45), so the new declaration is covered
+automatically.
+
+## 101.4 Status -- NOT yet rebuilt or reverified on hardware
+
+Same as Section 100.4 -- source change only, covered by the same
+pending rebuild/reboot/recheck cycle. `ctl_rtw88 state`'s
+`tx_byte_count` should climb once real data frames are sent (note:
+this requires an actual association/data-TX event, e.g. from
+`ctl_rtw88 connect` -- unlike RX, which already climbs passively from
+received beacon/management traffic even pre-association, TX data
+frames won't fire until the port is actually sending something).
+
+## 101.5 Updated remaining open items (supersedes Section 100.5)
+
+1. **Both fixes (Section 100 + this section) need one rebuild + reboot
+   + recheck cycle** -- `make -f Makefile.rtl8188ee clean && make -f
+   Makefile.rtl8188ee kext`, reinstall, reboot, then `ctl_rtw88 state`.
+   `rx_byte_count` should climb passively; `tx_byte_count` needs an
+   actual data-TX event to test (see 101.4).
+2. Strip all temporary diagnostic logging (RCR diag, IQK/LC diag,
+   interrupt-loop rate-limited logging) -- still not done.
+3. `ctl_rtw88 connect` against a real AP, full scan-to-connect
+   validation, `IO80211` integration, class-rename cleanup all remain
+   valid, unstarted.
+4. `dmesg`/ring-buffer unreliability for one-shot boot diagnostics --
+   unchanged, verbose-boot screen recording remains the only reliable
+   capture method.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

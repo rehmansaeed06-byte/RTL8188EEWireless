@@ -350,6 +350,26 @@ void rtlwifi_set_hw_callbacks(struct rtlwifi_hw_callbacks *cbs, void *kext_hw)
  */
 void ieee80211_rx_irqsafe(struct ieee80211_hw *hw, struct sk_buff *skb)
 {
+    /*
+     * findings.md Section 98 item 5 / Section 99.6 item 2: rx_byte_count
+     * (surfaced via rtlwifi_get_stats() -> rtlpriv->stats.rxbytesunicast)
+     * stayed 0 even during confirmed-active RX-drain events. Root cause:
+     * real rtlwifi normally increments rxbytesunicast deep inside its own
+     * base.c/core.c RX-completion accounting, which this port's direct
+     * rtlwifi_do_interrupt() -> ieee80211_rx_irqsafe() dispatch (Section 52
+     * -- deliberately bypasses rtlwifi's own RX entry point, same
+     * bypass-mac80211 pattern as the TX side) never reaches. This is the
+     * single choke point every real RX frame this port delivers passes
+     * through (both ieee80211_rx_irqsafe() callers and ieee80211_rx_napi(),
+     * which just forwards here), so it's the correct place to add the
+     * counter rather than the interrupt handler itself. skb->len is still
+     * valid at this point, before the callback consumes/frees it.
+     */
+    if (hw && hw->priv && skb) {
+        struct rtl_priv *rtlpriv = rtl_priv(hw);
+        rtlpriv->stats.rxbytesunicast += skb->len;
+    }
+
     void *ctx = hw ? hw->kext_hw : NULL;
     if (!ctx)
         ctx = g_kext_hw;
@@ -943,6 +963,23 @@ void rtlwifi_get_stats(u32 *tx_bytes, u32 *rx_bytes)
         *tx_bytes = (u32)rtlpriv->stats.txbytesunicast;
     if (rx_bytes)
         *rx_bytes = (u32)rtlpriv->stats.rxbytesunicast;
+}
+
+/*
+ * rtlwifi_add_tx_bytes() -- see rtlwifi_compat.h for the full
+ * findings.md Section 100 rationale (rx_byte_count's identical bug,
+ * root cause, and why tx_byte_count needs a bridge function instead
+ * of a single shared choke point the way the RX side has one).
+ * Called once from RTW88IEEE80211::txDataFrame(), right after
+ * _hw->ops->tx() returns, with the frame's data-payload length.
+ */
+void rtlwifi_add_tx_bytes(u32 len)
+{
+    if (!g_rtlwifi_hw || !g_rtlwifi_hw->priv)
+        return;
+
+    struct rtl_priv *rtlpriv = (struct rtl_priv *)g_rtlwifi_hw->priv;
+    rtlpriv->stats.txbytesunicast += len;
 }
 
 /*

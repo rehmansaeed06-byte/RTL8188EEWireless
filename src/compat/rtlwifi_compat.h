@@ -410,4 +410,28 @@ void rtlwifi_log_rcr_state(void);
  */
 void rtlwifi_log_iqk_lc_state(void);
 
+/*
+ * rtlwifi_add_tx_bytes() -- see findings.md Section 100 for the RX-side
+ * version of this same bug (rx_byte_count stuck at 0) and its root
+ * cause. tx_byte_count has the identical gap: real rtlwifi increments
+ * rtlpriv->stats.txbytesunicast deep inside its own TX-completion
+ * accounting, which this port's direct-dispatch TX path
+ * (RTW88IEEE80211::txDataFrame() -> _hw->ops->tx(), findings.md
+ * Section 52.2 -- deliberately bypasses rtlwifi's own TX entry point,
+ * mirroring the RX-side bypass) never reaches. Unlike the RX side,
+ * there is no single shared choke point on the C++ side (three
+ * separate call sites -- txMgmtFrame/txNullFunc/txDataFrame -- each
+ * build their own skb and call _hw->ops->tx() directly), and .cpp
+ * files can't reach rtlpriv->stats directly (same struct-visibility
+ * reason documented on rtlwifi_mark_interface_started() above). This
+ * function is the bridge: call it once from txDataFrame(), right
+ * after _hw->ops->tx() returns, passing the frame's data-payload
+ * length. Deliberately NOT called from txMgmtFrame()/txNullFunc() --
+ * real rtlwifi's txbytesunicast tracks unicast *data* traffic
+ * specifically (matching rxbytesunicast's own read-side comment in
+ * rtlwifi_get_stats()), not management/control frame overhead, so
+ * only the data-TX path increments it, mirroring that semantic.
+ */
+void rtlwifi_add_tx_bytes(u32 len);
+
 #endif /* RTLWIFI_COMPAT_H */

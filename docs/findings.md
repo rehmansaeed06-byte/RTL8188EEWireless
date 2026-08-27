@@ -10340,4 +10340,77 @@ each retry progressively slower).
 
 ------------------------------------------------------------------------
 
+# 112. Queuing-delay symptom not reproduced -- TX-ISR fix confirmed stable under repeat testing
+
+## 112.1 Repeat test setup
+
+Same connect sequence as Section 110/111
+(`NAYAtel-arsahd03369999259`, `60:de:44:49:31:dc`, ch 6), same
+`ping -c 60 8.8.8.8` test, this time with `[txdatadiag]`/
+`[rxdatadiag]` captured live via `dmesg -w` throughout the run and
+`ctl_rtw88 state` sampled twice back-to-back (2s apart) mid-run plus
+once more after completion.
+
+## 112.2 Ping result: no bufferbloat this run
+
+60 sent, 57 received (+3 duplicate replies from the DUP-prone early
+packets), 5.0% loss. RTT stayed flat the entire run: min 39.457ms /
+avg 47.599ms / max 128.800ms (the one 128ms spike was an isolated
+outlier with a DUP, not the start of a climb). No progressive
+RTT growth anywhere in the run -- contrast with Section 111.3's
+40ms-to-6.3s climb on the previous run.
+
+## 112.3 txdatadiag timing confirms steady drain, no ring backlog
+
+Extracted the `framelen=124 paylen=84` frames (the ICMP-sized ping
+packets) from the `[txdatadiag]` capture and computed inter-packet
+intervals by timestamp: every interval across the full ~37-second
+window sampled is 1.001-1.005s, matching ping's own 1-second send
+cadence with no drift. If the TX ring were backing up the way it did
+in Section 111, this interval would grow over the run (1.0s -> 1.5s
+-> 3s+); it does not, at any point. This directly confirms the
+TX-ISR fix (commit `39fa91d`) is holding under this test: the ring
+drains fast enough that ping's own send rate -- not driver
+backlog -- is what paces transmission.
+
+## 112.4 The 3 lost pings look like ordinary over-the-air loss, not a driver stall
+
+For the handful of pings with no returning reply frame, a
+`[txdatadiag]` line still exists at the expected 1-second tick (TX
+was handed to the radio fine); there is simply no corresponding
+`[rxdatadiag]` reply shortly after, unlike the healthy cases where a
+reply consistently lands ~40ms after its TX (matching the observed
+~41ms RTT baseline). No timing signature of a driver-side stall
+around these drops -- consistent with normal transient RF loss at
+this link's RSSI (~-50 to -54 during this run), not a regression.
+
+## 112.5 ctl_rtw88 state samples
+
+Two back-to-back reads 2s apart mid-run:
+`tx_byte_count` 388174 -> 388294 (+120B/2s), `rx_byte_count` 3751100
+-> 3757638 (+6538B/2s). Final read after the run completed:
+`tx_byte_count` 398700 (+10406 since the mid-run pair), `rx_byte_count`
+3779861. TX counter movement is uneven across samples (small in the
+2s window, larger by the final read) but never stalls-then-jumps in
+a way that indicates the wake-threshold oscillation hypothesized in
+111.3.1 -- more likely just reflects background traffic (mDNS/ARP/
+other apps) landing unevenly between sample points rather than a
+driver artifact.
+
+## 112.6 Conclusion and open item
+
+The Section 111 queuing-delay symptom did not reproduce on this
+run. Current read: the TX-ISR fix is solid, and Section 111's
+runaway-RTT result was likely a one-off (transient AP/RF condition,
+or an intermittent trigger not present this time) rather than a
+standing bug in the wake-queue logic itself. **Not yet fully closed**
+-- a single non-reproduction doesn't rule out an intermittent
+trigger. Worth re-running the original failing scenario (longer
+ping run, and/or under whatever conditions were present during the
+Section 111 test -- e.g. more background traffic, different
+channel/RSSI, longer session duration) one or two more times before
+calling this fully resolved.
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

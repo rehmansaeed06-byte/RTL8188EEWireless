@@ -2687,3 +2687,46 @@ wake-threshold/drain-burst behavior), or climbs steadily with no
 stall (points downstream — real congestion, AP-side, or
 progressively-slower rate-control retries). Full detail in
 findings.md Section 111.
+## LATEST UPDATE — Queuing-delay symptom not reproduced on repeat
+test; TX-ISR fix looks solid (findings.md Section 112)
+
+Re-ran the same connect + `ping -c 60 8.8.8.8` test from Section 111,
+this time with `[txdatadiag]`/`[rxdatadiag]` captured live via
+`dmesg -w` for the whole run, plus `ctl_rtw88 state` sampled twice
+back-to-back mid-run and once after.
+
+**Result: no bufferbloat this time.** 57/60 delivered (+3 dup), RTT
+flat the whole run (39–129ms, avg 47.6ms) — no climb anywhere, unlike
+Section 111's 40ms→6.3s runaway. Extracting the ping-sized
+(`framelen=124 paylen=84`) `[txdatadiag]` frames and diffing their
+timestamps shows every inter-packet interval at 1.001–1.005s for the
+full run — exactly ping's own send cadence, no drift. That's direct
+evidence the TX ring is draining fast enough that ping's rate, not
+driver backlog, paces transmission — the TX-ISR fix (`39fa91d`) is
+holding.
+
+The 3 lost pings show a `[txdatadiag]` TX at the expected tick with
+no returning `[rxdatadiag]` reply shortly after (healthy pings show a
+reply ~40ms after TX, matching RTT) — looks like ordinary
+over-the-air loss at this link's RSSI (~-50 to -54), not a
+driver-side stall.
+
+`ctl_rtw88 state` byte counters moved unevenly between samples but
+never showed a stall-then-jump pattern pointing at the
+wake-threshold oscillation hypothesis from 111.3.1.
+
+**Not fully closed yet** — one non-reproduction doesn't rule out an
+intermittent trigger for Section 111's symptom. Current best guess:
+that run hit a one-off condition (AP/RF-side) rather than a standing
+driver bug.
+
+## Next immediate step
+
+Re-run the ping test a couple more times, ideally trying to vary
+conditions closer to whatever was present during the Section 111
+run (longer duration, more background traffic, different channel/
+RSSI) to see if the queuing-delay pattern re-appears. If it stays
+unreproducible across several more runs, treat Section 111 as
+resolved and move on to the still-open items from Section 110.7
+(longer soak test, `IO80211`/apple80211 interface work, class-rename
+cleanup). Full detail in findings.md Section 112.

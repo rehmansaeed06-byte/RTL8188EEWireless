@@ -2071,6 +2071,32 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
     struct rtl_pci  *rtlpci  = rtl_pcidev(rtl_pcipriv(hw));
     struct rtl8192_tx_ring *ring = &rtlpci->tx_ring[prio];
 
+    /* Section 114 fix: __skb_dequeue() is the explicitly-documented
+     * lockless variant (see its header comment in linux/skbuff.h --
+     * "caller already holds list->lock"), but this loop never took
+     * that lock, and the `skb_queue_len()` guard above it is a
+     * separate, non-atomic read. Under sustained high packet rate the
+     * TX-submit path (hw->ops->tx() -> rtl_pci_tx(), which pushes
+     * onto this same ring->queue via the locked skb_queue_tail())
+     * races with this drain loop on another thread; when the queue
+     * empties between the `skb_queue_len()` check and the
+     * `__skb_dequeue()` call, `__skb_dequeue()` correctly returns
+     * NULL -- but the very next line used to dereference it
+     * (`skb->len`) with no NULL check at all. Confirmed as a real
+     * kernel panic (CR2=0x20, NULL deref at a small sk_buff offset,
+     * backtrace through this function) triggered by a speed test's
+     * sustained TX load -- see findings.md Section 114 for the full
+     * panic log and analysis.
+     *
+     * Fix: hold ring->queue.lock across the whole check-dequeue
+     * sequence below, closing the race with the submit path directly
+     * (rather than only silencing the NULL-deref symptom), matching
+     * real rtlwifi's own precedent of serializing this exact section
+     * against concurrent submission. spinlock_t here is backed by
+     * IORecursiveLock (see compat/linux/spinlock.h), so this is safe
+     * even if some other path in this call chain already holds it. */
+    spin_lock_bh(&ring->queue.lock);
+
     while (skb_queue_len(&ring->queue)) {
         struct sk_buff *skb;
         struct ieee80211_tx_info *info;
@@ -2078,11 +2104,21 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
         u8 tid;
         u8 *entry = (u8 *)(&ring->desc[ring->idx]);
 
-        if (!rtlpriv->cfg->ops->is_tx_desc_closed(hw, prio, ring->idx))
+        if (!rtlpriv->cfg->ops->is_tx_desc_closed(hw, prio, ring->idx)) {
+            spin_unlock_bh(&ring->queue.lock);
             return;
+        }
         ring->idx = (ring->idx + 1) % ring->entries;
 
         skb = __skb_dequeue(&ring->queue);
+        if (!skb) {
+            /* Queue emptied between the skb_queue_len() check above
+             * and this dequeue -- should not happen now that the
+             * whole sequence is lock-held, but kept as a defensive
+             * belt-and-suspenders check given this is exactly the
+             * NULL that caused the Section 114 panic. */
+            break;
+        }
         dma_unmap_single(&rtlpci->pdev->dev,
                           rtlpriv->cfg->ops->get_desc(hw, entry,
                               true, HW_DESC_TXBUFF_ADDR),
@@ -2150,6 +2186,8 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
             ieee80211_wake_queue(hw, IEEE80211_AC_BE);
         }
     }
+
+    spin_unlock_bh(&ring->queue.lock);
 }
 
 

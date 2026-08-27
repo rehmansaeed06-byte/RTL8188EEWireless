@@ -2646,3 +2646,44 @@ confirmed, this should be a mechanical research-then-write task like
 every other symbol closed this session — the caution is entirely
 about not skipping the research step for these three specifically.
 
+## LATEST UPDATE — TX-ISR wake-queue fix confirmed working; new
+queuing-delay symptom found (findings.md Section 111)
+
+Commit `39fa91d`: `rtlwifi_do_interrupt()` in
+`src/compat/rtlwifi_compat.c` was returning early without a real
+`hw`/`rtlpriv`/`rtlpci` context, so `rtlwifi_pci_tx_isr()` — the
+TX-complete handler that drains the TX ring and calls
+`ieee80211_wake_queue()` — could never run. Fix wires up that
+context (`rtlwifi_get_hw()` / `rtl_priv()` /
+`rtl_pcidev(rtl_pcipriv())`) before the existing `irq_enabled` check.
+
+**Confirmed fixed:** the old permanent-stall bug (TX flows for a
+burst, then dies dead forever because the ring never drains) is gone.
+Post-fix ping test: 53/60 succeeded over a full ~70s run, successes
+spread across the whole run rather than one initial burst — the
+TX-complete path is draining the ring and waking the queue as
+designed.
+
+**New problem found, not packet loss:** RTT climbs steadily across
+the same run — ~40-70ms at the start, up through 200ms, 700ms,
+2000ms, 5000ms, to 6.3s by the last successful ping. Classic
+queue-buildup/bufferbloat shape, not random loss. Three candidates
+noted (wake-threshold calibration causing stall/burst-drain
+oscillation; watchdog/rate-control or power-save interaction reacting
+to the bursty drain pattern; RX-side congestion). RX-side already
+ruled out this session — `[rxdatadiag]` during the run showed only
+normal ~1/sec broadcast/ARP-like traffic, no stall pattern there.
+
+## Next immediate step
+
+Two diagnostics queued, not yet run: capture `[txdatadiag]` lines
+during an actual ping run (`sudo dmesg | grep -i txdatadiag | tail
+-100` — not yet captured, prior log excerpt was mostly the
+connect-phase EAPOL burst) to look for TX-completion gaps/bursts; and
+`./ctl_rtw88 state` taken specifically right after a laggy stretch,
+to see whether `tx_byte_count` is still climbing at that point
+(driver-side ring queuing), stalls-then-jumps (points at the
+wake-threshold/drain-burst behavior), or climbs steadily with no
+stall (points downstream — real congestion, AP-side, or
+progressively-slower rate-control retries). Full detail in
+findings.md Section 111.

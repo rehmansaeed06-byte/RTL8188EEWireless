@@ -10260,4 +10260,84 @@ full 30s sleep, showed a healthy, stable, still-connected link:
 
 ------------------------------------------------------------------------
 
+# 111. TX-ISR wake-queue fix confirmed; new queuing-delay symptom found
+
+## 111.1 Fix committed
+
+Commit `39fa91d` ("packet issue solved 53 out of 60 recived queing
+delay is occuring"). `rtlwifi_do_interrupt()` in
+`src/compat/rtlwifi_compat.c` was returning early without a real
+`hw`/`rtlpriv`/`rtlpci` context, which meant `rtlwifi_pci_tx_isr()`
+(the TX-complete interrupt handler immediately above it, responsible
+for draining the TX ring and calling `ieee80211_wake_queue()`) could
+never actually run. Fix wires up `hw = rtlwifi_get_hw()`,
+`rtlpriv = rtl_priv(hw)`, `rtlpci = rtl_pcidev(rtl_pcipriv(hw))` at
+the top of `rtlwifi_do_interrupt()` before the existing
+`rtlpci->irq_enabled` check, so the TX-ISR path is reachable.
+
+## 111.2 Confirmed: original stall bug is fixed
+
+Old symptom (pre-fix): packets flow for a burst, then TX stops dead
+permanently -- the TX ring never drained because the wake-queue path
+was unreachable.
+
+Post-fix ping test: 53/60 pings succeeded over a full ~70s run,
+successes spanning the entire run duration rather than clustering in
+an initial burst. This confirms the TX-complete interrupt path is now
+doing its job -- the ring keeps draining, `ieee80211_wake_queue()`
+keeps firing (per the existing `(ring->entries -
+skb_queue_len(&ring->queue)) <= 4` wake threshold), and traffic keeps
+flowing well past the point where it used to die permanently.
+
+## 111.3 New symptom: compounding queuing delay, not random loss
+
+RTT progression across the same run: starts normal (~40-70ms), then
+climbs steadily -- 200ms, 700ms, 2000ms, 5000ms, ending at 6.3s for
+the last successful ping. This is a queue-buildup / bufferbloat
+pattern (each packet taking longer than the last), not random packet
+loss -- consistent with something queuing packets faster than it
+drains them, or draining in bursts with a growing backlog between
+bursts.
+
+Three candidates identified, given the wake-queue fix's actual
+mechanism:
+
+1. The `<= 4` wake threshold itself may be miscalibrated (too
+   conservative or too aggressive), causing oscillation between stall
+   and burst-drain rather than steady throughput.
+2. `num_tx_inperiod` / watchdog interaction -- possible intermittent
+   throttling from power-save or rate-control logic reacting badly to
+   the bursty drain pattern.
+3. RX-side congestion -- checked via dmesg during the same window;
+   `[rxdatadiag]` shows only steady ~1/sec broadcast/ARP-like 84-byte
+   frames (`fc=0x4208`/`0x6208`) throughout. This is normal background
+   traffic. RX-side stall ruled out as the cause.
+
+## 111.4 Next immediate step
+
+Two diagnostics queued to localize whether the backlog is
+driver-side (queuing in the ring) or downstream (network/AP/rate
+control):
+
+```bash
+sudo dmesg | grep -i txdatadiag | tail -100
+```
+Capture `[txdatadiag]` lines during an actual ping run (not yet
+captured -- the log excerpt reviewed so far was mostly the earlier
+connect-phase EAPOL burst) and look for gaps or bursts in TX
+completion timing.
+
+```bash
+./ctl_rtw88 state
+```
+Run immediately after a laggy stretch (i.e. once RTTs are already
+in the seconds range) and check `tx_byte_count`: still climbing at
+that point points to driver-side ring queuing; a stall-then-jump
+pattern narrows it to the wake-threshold/drain-burst behavior in
+111.3.1; a steady climb with no stall points downstream instead
+(real congestion, AP-side issue, or a rate-control problem making
+each retry progressively slower).
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

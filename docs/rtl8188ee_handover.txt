@@ -1,5 +1,4 @@
 # RTL8188EE macOS PORT — HANDOVER / CURRENT UNDERSTANDING
-##Next updates are at the bottom
 
 ## TWENTY-FOURTH UPDATE (read this first) -- CONFIRMED FIXED on real
 ## hardware: the "AP off, try to reconnect now" false disconnect is

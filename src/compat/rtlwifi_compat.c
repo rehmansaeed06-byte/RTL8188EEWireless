@@ -2016,16 +2016,145 @@ void rtlwifi_log_iqk_lc_state(void)
         rtlphy->reg_eb4, rtlphy->reg_ebc, rtlphy->reg_ec4, rtlphy->reg_ecc);
 }
 
-bool rtlwifi_do_interrupt(void)
+/*
+ * rtlwifi_pci_tx_isr() -- port of real rtlwifi's _rtl_pci_tx_isr()
+ * (pci.c:450, static/non-exported -- confirmed via live source read,
+ * so it cannot be called directly and must be reimplemented here).
+ *
+ * findings.md "net not working" investigation (post-110): [txdatadiag]/
+ * [rxdatadiag] captures showed a real, working connection (correct
+ * CCMP keying, real replies with real -- if initially poor -- RTT)
+ * that worked for an initial burst right after connect, then went
+ * completely silent on the TX side (zero [txdatadiag] lines) while RX
+ * of unrelated broadcast traffic continued normally. Traced to:
+ * rtlwifi_do_interrupt() (this file, below) only ever checks
+ * RTL_IMR_ROK/RTL_IMR_RDU (RX bits) -- confirmed via its own docstring
+ * and body, neither of which mention or call any TX-related interrupt
+ * bit or _rtl_pci_tx_isr(). rtlwifi_be_tx_avail() (used by both
+ * RTW88PCIDevice::outputPacket()'s stall check and
+ * resumeTxIfStalled()'s un-stall check) reads
+ * `ring->entries - skb_queue_len(&ring->queue)` -- the exact same
+ * ring->queue that real rtlwifi's TX submission path (inside
+ * hw->ops->tx() -> real rtl_pci_tx(), already correctly linked in per
+ * the Twentieth Update's "0 undefined symbols" milestone) pushes onto,
+ * but which only _rtl_pci_tx_isr() ever pops from. With that function
+ * never called, ring->queue's length only ever grows, so available
+ * space monotonically shrinks to the kRTW88TxStallAvail threshold and
+ * never recovers -- exactly matching "works for a burst, then stops
+ * forever," since outputPacket() stalls the queue once threshold is
+ * crossed and nothing ever calls ieee80211_wake_queue() to un-stall
+ * it (that call only exists inside the missing function).
+ *
+ * This port only ever submits on the BE queue (txDataFrame() hardcodes
+ * skb_set_queue_mapping(skb, IEEE80211_AC_BE); mgmt frames go through
+ * a separate, simpler path -- txMgmtFrame() -- not ported here since
+ * mgmt-frame TX was already proven working end-to-end all session via
+ * auth/assoc/EAPOL without needing this), so only BE_QUEUE is drained.
+ * If mgmt-queue (or other AC) TX-ring exhaustion is ever observed,
+ * extend the caller to also call this for MGNT_QUEUE/other prio
+ * values -- the logic below is prio-generic, matching real code.
+ *
+ * Ported faithfully rather than simplified, including the nullfunc/
+ * power-save and HT-SMPS-action-frame special cases and the
+ * ring->entries-skb_queue_len(&ring->queue) <= 4 hysteresis threshold
+ * before waking the queue (both exactly as real pci.c:450-540) --
+ * cutting corners here is exactly the class of gap that caused this
+ * bug in the first place. rtlpriv->use_new_trx_flow's branch is
+ * omitted: confirmed false unconditionally for rtl8188ee (never set
+ * under rtl8188ee/*.c, same finding rtlwifi_do_interrupt()'s own
+ * docstring already relies on for its own RX-side omission of that
+ * flow).
+ */
+static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
 {
-    struct ieee80211_hw *hw = rtlwifi_get_hw();
-
-    if (!hw || !hw->priv)
-        return false;
-
     struct rtl_priv *rtlpriv = rtl_priv(hw);
     struct rtl_pci  *rtlpci  = rtl_pcidev(rtl_pcipriv(hw));
-    struct rtl_int   intvec  = {0};
+    struct rtl8192_tx_ring *ring = &rtlpci->tx_ring[prio];
+
+    while (skb_queue_len(&ring->queue)) {
+        struct sk_buff *skb;
+        struct ieee80211_tx_info *info;
+        __le16 fc;
+        u8 tid;
+        u8 *entry = (u8 *)(&ring->desc[ring->idx]);
+
+        if (!rtlpriv->cfg->ops->is_tx_desc_closed(hw, prio, ring->idx))
+            return;
+        ring->idx = (ring->idx + 1) % ring->entries;
+
+        skb = __skb_dequeue(&ring->queue);
+        dma_unmap_single(&rtlpci->pdev->dev,
+                          rtlpriv->cfg->ops->get_desc(hw, entry,
+                              true, HW_DESC_TXBUFF_ADDR),
+                          skb->len, DMA_TO_DEVICE);
+
+        if (prio == TXCMD_QUEUE) {
+            dev_kfree_skb(skb);
+            continue;
+        }
+
+        fc = rtl_get_fc(skb);
+        if (ieee80211_is_nullfunc(fc)) {
+            if (ieee80211_has_pm(fc)) {
+                rtlpriv->mac80211.offchan_delay = true;
+                rtlpriv->psc.state_inap = true;
+            } else {
+                rtlpriv->psc.state_inap = false;
+            }
+        }
+        if (ieee80211_is_action(fc)) {
+            struct ieee80211_mgmt *action_frame = (void *)skb->data;
+            /* Minimum size to safely read category + the flat
+             * action_code byte -- avoiding IEEE80211_MIN_ACTION_SIZE
+             * here since it did not resolve as a visible macro from
+             * this translation unit at this point (build error:
+             * "use of undeclared identifier"), despite mac80211.h
+             * defining it and being included via rtlwifi_compat.h.
+             * Not investigated further; this hand-computed offset is
+             * self-evidently correct against the real struct layout
+             * documented just above ieee80211_mgmt's action member
+             * (mac80211.h) and doesn't depend on that macro at all. */
+            size_t min_action_sz =
+                offsetof(struct ieee80211_mgmt, u.action.action_code) +
+                sizeof(action_frame->u.action.action_code);
+            if (skb->len >= min_action_sz &&
+                action_frame->u.action.action_code == WLAN_HT_ACTION_SMPS) {
+                dev_kfree_skb(skb);
+                continue;
+            }
+        }
+
+        tid = rtl_get_tid(skb);
+        if (tid <= 7)
+            rtlpriv->link_info.tidtx_inperiod[tid]++;
+
+        info = IEEE80211_SKB_CB(skb);
+
+        if (likely(!ieee80211_is_nullfunc(fc))) {
+            ieee80211_tx_info_clear_status(info);
+            info->flags |= IEEE80211_TX_STAT_ACK;
+            ieee80211_tx_status_irqsafe(hw, skb);
+        } else {
+            /* Real code calls rtl_tx_ackqueue(hw, skb) here -- a
+             * separate real-rtlwifi ACK-tracking queue this port
+             * doesn't use elsewhere (txNullFunc() sends nullfunc
+             * frames for power-save signaling but nothing in this
+             * port consumes rtl_tx_ackqueue's tracking). Plain free
+             * instead: correct for ring-slot accounting (the only
+             * thing this function needs to fix), just doesn't feed a
+             * consumer this port never built. */
+            dev_kfree_skb(skb);
+        }
+
+        if ((ring->entries - skb_queue_len(&ring->queue)) <= 4) {
+            ieee80211_wake_queue(hw, IEEE80211_AC_BE);
+        }
+    }
+}
+
+
+bool rtlwifi_do_interrupt(void)
+{
 
     if (!rtlpci->irq_enabled)
         return false;
@@ -2059,6 +2188,19 @@ bool rtlwifi_do_interrupt(void)
 
     bool got_rx = (intvec.inta & rtlpriv->cfg->maps[RTL_IMR_ROK]) ||
                   (intvec.inta & rtlpriv->cfg->maps[RTL_IMR_RDU]);
+
+    /* TX-complete: see rtlwifi_pci_tx_isr()'s own header comment (above
+     * this function) for the full trace of why this was missing and
+     * what it broke. Only BE_QUEUE is drained -- see that comment for
+     * why, and what to extend if other queues are ever found to need
+     * it. Runs regardless of got_rx, same as real pci.c's own
+     * unconditional TX-related interrupt block (both RX and TX bits
+     * are read from the same intvec.inta/intb before either is
+     * handled, so there is no ordering dependency between them). */
+    if (intvec.inta & rtlpriv->cfg->maps[RTL_IMR_BEDOK]) {
+        rtlpriv->link_info.num_tx_inperiod++;
+        rtlwifi_pci_tx_isr(hw, BE_QUEUE);
+    }
 
     if (got_rx) {
         int rxring_idx = RTL_PCI_RX_MPDU_QUEUE;

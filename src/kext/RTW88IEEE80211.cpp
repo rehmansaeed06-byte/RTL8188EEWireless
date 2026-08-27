@@ -1406,6 +1406,25 @@ void RTW88IEEE80211::deliverDataFrame(struct sk_buff *skb)
     uint16_t hdrlen = ieee80211_get_hdrlen_from_skb(skb);
     if (skb->len < hdrlen) { kfree_skb(skb); return; }
 
+    /* TEMPORARY DIAGNOSTIC: "connected but no data flows" investigation
+     * (net-not-working session, post-110). Companion to [txdatadiag] --
+     * this is the single choke point every inbound data frame passes
+     * through (QoS-reordered or immediate). Logs unconditionally; real
+     * data-plane RX volume during a ping test is low enough this can't
+     * flood the ring buffer. Strip once root cause found. */
+    {
+        bool prot = ieee80211_has_protected(hdr->frame_control);
+        uint16_t rawfc = le16_to_cpu(hdr->frame_control);
+        IOLog("rtw88: [rxdatadiag] fc=0x%04x protected=%d hdrlen=%u len=%u "
+              "addr1=%02x:%02x:%02x:%02x:%02x:%02x "
+              "addr2=%02x:%02x:%02x:%02x:%02x:%02x\n",
+              rawfc, prot, hdrlen, skb->len,
+              hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
+              hdr->addr1[3], hdr->addr1[4], hdr->addr1[5],
+              hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
+              hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
+    }
+
     bool amsdu = false;
     if (ieee80211_is_data_qos(hdr->frame_control))
         amsdu = (skb->data[hdrlen - 2] & 0x80) != 0;  /* QoS-ctl A-MSDU bit */
@@ -3114,6 +3133,22 @@ bool RTW88IEEE80211::txDataFrame(mbuf_t m)
         info->control.hw_key = _ptkConf;
 
     struct ieee80211_tx_control ctrl = { .sta = _sta };
+
+    /* TEMPORARY DIAGNOSTIC: "connected but no data flows" investigation
+     * (net-not-working session, post-110). Every previous data-plane
+     * milestone (auth/assoc/EAPOL) was validated via [authrxdiag]; this
+     * is the first look at the actual IP data path itself. Logs
+     * unconditionally per outbound data frame -- pings are low-rate
+     * (~1/sec) so this can't flood the ring buffer the way earlier
+     * unconditional diagnostics could have. Strip once root cause found. */
+    IOLog("rtw88: [txdatadiag] ethertype=0x%04x qos=%d protected=%d "
+          "hw_key=%p cipher=0x%x keyidx=%d framelen=%u paylen=%u "
+          "sn=%u dst=%02x:%02x:%02x:%02x:%02x:%02x\n",
+          ethertype, qos, protected_frame, (void *)info->control.hw_key,
+          _ptkConf ? _ptkConf->cipher : 0, _ptkConf ? _ptkConf->keyidx : -1,
+          framelen, paylen, (le16_to_cpu(h->seq_ctrl) >> 4),
+          eh[0], eh[1], eh[2], eh[3], eh[4], eh[5]);
+
     _hw->ops->tx(_hw, &ctrl, skb);
     /* findings.md Section 100: tx_byte_count's RX-side counterpart bug.
      * paylen is the real IP-payload data length (mbuf's 14-byte Ethernet

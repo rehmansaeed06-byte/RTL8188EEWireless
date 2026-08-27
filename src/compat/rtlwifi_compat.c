@@ -2155,6 +2155,14 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
 
 bool rtlwifi_do_interrupt(void)
 {
+    struct ieee80211_hw *hw = rtlwifi_get_hw();
+
+    if (!hw || !hw->priv)
+        return false;
+
+    struct rtl_priv *rtlpriv = rtl_priv(hw);
+    struct rtl_pci  *rtlpci  = rtl_pcidev(rtl_pcipriv(hw));
+    struct rtl_int   intvec  = {0};
 
     if (!rtlpci->irq_enabled)
         return false;

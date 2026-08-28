@@ -2812,3 +2812,161 @@ panic backtrace, in findings.md Section 114.
 **Do not run further speed tests / high-throughput tests until this
 is patched** — the race is real and will very likely retrigger under
 sustained load.
+
+## LATEST UPDATE — Section 114's own fix reverted + new RX-stall bug
+## found (findings.md Section 115)
+
+Section 114's proposed fix (b) above — taking `ring->queue.lock`
+around the drain loop — was written (commit `ceb8a92`) but turned out
+to be based on a mischaracterized "real code precedent": a live read
+of actual upstream `_rtl_pci_tx_isr()` (`pci.c:450-540`, confirmed
+against the person's own local `linux-kernel` checkout) shows real
+code takes **no lock at all** around this drain — not
+`ring->queue.lock`, not `irq_th_lock`. (Real `rtl_pci_reset_trx_ring()`
+— a different function, only called on interface stop/reset — does
+lock a similarly-shaped loop, but with `irq_th_lock`, never
+`ring->queue.lock`; that's the actual source of the earlier, wrong
+precedent claim.) On this port, TX-submit (`outputPacket()`) and the
+TX-complete interrupt were already mutually exclusive by construction
+— both gated on the same single `_workLoop` (confirmed by direct read
+of `RTW88PCIDevice.cpp`) — so the new lock was unnecessary and, per
+the commit message itself ("now it show connected and net doesnt
+work"), the direct cause of a follow-on regression.
+
+**Fix: the lock has been removed.** The other half of the original
+fix — a NULL check right after `__skb_dequeue()` — was kept, since
+that's the correct, minimal fix for the actual CR2=0x20 panic and
+matches upstream's own lock-free structure. This is confirmed solid
+across multiple fresh-connect baseline ping tests this session (20/20
+delivered, steady ~40ms RTT, no gaps in the TX/RX diagnostic log for
+any packet). **The original kernel panic and the "connects but net
+doesn't work" regression are both resolved as of this session.**
+
+**However, re-testing the original panic trigger (a real speed test)
+surfaced a different, previously-unseen problem: RX goes silent under
+sustained download load.** Immediately after a speed test, with WiFi
+properly isolated from Ethernet, `ping -c 30` got 100% loss — but
+unlike the old bufferbloat pattern, this is a hard cliff, not a climb,
+and `./ctl_rtw88 state` still reports a fully healthy link (state 5,
+real RSSI, growing byte counters) throughout. The `dmesg` log for this
+window shows TX working the entire time — hundreds of real,
+speed-test-sized `[txdatadiag]` frames going out continuously, sequence
+numbers climbing with no gaps — while `[rxdatadiag]` shows almost
+nothing: just background broadcast/ARP noise roughly once a second, no
+replies to any outbound traffic at all, including the ping's own ICMP
+requests.
+
+This points at the RX ring/interrupt path specifically — either the
+RX interrupt status bits no longer being reported as set after the
+burst, or the RX ring's hardware-ownership bit never flipping back for
+new incoming frames, either of which would silently stop RX processing
+with no error or log line, exactly matching what was observed. This is
+a different code area from anything Section 114/115's TX-ISR work
+touched, and Section 113's earlier "RX-side already ruled out" finding
+was only checked under ping-level (~1/sec) traffic, never real
+sustained downlink volume.
+
+## Next immediate step (RX-stall fix not yet written)
+
+Not yet root-caused by inspection against live upstream source (the
+TX-side fix above only got confirmed *after* doing exactly that — a
+live diff against real `pci.c` — so the same approach is the right
+next step here): read real upstream's RX interrupt handling
+(`RTL_IMR_ROK`/`RTL_IMR_RDU`, `_rtl_pci_rx_interrupt()`-equivalent)
+against this port's `rtlwifi_do_interrupt()` RX branch for any
+per-pass limit, error-recovery path, or descriptor-rearm failure mode
+that could silently stop RX after a sustained burst. One concrete
+suspect already spotted: the RX rearm path's failure branch (label
+`rearm:` in `rtlwifi_compat.c`) explicitly leaves the hardware-OWN bit
+untouched on `dev_alloc_skb()` allocation failure — if that fires
+repeatedly under real memory pressure from sustained high-throughput
+RX, the ring would shrink toward exactly this stall with no log line,
+since there's no log on that path either. Full detail and the complete
+next-steps list in findings.md Section 115.6.
+
+**Process note for future sessions:** `dmesg -w` and `log stream` were
+both unreliable for capturing this driver's `IOLog` output on this
+machine this session (repeatedly showed 0 lines despite real,
+concurrent driver activity). Plain `sudo dmesg` (no `-w`) works
+reliably; the methodology that actually worked this session was a
+before/after snapshot-and-diff (`dmesg > before.log`, run the test,
+`dmesg > after.log`, `diff`) rather than live-follow. Also: confirm
+`route get 8.8.8.8` shows the WiFi interface (`en2` on this machine)
+before trusting any ping test if Ethernet may also be connected —
+two false "100% loss" results this session turned out to be the
+Ethernet interface silently winning the default route, not a driver
+issue.
+
+## SECOND UPDATE (same-topic follow-up session) — RX rearm bug found
+## and fixed; new instrumentation added; RX-under-load symptom still
+## open
+
+**The RX rearm bug flagged above as a "suspect" was confirmed and
+fixed.** It fires exactly as suspected: on `dev_alloc_skb()` failure,
+this port's `rearm:` path was calling a SECOND `dev_alloc_skb()`
+instead of reusing the original skb the way real upstream
+`_rtl_pci_rx_interrupt()` does — and when that second call also
+failed (likely under the same real memory pressure that failed the
+first), the descriptor's hardware-OWN bit was left untouched with no
+valid skb ever reassigned to it. Fixed to reuse the original skb on
+failure, matching real code. Full detail: findings.md Section 116.
+
+**Two pieces of diagnostic instrumentation were added and tested this
+session, both came back negative (the mechanisms they check are NOT
+the cause of the still-open "ping fails under load, real traffic
+keeps flowing" symptom):**
+
+- `[txstalldiag]` (`rtlwifi_pci_tx_isr`'s `is_tx_desc_closed` early-
+  return) — ring recovers normally under real load, `idx` advances,
+  not stuck.
+- `[txdropdiag]` (`outputPacket()`'s `_enabled`/`_ieee80211` early
+  drop) — never fires during a confirmed, Ethernet-physically-
+  unplugged reproduction.
+
+**Important process note from this instrumentation work:** the first
+attempt at `[txstalldiag]` pulled in the userspace `<mach/mach_time.h>`
+header for `mach_absolute_time()`/`mach_timebase_info()`, which
+conflicted with `iokit_shim.h`'s own kernel-context declaration of
+`mach_absolute_time()`. This produced a kext that **built with zero
+errors and linked successfully, but silently never attached in
+IORegistry** — `en2` never appeared, `kextstat` never listed it,
+`dmesg` showed zero mentions of the kext, not even a rejection
+message. No log anywhere pointed at the cause. **After any rebuild,
+verify `kextstat | grep -i rtl` and `ifconfig en2` immediately, before
+investing any time in a reproduction attempt** — a clean build does
+not guarantee a working kext on this platform.
+
+**Current leading theory, instrumented but not yet tested:** a
+confirmed, cleanly-isolated reproduction (Ethernet physically
+unplugged, no routing ambiguity) showed `ctl_rtw88 state`'s
+`tx_byte_count` AND `rx_byte_count` both climbing substantially
+DURING a 100%-ping-loss window — real 802.11-level traffic flowing
+in both directions the whole time ping failed, with neither
+`[txstalldiag]` nor `[txdropdiag]` firing. This rules out a general
+driver/link stall and points at something more specific: real frames
+arriving but not reaching the IP stack. Traced `rx_byte_count`'s
+accounting to a point BEFORE frame delivery, and found this port's
+own `RTW88IEEE80211::processRxData()` routes frames through a per-TID
+BlockAck reorder buffer (`_rxBa[tid]`) before `deliverDataFrame()` —
+the only function that logs `[rxdatadiag]`. A lost frame creating a
+sequence gap could silently hold back everything queued behind it in
+that reorder buffer, fully consistent with the observed symptom. A
+`[rxbadiag]` log was added (`RTW88IEEE80211.cpp`,
+`processRxData()`) showing `stored`/`headSn` per TID whenever this
+path is taken, but **has not yet been built or tested** — that's the
+very next step.
+
+**Firmware LPS (power-save) was investigated as an alternative
+explanation and ruled out** — despite being an extensively documented,
+chronic cause of this exact symptom on the rtl8723ae/rtl8188ee/
+rtl8821ae chip family in the wider community, this exact source
+tree's `rtl88ee_mod_params` struct initializer already sets
+`.fwctrl_lps = false` and `.swctrl_lps = false` by default (the
+`MODULE_PARM_DESC` comment claiming "default 1" for fwlps is stale/
+inaccurate relative to the actual initializer). Not the cause here.
+`.inactiveps = true` (idle-state power save, a different mechanism)
+was noted but not investigated — worth a look if the BA-reorder theory
+also doesn't pan out.
+
+Full detail, including the exact ruled-out list, in findings.md
+Sections 116–120.

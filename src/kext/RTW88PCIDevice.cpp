@@ -785,6 +785,41 @@ void RTW88PCIDevice::injectRxFrame(mbuf_t m)
 {
     drainPendingFree();
     if (!_iface || !_enabled) {
+        /* Section 122 instrumentation: this was the LAST silent RX
+         * drop point in the whole delivery chain, and the RX-side
+         * twin of Section 118's outputPacket() TX-side drop -- never
+         * instrumented until now. Everything upstream of this
+         * function (rtlwifi_do_interrupt()'s RX drain,
+         * deliverDataFrame(), deAmsdu(), deliverEthernet()) was
+         * already checked and ruled out this session ([rxbadiag],
+         * [amsdudiag], [ethertype0diag] all silent during a confirmed
+         * failure) -- but a failure that only appeared after a very
+         * long-lived, high-traffic-volume connection (rx_byte_count
+         * over 115MB at time of failure, vs. a fresh connection under
+         * equally heavy concurrent load staying perfectly healthy)
+         * pointed at something OUTSIDE this driver's own per-frame
+         * logic entirely -- `_enabled` is only ever set by
+         * enable()/disable(), i.e. the OS's own IOKit interface
+         * lifecycle, not this driver's own code. If the OS itself
+         * decided to disable the interface mid-session (power
+         * management, link-quality heuristics, some other OS-level
+         * trigger) while the 802.11 connection state machine stayed
+         * connected and kept receiving real radio traffic, EVERY
+         * inbound frame from that point on would vanish silently
+         * right here, matching every single symptom observed:
+         * rx_byte_count still climbing (counted well before this
+         * point), [rxdatadiag]/[rxbadiag]/[amsdudiag] all still firing
+         * normally (all upstream of this function), yet nothing ever
+         * reaching the actual network stack. Logged once/sec rather
+         * than per-frame since a real occurrence would otherwise
+         * flood the log at full RX rate. */
+        static uint64_t s_last_rxdrop_log_ticks = 0;
+        uint64_t now_ticks = mach_absolute_time();
+        if ((now_ticks - s_last_rxdrop_log_ticks) > 1000000000ULL) {
+            IOLog("rtw88: [rxdropdiag] injectRxFrame dropped, "
+                  "_iface=%p _enabled=%d\n", (void *)_iface, (int)_enabled);
+            s_last_rxdrop_log_ticks = now_ticks;
+        }
         freePacket(m);
         return;
     }

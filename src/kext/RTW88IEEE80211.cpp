@@ -11,6 +11,15 @@
 #include <string.h>
 #include <sys/random.h>
 
+/* Section 119: mach_absolute_time() declared explicitly rather than
+ * relying on a transitive include, for the exact same reason as
+ * RTW88PCIDevice.cpp's own Section 118 comment -- see that file for
+ * the full story of how an implicit/wrong-header assumption about
+ * this symbol previously produced a kext that built clean but
+ * silently never attached in IORegistry. Matches iokit_shim.h's own
+ * kernel-context signature exactly. */
+extern "C" uint64_t mach_absolute_time(void);
+
 /* Debug stage checkpoint — logs message only (no sleep). */
 #define RTW88_STAGE(fmt, ...) IOLog("rtw88: ---- STAGE: " fmt " ----\n", ##__VA_ARGS__)
 
@@ -1389,6 +1398,34 @@ void RTW88IEEE80211::processRxData(struct sk_buff *skb)
             if (tid < kRxBaNumTid && _rxBa[tid] && _rxBa[tid]->active) {
                 uint16_t sn = (uint16_t)
                     ((le16_to_cpu(hdr->seq_ctrl) & 0xFFF0) >> 4);
+                /* Section 119 instrumentation: added after a session
+                 * where tx_byte_count/rx_byte_count both kept climbing
+                 * (real 802.11-level TX/RX activity) while ping got
+                 * 100% loss, and NEITHER [txstalldiag] (Section 117)
+                 * nor [txdropdiag] (Section 118) fired -- ruling out
+                 * every TX-side drop point instrumented so far. This
+                 * BA reorder buffer (rxReorderInput() below) is the
+                 * one RX-side place a frame can be silently withheld
+                 * from deliverDataFrame() -- and therefore from
+                 * [rxdatadiag] and the actual IP stack -- while still
+                 * having been correctly received at the radio/
+                 * descriptor level (counted in rxbytesunicast before
+                 * this point). Logged once per second per TID rather
+                 * than per-frame, since if this is the real bug it
+                 * will fire continuously under a real stall and a
+                 * per-frame log would flood the ring buffer. */
+                static uint64_t s_last_ba_log_ticks[8] = {0};
+                uint64_t now_ticks = mach_absolute_time();
+                if (tid < 8 && (now_ticks - s_last_ba_log_ticks[tid]) > 1000000000ULL) {
+                    IOLockLock(_rxBaLock);
+                    RxReorder *r = _rxBa[tid];
+                    uint32_t stored = (r && r->active) ? r->stored : 0;
+                    uint16_t headSn = (r && r->active) ? r->headSn : 0;
+                    IOLockUnlock(_rxBaLock);
+                    IOLog("rtw88: [rxbadiag] tid=%u sn=%u headSn=%u "
+                          "stored=%u\n", tid, sn, headSn, stored);
+                    s_last_ba_log_ticks[tid] = now_ticks;
+                }
                 rxReorderInput(tid, skb, sn);   /* takes ownership of skb */
                 return;
             }
@@ -1473,6 +1510,31 @@ void RTW88IEEE80211::deliverDataFrame(struct sk_buff *skb)
         }
     }
 
+    /* Section 121 instrumentation: if neither the plain nor the
+     * CCMP-IV-skip branch above found a valid LLC/SNAP header,
+     * ethertype stays 0 and deliverEthernet() below still runs
+     * unconditionally -- delivering whatever raw bytes llc[] actually
+     * points at (quite possibly still-undecrypted CCMP IV, if the
+     * skip-detection heuristic above didn't match) tagged as
+     * ethertype 0. The OS networking stack would very plausibly just
+     * silently discard an unrecognized ethertype, with nothing logged
+     * anywhere in this driver -- a second, independent way real bytes
+     * can be counted (skb->len, before this point) without ever
+     * reaching the application. Logged once/sec since a real,
+     * sustained-load failure would hit this repeatedly if it's the
+     * cause. */
+    if (ethertype == 0) {
+        static uint64_t s_last_ethertype0_log_ticks = 0;
+        uint64_t now_ticks = mach_absolute_time();
+        if ((now_ticks - s_last_ethertype0_log_ticks) > 1000000000ULL) {
+            IOLog("rtw88: [ethertype0diag] protected=%d llc0=%02x llc1=%02x "
+                  "llc2=%02x skblen=%u payload_off=%u\n",
+                  (int)ieee80211_has_protected(hdr->frame_control),
+                  llc[0], llc[1], llc[2], skb->len, payload_off);
+            s_last_ethertype0_log_ticks = now_ticks;
+        }
+    }
+
     /* DA = addr1 (recipient = us), SA = addr3 (original source via DS) */
     uint32_t paylen = skb->len - payload_off - 8; /* strip 802.11/CCMP/LLC */
     deliverEthernet(hdr->addr1, hdr->addr3, ethertype, llc + 8, paylen);
@@ -1510,6 +1572,7 @@ void RTW88IEEE80211::deliverEthernet(const uint8_t *da, const uint8_t *sa,
 void RTW88IEEE80211::deAmsdu(const uint8_t *data, uint32_t len)
 {
     uint32_t pos = 0;
+    uint32_t delivered = 0;
     /* Subframe: DA(6) SA(6) Length(2, big-endian) | MSDU(Length) | pad to a
      * 4-byte boundary (the last subframe is not padded). */
     while (pos + 14 <= len) {
@@ -1521,8 +1584,34 @@ void RTW88IEEE80211::deAmsdu(const uint8_t *data, uint32_t len)
         if (msdu[0] == 0xAA && msdu[1] == 0xAA && msdu[2] == 0x03) {
             uint16_t ethertype = (uint16_t)((msdu[6] << 8) | msdu[7]);
             deliverEthernet(sf, sf + 6, ethertype, msdu + 8, sublen - 8);
+            delivered++;
         }
         pos += (14u + sublen + 3u) & ~3u;   /* next subframe (4-byte aligned) */
+    }
+    /* Section 121 instrumentation: added after a session where
+     * rx_byte_count kept climbing by megabytes (real 802.11-level RX,
+     * counted before delivery) while ping got 100% loss and
+     * [rxdatadiag] during the failure window showed only small
+     * (len=84) broadcast noise -- meaning REAL, sizeable inbound data
+     * (very plausibly A-MSDU-aggregated under real throughput, e.g. a
+     * concurrent large download) was being received and counted, but
+     * never actually reaching deliverEthernet(). This function is the
+     * one place that could happen silently: the malformed/truncated-
+     * subframe check above `break`s the ENTIRE parse on the first bad
+     * subframe with no logging, discarding every subframe packed into
+     * that A-MSDU, not just the bad one. Logged once/sec whenever a
+     * non-trivial amount of data (len > 100 bytes -- i.e. plausibly a
+     * real multi-subframe A-MSDU, not just a stray 2-byte leftover)
+     * was NOT fully consumed (`pos` stops well short of `len`) or
+     * nothing was delivered from it at all. */
+    if ((len - pos) > 100 || (len > 100 && delivered == 0)) {
+        static uint64_t s_last_amsdu_log_ticks = 0;
+        uint64_t now_ticks = mach_absolute_time();
+        if ((now_ticks - s_last_amsdu_log_ticks) > 1000000000ULL) {
+            IOLog("rtw88: [amsdudiag] len=%u consumed=%u delivered=%u "
+                  "remaining=%u\n", len, pos, delivered, len - pos);
+            s_last_amsdu_log_ticks = now_ticks;
+        }
     }
 }
 

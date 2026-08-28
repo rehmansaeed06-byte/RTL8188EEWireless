@@ -2730,3 +2730,85 @@ unreproducible across several more runs, treat Section 111 as
 resolved and move on to the still-open items from Section 110.7
 (longer soak test, `IO80211`/apple80211 interface work, class-rename
 cleanup). Full detail in findings.md Section 112.
+## LATEST UPDATE — New open item: throughput gap vs. mobile baseline
+(findings.md Section 113)
+
+With the link stable (Section 112 confirmed no stalls/queuing-delay
+recurrence, YouTube working normally), a speed test on this port
+showed 2.3 Mbps down / 0.47 Mbps up. Same test on a mobile phone
+showed 6.97 Mbps down — roughly 3x higher. No loss/stalling
+accompanies this; it's a throughput ceiling, not a stability issue.
+
+Candidates, none investigated yet: (1) rate control not negotiating
+up to higher MCS despite decent RSSI (~-50 to -54) — overlaps with
+the still-open VHT rate helper cluster from Section 94
+(`_ieee80211_rate_get_vht_mcs`/`_get_vht_nss`/`_set_vht`, "3 unique
+undefined symbols" not yet closed) — a wrong bit-packing scheme there
+could silently cap rate selection rather than fail to link; (2)
+inherent 1x1/single-stream hardware ceiling vs. phone's likely MIMO
+radio — may just be a hardware gap, not a bug; (3) TX aggregation
+(A-MPDU) under-utilized — Section 94's TX-BA no-ops rely entirely on
+this driver's own MLME-driven ADDBA/BlockAck negotiation rather than
+mac80211's, so if that negotiation isn't landing well, per-frame
+overhead could suppress throughput with zero loss; (4) AP-side
+QoS/scheduling difference between clients, considered less likely to
+explain a consistent ~3x gap alone.
+
+## Next immediate step
+
+Check what MCS/rate the driver is actually using for TX (via
+`ctl_rtw88 state` if it exposes this, or another diagnostic) to
+confirm/rule out the rate-control hypothesis first — that's the
+natural starting point before looking at aggregation behavior. No
+commands run yet for this item. Full detail in findings.md Section
+113.
+## LATEST UPDATE — CRITICAL: kernel panic root-caused in
+rtlwifi_pci_tx_isr (findings.md Section 114)
+
+A speed test triggered a full kernel panic (hard freeze, forced
+power-off) after the connection had already gone unhealthy
+(oscillating queuing-delay pattern on ping, then 100% loss). Panic
+log confirms: page fault, CR2=0x20 (NULL-pointer deref at a small
+struct offset), backtrace through `_rtlwifi_pci_tx_isr` ->
+`_rtlwifi_do_interrupt` -> the IOKit interrupt workloop chain — the
+exact function pair the Section 111 TX-ISR fix (`39fa91d`) modified.
+
+**Root cause found by inspection, not yet fixed:**
+`rtlwifi_pci_tx_isr`'s drain loop calls the explicitly-documented
+lockless `__skb_dequeue()` (its own header comment says "caller
+already holds list->lock") without ever taking `ring->queue.lock`,
+and the `while (skb_queue_len(&ring->queue))` guard is a separate,
+non-atomic check that can go stale before the dequeue actually runs.
+When the queue empties between the check and the dequeue (a race
+with the TX-submit path enqueuing/dequeuing concurrently),
+`__skb_dequeue()` correctly returns NULL — but the very next line
+(`dma_unmap_single(..., skb->len, ...)`) dereferences it with zero
+NULL check. That's exactly what CR2=0x20 shows. This race window
+only opens under sustained high packet rate, which is why it didn't
+show in Section 112's steady ping test but did show under an actual
+speed test's max-rate TX load.
+
+The existing in-code comment on `rtlwifi_do_interrupt` notes real
+rtlwifi takes `rtlpriv->locks.irq_th_lock` here and this port
+intentionally omitted it, reasoning that `IOInterruptEventSource`
+serializes concurrent interrupt calls — true, but that only
+serializes the consumer side; it never covered the TX-submit
+(producer) path racing against the ISR-side drain on this same
+queue, which is the actual gap.
+
+## Next immediate step (fix not yet written)
+
+Two changes needed in `rtlwifi_pci_tx_isr`
+(`src/compat/rtlwifi_compat.c`): (a) minimal defensive fix — NULL
+check right after `__skb_dequeue()`, break/continue on NULL; (b) the
+more correct fix per the driver's own real-code precedent — take a
+proper lock around the dequeue-and-use sequence to actually close
+the race with the TX submit path, rather than just papering over the
+NULL-deref symptom. (b) is the real fix; (a) alone stops the crash
+but leaves the underlying race (skbs could still be silently
+mishandled without panicking). Full detail, including the exact
+panic backtrace, in findings.md Section 114.
+
+**Do not run further speed tests / high-throughput tests until this
+is patched** — the race is real and will very likely retrigger under
+sustained load.

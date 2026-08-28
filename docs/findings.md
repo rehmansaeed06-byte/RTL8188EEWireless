@@ -10413,4 +10413,170 @@ calling this fully resolved.
 
 ------------------------------------------------------------------------
 
+# 113. Sustained throughput gap vs. mobile baseline -- open item
+
+## 113.1 Observation
+
+With the connection stable (Section 112: no stalls, no queuing-delay
+recurrence, YouTube playback working normally), a speed test on this
+port showed **2.3 Mbps down / 0.47 Mbps up**. The same speed test run
+on a mobile phone (presumably against the same AP) showed **6.97
+Mbps down** -- roughly a 3x gap on download alone, with upload not
+yet compared.
+
+This is a throughput/rate finding, not a stability one: no packet
+loss or stalling was observed alongside it. The connection works:
+it's just capped well below what the same AP/link apparently
+supports.
+
+## 113.2 Candidate causes, not yet investigated
+
+1. **Rate control / PHY rate ceiling** -- if the driver isn't
+   correctly negotiating up to higher MCS rates despite decent link
+   quality (RSSI ~-50 to -54 throughout recent tests), TX would stay
+   capped at a conservative low data rate. This overlaps with the
+   still-open VHT rate helper cluster flagged in the handover doc
+   (`_ieee80211_rate_get_vht_mcs`/`_get_vht_nss`/`_set_vht`, Section
+   94's "Current count: 3 unique undefined symbols") -- if any of
+   those are stubbed incorrectly or the real bit-packing scheme isn't
+   exactly right, rate selection could silently be capped rather than
+   failing to link/load, per the caution already flagged when those
+   symbols were closed.
+2. **Single antenna / 1x1 vs. phone's likely multi-stream MIMO** --
+   the rtl8188ee is a single-stream (1x1) 2.4GHz-only chipset; some
+   of the gap vs. a modern phone's 2x2+ MIMO radio may simply be an
+   inherent hardware-capability difference, not a driver bug.
+3. **TX aggregation (A-MPDU) not fully utilized** -- Section 94 notes
+   TX-BA session start/stop (`ieee80211_start_tx_ba_session`/
+   `_stop_tx_ba_cb_irqsafe`) are no-ops relying entirely on this
+   driver's own MLME-driven ADDBA/BlockAck negotiation rather than
+   mac80211's. If that negotiation isn't establishing aggregation
+   effectively, per-frame overhead would suppress throughput even
+   with zero loss.
+4. AP-side scheduling/QoS treating the two clients differently --
+   considered less likely to explain a consistent ~3x gap on its own,
+   not ruled out.
+
+## 113.3 Next step (not yet started)
+
+Check what MCS/rate the driver is actually reporting/using for TX,
+if `ctl_rtw88 state` or another diagnostic exposes it -- confirming
+or ruling out (1) is the natural first move before looking at
+aggregation behavior in (3). No commands run yet for this section.
+
+------------------------------------------------------------------------
+
+# 114. CRITICAL: kernel panic in rtlwifi_pci_tx_isr under sustained load -- root cause identified
+
+## 114.1 Severity and trigger
+
+Confirmed **kernel panic (hard freeze, forced power-off required)**
+triggered by running a speed test while connected, following the
+Section 112/113 sessions. Reproduced on the second speed-test
+attempt after a first attempt caused a plain disconnect; the panic
+then cascaded into a rough recovery cycle (further disconnect, a
+false "cable unplugged" state, multiple reboots/reconnects before
+the link stabilized again). This is a severity step up from
+everything logged in Sections 111-113 -- those were throughput/
+stability symptoms; this is the kext taking the whole OS down.
+
+Immediately before the panic, a `ping -c 120` run showed the
+queuing-delay pattern recurring in an oscillating form (climb into
+seconds, recover to ~40ms, climb again -- see the raw RTT sequence
+in this session's chat log), and a second ping attempt run right
+after got 100% timeout (52/52 lost) -- the link was already
+unhealthy before the actual panic-inducing speed test run.
+
+## 114.2 Panic details (from Kernel-2026-08-27-161552.panic)
+
+```
+Kernel trap ... type 14 = page fault
+CR2 (faulting address): 0x0000000000000020
+Error code: 0x0
+
+Backtrace:
+  _rtlwifi_pci_tx_isr + 0x15b
+  _rtlwifi_do_interrupt + 0x198
+  RTW88IEEE80211::handleInterrupt
+  RTW88PCIDevice::handleInterrupt
+  IOInterruptEventSource::checkForWork
+  IOWorkLoop::runEventSources
+  IOWorkLoop::threadMain
+```
+
+`CR2 = 0x20` is a small-offset field access into a **NULL pointer**
+-- classic signature of dereferencing a NULL `struct sk_buff *`
+(offset 0x20 lands inside `sk_buff`'s early fields, consistent with
+`skb->len` or a field `IEEE80211_SKB_CB(skb)`/`rtl_get_fc(skb)`
+would touch). Fault occurred inside `rtlwifi_pci_tx_isr`
+(`src/compat/rtlwifi_compat.c`), called from `rtlwifi_do_interrupt`
+-- the exact function pair the Section 111 TX-ISR fix (`39fa91d`)
+modified/enabled.
+
+## 114.3 Root cause identified: missing lock + missing NULL check in rtlwifi_pci_tx_isr
+
+`rtlwifi_pci_tx_isr`'s drain loop:
+
+```c
+while (skb_queue_len(&ring->queue)) {
+    ...
+    skb = __skb_dequeue(&ring->queue);
+    dma_unmap_single(&rtlpci->pdev->dev, ..., skb->len, DMA_TO_DEVICE);
+    ...
+```
+
+`__skb_dequeue()` (`src/compat/linux/skbuff.h`) is explicitly
+documented in its own header comment as the **lockless** variant:
+"caller already holds list->lock." `rtlwifi_pci_tx_isr` never
+acquires `ring->queue.lock` before calling it, and the `while
+(skb_queue_len(&ring->queue))` guard is a separate, non-atomic read
+that can go stale between the check and the subsequent
+`__skb_dequeue()` call if the queue is modified in between (e.g. the
+TX submit path enqueuing/dequeuing concurrently via the locked
+`skb_queue_tail()`/`skb_dequeue()` variants on another thread/core).
+When that race hits, `__skb_dequeue()` correctly returns NULL on an
+empty list -- but the very next line, `dma_unmap_single(...,
+skb->len, ...)`, dereferences `skb` with **no NULL check at all**.
+That NULL dereference at a small struct offset is exactly what
+`CR2 = 0x20` shows.
+
+This race window only opens under sustained high packet rate (many
+TX completions per interrupt, concurrent submit traffic) -- matching
+exactly why this didn't surface during Section 112's clean repeat
+test (steady ping load, not saturating) but did surface during an
+actual speed test (max-rate sustained TX).
+
+## 114.4 Also worth checking, not yet confirmed
+
+`skb_queue_len()`'s own read of `list->qlen` is likewise unguarded
+in this call path -- even if the NULL check above is added, the
+qlen-based `while` condition itself is a second place the same
+lockless-vs-unlocked-caller mismatch could still cause an
+off-by-one loop iteration (though not a NULL deref once the check
+is added). The correct real-rtlwifi pattern (per the existing code
+comment on `rtlwifi_do_interrupt`, "Real code also takes
+rtlpriv->locks.irq_th_lock here... intentionally omitted") assumed
+single-threaded serialization via `IOInterruptEventSource`, but that
+assumption does not cover the ring's *producer* side (TX submission
+from mac80211's TX path), only serializes concurrent *interrupt*
+calls -- the producer and the ISR-side consumer are different
+threads and were never actually mutually excluded on this queue.
+
+## 114.5 Not yet fixed
+
+No code change made yet for this section -- root cause identified
+from the panic log and source inspection only. Fix should add either
+(a) a NULL check immediately after `__skb_dequeue()` with a `break`/
+`continue` on NULL (minimal, defensive fix matching the lockless
+contract's actual guarantee), and/or (b) proper lock acquisition
+around the whole dequeue-and-use sequence in `rtlwifi_pci_tx_isr` to
+close the race with the TX submit path, matching real rtlwifi's use
+of `irq_th_lock` that this port's comment says was intentionally
+left out. (b) is the more correct fix per the driver's own real-code
+precedent; (a) alone would stop the panic but not the underlying
+race (skbs could still be lost/mishandled under the same race
+condition without crashing).
+
+------------------------------------------------------------------------
+
 # End of Findings (this revision)

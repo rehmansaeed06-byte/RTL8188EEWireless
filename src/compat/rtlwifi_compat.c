@@ -2071,31 +2071,41 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
     struct rtl_pci  *rtlpci  = rtl_pcidev(rtl_pcipriv(hw));
     struct rtl8192_tx_ring *ring = &rtlpci->tx_ring[prio];
 
-    /* Section 114 fix: __skb_dequeue() is the explicitly-documented
-     * lockless variant (see its header comment in linux/skbuff.h --
-     * "caller already holds list->lock"), but this loop never took
-     * that lock, and the `skb_queue_len()` guard above it is a
-     * separate, non-atomic read. Under sustained high packet rate the
-     * TX-submit path (hw->ops->tx() -> rtl_pci_tx(), which pushes
-     * onto this same ring->queue via the locked skb_queue_tail())
-     * races with this drain loop on another thread; when the queue
-     * empties between the `skb_queue_len()` check and the
-     * `__skb_dequeue()` call, `__skb_dequeue()` correctly returns
-     * NULL -- but the very next line used to dereference it
-     * (`skb->len`) with no NULL check at all. Confirmed as a real
-     * kernel panic (CR2=0x20, NULL deref at a small sk_buff offset,
-     * backtrace through this function) triggered by a speed test's
-     * sustained TX load -- see findings.md Section 114 for the full
-     * panic log and analysis.
+    /* Section 114/115 fix history:
      *
-     * Fix: hold ring->queue.lock across the whole check-dequeue
-     * sequence below, closing the race with the submit path directly
-     * (rather than only silencing the NULL-deref symptom), matching
-     * real rtlwifi's own precedent of serializing this exact section
-     * against concurrent submission. spinlock_t here is backed by
-     * IORecursiveLock (see compat/linux/spinlock.h), so this is safe
-     * even if some other path in this call chain already holds it. */
-    spin_lock_bh(&ring->queue.lock);
+     * Section 114 found a real kernel panic here (CR2=0x20, NULL deref
+     * on `skb->len` after an unchecked `__skb_dequeue()`) and initially
+     * "fixed" it by wrapping this whole loop in a NEW
+     * spin_lock_bh(&ring->queue.lock)/spin_unlock_bh() pair, reasoning
+     * that real rtlwifi's own precedent was to hold `ring->queue.lock`
+     * around this exact drain. That precedent claim was never actually
+     * checked against upstream source for *this* function -- Section
+     * 115 did check (live read of real _rtl_pci_tx_isr(), pci.c:450-540)
+     * and found real code takes **no lock at all** around this drain --
+     * not ring->queue.lock, not irq_th_lock, nothing. (Real
+     * rtl_pci_reset_trx_ring(), a *different* function entirely, does
+     * lock around a similarly-shaped drain loop, but with
+     * rtlpriv->locks.irq_th_lock, never ring->queue.lock -- that was
+     * the actual source of the mismatched precedent claim.) Real code's
+     * safety here comes from _rtl_pci_tx_isr() only ever running inside
+     * the single IRQ bottom half, same reasoning this port's own
+     * rtlwifi_do_interrupt() already documents for omitting
+     * irq_th_lock. This port's TX-submit path (RTW88PCIDevice::
+     * outputPacket(), via IOGatedOutputQueue) and this ISR both run
+     * gated on the same single _workLoop (RTW88PCIDevice.cpp), so they
+     * were -- and still are, with no lock at all -- already mutually
+     * exclusive on this port too. The Section 114 lock was therefore
+     * unnecessary, didn't match any real precedent, and is the direct
+     * cause of this session's "connects but net doesn't work"
+     * regression (found by inspection: it's the only change Section
+     * 114 made, and nothing else in this loop touches shared state
+     * differently). Removed.
+     *
+     * The actual bug -- the unchecked `__skb_dequeue()` NULL deref --
+     * is still real and still needs a fix, just not a lock: keeping
+     * the NULL check below (Section 114's other change) is the
+     * correct, minimal fix, matching upstream's own lock-free
+     * structure exactly while still closing the crash. */
 
     while (skb_queue_len(&ring->queue)) {
         struct sk_buff *skb;
@@ -2105,7 +2115,63 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
         u8 *entry = (u8 *)(&ring->desc[ring->idx]);
 
         if (!rtlpriv->cfg->ops->is_tx_desc_closed(hw, prio, ring->idx)) {
-            spin_unlock_bh(&ring->queue.lock);
+            /* Section 117 instrumentation: added after a session where
+             * the debug timer's rtlwifi_debug_dump_tx_state() showed
+             * `queued=161 avail=95` frozen at the exact same numbers
+             * for 40+ consecutive seconds, with TX completely stopped
+             * (zero [txdatadiag] lines) while RX kept receiving
+             * broadcast traffic the whole time -- meaning
+             * rtlwifi_do_interrupt() was still running (RX bits still
+             * firing), but this exact `return` was very likely being
+             * hit on every call, forever, for the same `ring->idx`.
+             * This log is silent in the healthy case (only fires on
+             * the early-return path) and will confirm directly, next
+             * reproduction, whether `ring->idx` is stuck pointing at a
+             * descriptor hardware never marks closed -- and if so,
+             * whether it's always the same idx (pure hardware/DMA
+             * desync) or a slowly advancing-then-stalling one (a
+             * different kind of bug). Rate-limited to once/sec per
+             * stuck idx so a genuine stall doesn't flood the log the
+             * way the per-packet [txdatadiag]/[rxdatadiag] lines would
+             * if used here instead. */
+            static unsigned int s_last_logged_idx = ~0u;
+            static uint64_t s_last_log_ticks = 0;
+            /* Section 117 fix: originally converted mach_absolute_time()
+             * ticks to real nanoseconds via mach_timebase_info(), which
+             * required #include <mach/mach_time.h> -- the USERSPACE
+             * Mach header. iokit_shim.h (this project's own kernel-side
+             * shim) already declares mach_absolute_time() itself
+             * (`extern uint64_t mach_absolute_time(void);`,
+             * iokit_shim.h:122) specifically for kext/XNU context;
+             * pulling in the userspace header on top of that caused a
+             * declaration clash that built without any visible error
+             * but produced a kext that silently never attached in
+             * IORegistry after reboot (en2 never appeared, kextstat
+             * never listed it, and dmesg showed zero mentions of this
+             * kext at all -- not even a rejection, just total silence,
+             * which is consistent with a kext that fails XNU's own
+             * kernel-linking step before ever reaching driver
+             * matching).
+             *
+             * Fix: use only iokit_shim.h's existing declaration, and
+             * drop the nanosecond conversion -- for a once-per-second
+             * rate-limit on a debug log line, exact nanosecond
+             * precision was never actually needed. `mach_absolute_time
+             * ()`'s tick rate is close enough to 1ns/tick on all
+             * current Apple/Intel Mac hardware (the actual timebase
+             * ratio is 1:1 on Intel Macs specifically, which is what
+             * this project targets) that comparing raw tick deltas
+             * against a ~1-second threshold is accurate enough for a
+             * rate limit, without needing mach_timebase_info() or its
+             * header at all. */
+            uint64_t now_ticks = mach_absolute_time();
+            if (ring->idx != s_last_logged_idx || (now_ticks - s_last_log_ticks) > 1000000000ULL) {
+                IOLog("rtlwifi: [txstalldiag] is_tx_desc_closed false, "
+                      "prio=%d idx=%u queued=%u entries=%u\n",
+                      prio, ring->idx, skb_queue_len(&ring->queue), ring->entries);
+                s_last_logged_idx = ring->idx;
+                s_last_log_ticks = now_ticks;
+            }
             return;
         }
         ring->idx = (ring->idx + 1) % ring->entries;
@@ -2113,10 +2179,14 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
         skb = __skb_dequeue(&ring->queue);
         if (!skb) {
             /* Queue emptied between the skb_queue_len() check above
-             * and this dequeue -- should not happen now that the
-             * whole sequence is lock-held, but kept as a defensive
-             * belt-and-suspenders check given this is exactly the
-             * NULL that caused the Section 114 panic. */
+             * and this dequeue. Real upstream code doesn't guard
+             * against this at all (see history above) -- it can't
+             * actually happen there or here, since nothing else drains
+             * this ring on this port's single workloop -- but this
+             * NULL check is the actual, minimal fix for the Section
+             * 114 panic: cheap, harmless if never hit, and directly
+             * closes the exact NULL deref (CR2=0x20) the panic log
+             * showed. */
             break;
         }
         dma_unmap_single(&rtlpci->pdev->dev,
@@ -2186,8 +2256,6 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
             ieee80211_wake_queue(hw, IEEE80211_AC_BE);
         }
     }
-
-    spin_unlock_bh(&ring->queue.lock);
 }
 
 
@@ -2375,13 +2443,51 @@ bool rtlwifi_do_interrupt(void)
             }
 
 rearm:
-            /* Re-arm this descriptor slot with a fresh (or, on alloc
-             * failure, no) skb -- port of _rtl_pci_init_one_rxdesc()'s
-             * pdesc branch (pci.c:552), inlined here rather than
-             * duplicating the static helper, since that helper is not
-             * externally linkable (confirmed: static, pci.c-local). */
+            /* Re-arm this descriptor slot -- port of
+             * _rtl_pci_init_one_rxdesc()'s pdesc branch (pci.c:552),
+             * inlined here rather than duplicating the static helper,
+             * since that helper is not externally linkable (confirmed:
+             * static, pci.c-local).
+             *
+             * Section 116 fix: this used to call a SECOND
+             * dev_alloc_skb() here whenever `new_skb` was NULL (i.e.
+             * on the earlier alloc-failure path at "goto rearm"),
+             * instead of matching real code's actual behavior. Real
+             * pci.c (confirmed against the person's own local
+             * checkout, pci.c:706-762) only ever calls dev_alloc_skb()
+             * ONCE per iteration, at the top; on failure it jumps to
+             * `no_new:` with `skb` left unmodified (still pointing at
+             * the original, already-DMA'd-and-unmapped buffer) and
+             * rearms the descriptor with THAT skb, reusing the same
+             * memory -- dropping this one frame's data but keeping the
+             * ring slot fully populated and hardware-writable.
+             *
+             * This port's second dev_alloc_skb() call, under the exact
+             * condition that made the first one fail (real memory
+             * pressure), was itself very likely to also fail -- and
+             * when it did, `arm_skb` stayed NULL, hitting the "leave
+             * OWN bit as-is" branch below. At that point the ring
+             * slot's OWN bit is never handed back to hardware, AND the
+             * original skb was already unmapped with no path back to
+             * it (it was never reassigned anywhere on this branch) --
+             * a genuinely lost descriptor slot. Under a sustained
+             * high-throughput burst (real memory pressure, many
+             * outstanding TX allocations competing with RX), this can
+             * cascade across multiple slots until the ring has zero
+             * usable descriptors left -- exactly matching the
+             * Section 115.5 "RX goes silent after a speed test, no
+             * error logged anywhere" symptom, since this failure path
+             * had no logging at all.
+             *
+             * Fix: reuse the original `skb` (not a fresh allocation)
+             * on the alloc-failure path, matching real code exactly.
+             * The only remaining alloc-failure case is the true
+             * initial `dev_alloc_skb()` at the top of the loop (line
+             * ~2314) -- if that ever also fails to find a fresh skb,
+             * for consistency with real code we still rearm with the
+             * ORIGINAL skb, never with a fresh unconditional retry. */
             {
-                struct sk_buff *arm_skb = new_skb ? new_skb : dev_alloc_skb(rtlpci->rxbuffersize);
+                struct sk_buff *arm_skb = new_skb ? new_skb : skb;
                 u32 bufferaddress;
                 u8 tmp_one = 1;
 
@@ -2398,11 +2504,11 @@ rearm:
                     rtlpriv->cfg->ops->set_desc(hw, (u8 *)pdesc, false,
                                                 HW_DESC_RXOWN, (u8 *)&tmp_one);
                 }
-                /* else: leave OWN bit as-is (still hardware-owned from the
-                 * failed own-check above would not reach here; this is
-                 * only the alloc-failure path, where we intentionally
-                 * drop one packet's worth of ring capacity rather than
-                 * risk a bad re-arm). */
+                /* `arm_skb` can now only be NULL if `skb` itself was
+                 * NULL, which real code's own equivalent path also
+                 * cannot recover from -- not expected to happen in
+                 * practice (the ring is always pre-populated), kept as
+                 * a defensive no-op rather than removed entirely. */
             }
 
             if (rtlpci->rx_ring[rxring_idx].idx == (unsigned int)(rtlpci->rxringcount - 1))

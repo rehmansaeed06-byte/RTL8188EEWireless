@@ -18,6 +18,20 @@ extern "C" {
 
 extern "C" boolean_t preemption_enabled(void);
 
+/* Section 118: mach_absolute_time() forward-declared explicitly here
+ * rather than relying on it coming in transitively via IOKit/IOLib.h
+ * (which it likely does on this SDK, but "likely" is exactly what
+ * caused the Section 117 bug in the compat C layer -- there,
+ * iokit_shim.h's own kernel-safe declaration got shadowed by
+ * pulling in the wrong, userspace <mach/mach_time.h> on top of it,
+ * producing a kext that built clean but silently never attached in
+ * IORegistry. This file doesn't include iokit_shim.h or any
+ * userspace Mach header, so that specific collision can't happen
+ * here, but declaring it explicitly, matching iokit_shim.h's own
+ * kernel-context signature exactly, removes any doubt rather than
+ * depending on an unconfirmed transitive include). */
+extern "C" uint64_t mach_absolute_time(void);
+
 #define super IOEthernetController
 OSDefineMetaClassAndStructors(RTW88PCIDevice, IOEthernetController)
 
@@ -620,6 +634,30 @@ UInt32 RTW88PCIDevice::outputPacket(mbuf_t m, void *param)
 {
     drainPendingFree();
     if (!_enabled || !_ieee80211) {
+        /* Section 118 instrumentation: this drop path was completely
+         * silent -- no log anywhere -- and is the one place upstream
+         * of the TX ring (rtlwifi_be_tx_avail()/ring->queue) where a
+         * packet can vanish without ANY trace in [txdatadiag],
+         * [txstalldiag], or the "BE ring:" debug dump, since none of
+         * those ever get called if we return here. Added after a
+         * session where TX went completely silent (zero [txdatadiag]
+         * lines, zero [txstalldiag] lines, zero "BE ring:" lines) for
+         * an extended period while the 802.11 link itself still
+         * reported connected (ctl_rtw88 state: state=5, healthy RSSI)
+         * -- meaning if this is the actual drop point, `_enabled` or
+         * `_ieee80211` went false/null while the higher-level
+         * connection state never reflected it. Rate-limited the same
+         * way as [txstalldiag] (Section 117) rather than per-packet,
+         * since if this fires at all under a real stall it will fire
+         * on every single outgoing packet. */
+        static uint64_t s_last_drop_log_ticks = 0;
+        uint64_t now_ticks = mach_absolute_time();
+        if ((now_ticks - s_last_drop_log_ticks) > 1000000000ULL) {
+            IOLog("rtw88: [txdropdiag] outputPacket dropped, "
+                  "_enabled=%d _ieee80211=%p\n",
+                  (int)_enabled, (void *)_ieee80211);
+            s_last_drop_log_ticks = now_ticks;
+        }
         freePacket(m);
         return kIOReturnOutputDropped;
     }

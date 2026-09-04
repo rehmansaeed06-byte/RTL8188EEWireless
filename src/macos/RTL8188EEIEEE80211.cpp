@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-// RTW88IEEE80211.cpp — 802.11 state machine
+// RTL8188EEIEEE80211.cpp — 802.11 state machine
 
-#include "RTW88IEEE80211.hpp"
-#include "RTW88PCIDevice.hpp"
-#include "RTW88UserClient.hpp"
+#include "RTL8188EEIEEE80211.hpp"
+#include "RTL8188EEPCIDevice.hpp"
+#include "RTL8188EEUserClient.hpp"
 
 #include <IOKit/IOLib.h>
 #include <IOKit/IOService.h>
@@ -13,7 +13,7 @@
 
 /* Section 119: mach_absolute_time() declared explicitly rather than
  * relying on a transitive include, for the exact same reason as
- * RTW88PCIDevice.cpp's own Section 118 comment -- see that file for
+ * RTL8188EEPCIDevice.cpp's own Section 118 comment -- see that file for
  * the full story of how an implicit/wrong-header assumption about
  * this symbol previously produced a kext that built clean but
  * silently never attached in IORegistry. Matches iokit_shim.h's own
@@ -21,7 +21,7 @@
 extern "C" uint64_t mach_absolute_time(void);
 
 /* Debug stage checkpoint — logs message only (no sleep). */
-#define RTW88_STAGE(fmt, ...) IOLog("rtw88: ---- STAGE: " fmt " ----\n", ##__VA_ARGS__)
+#define RTL8188EE_STAGE(fmt, ...) IOLog("rtw88: ---- STAGE: " fmt " ----\n", ##__VA_ARGS__)
 
 /* Chain-safe packet mbuf builder (defined below). */
 static mbuf_t rtw88_make_packet_mbuf(const void *src, uint32_t len);
@@ -490,28 +490,28 @@ static bool extract_gtk_from_kde(const uint8_t *key_data, uint16_t key_data_len,
 #define RTL8188EE_PCI_DEVICE_ID 0x8179
 
 #define super OSObject
-OSDefineMetaClassAndStructors(RTW88IEEE80211, OSObject)
+OSDefineMetaClassAndStructors(RTL8188EEIEEE80211, OSObject)
 
 /* ------------------------------------------------------------------ */
 /*  Static compat callbacks                                             */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::compat_rx_frame(void *kext_hw, struct sk_buff *skb)
+void RTL8188EEIEEE80211::compat_rx_frame(void *kext_hw, struct sk_buff *skb)
 {
-    RTW88IEEE80211 *self = (RTW88IEEE80211 *)kext_hw;
+    RTL8188EEIEEE80211 *self = (RTL8188EEIEEE80211 *)kext_hw;
     if (self) self->rxFrame(skb);
 }
 
-void RTW88IEEE80211::compat_tx_status(void *kext_hw, struct sk_buff *skb)
+void RTL8188EEIEEE80211::compat_tx_status(void *kext_hw, struct sk_buff *skb)
 {
-    RTW88IEEE80211 *self = (RTW88IEEE80211 *)kext_hw;
+    RTL8188EEIEEE80211 *self = (RTL8188EEIEEE80211 *)kext_hw;
     if (self) self->txStatus(skb);
     kfree_skb(skb);
 }
 
-void RTW88IEEE80211::compat_scan_done(void *kext_hw, bool aborted)
+void RTL8188EEIEEE80211::compat_scan_done(void *kext_hw, bool aborted)
 {
-    RTW88IEEE80211 *self = (RTW88IEEE80211 *)kext_hw;
+    RTL8188EEIEEE80211 *self = (RTL8188EEIEEE80211 *)kext_hw;
     if (self) self->scanDone(aborted);
 }
 
@@ -519,9 +519,9 @@ void RTW88IEEE80211::compat_scan_done(void *kext_hw, bool aborted)
 /*  Factory / init / free                                               */
 /* ------------------------------------------------------------------ */
 
-RTW88IEEE80211 *RTW88IEEE80211::create(RTW88PCIDevice *dev, struct pci_dev *pci)
+RTL8188EEIEEE80211 *RTL8188EEIEEE80211::create(RTL8188EEPCIDevice *dev, struct pci_dev *pci)
 {
-    RTW88IEEE80211 *obj = new RTW88IEEE80211;
+    RTL8188EEIEEE80211 *obj = new RTL8188EEIEEE80211;
     if (obj && !obj->init(dev, pci)) {
         obj->release();
         return nullptr;
@@ -529,7 +529,7 @@ RTW88IEEE80211 *RTW88IEEE80211::create(RTW88PCIDevice *dev, struct pci_dev *pci)
     return obj;
 }
 
-bool RTW88IEEE80211::init(RTW88PCIDevice *dev, struct pci_dev *pci)
+bool RTL8188EEIEEE80211::init(RTL8188EEPCIDevice *dev, struct pci_dev *pci)
 {
     if (!super::init()) return false;
     _parent = dev;
@@ -539,16 +539,16 @@ bool RTW88IEEE80211::init(RTW88PCIDevice *dev, struct pci_dev *pci)
     _bssLock = IOLockAlloc();
     if (!_lock || !_bssLock) return false;
 
-    _connectTC = thread_call_allocate((thread_call_func_t)RTW88IEEE80211::connectTCFn,
+    _connectTC = thread_call_allocate((thread_call_func_t)RTL8188EEIEEE80211::connectTCFn,
                                        (thread_call_param_t)this);
-    _manualScanTC = thread_call_allocate((thread_call_func_t)RTW88IEEE80211::manualScanTCFn,
+    _manualScanTC = thread_call_allocate((thread_call_func_t)RTL8188EEIEEE80211::manualScanTCFn,
                                           (thread_call_param_t)this);
 
     /* Install callbacks into compat layer */
     static struct rtlwifi_hw_callbacks cbs = {
-        .rx_frame  = RTW88IEEE80211::compat_rx_frame,
-        .tx_status = RTW88IEEE80211::compat_tx_status,
-        .scan_done = RTW88IEEE80211::compat_scan_done,
+        .rx_frame  = RTL8188EEIEEE80211::compat_rx_frame,
+        .tx_status = RTL8188EEIEEE80211::compat_tx_status,
+        .scan_done = RTL8188EEIEEE80211::compat_scan_done,
     };
     rtlwifi_set_hw_callbacks(&cbs, this);
 
@@ -561,7 +561,7 @@ bool RTW88IEEE80211::init(RTW88PCIDevice *dev, struct pci_dev *pci)
     _wl->addEventSource(_gate);
 
     _timer = IOTimerEventSource::timerEventSource(this,
-        &RTW88IEEE80211::timerFired);
+        &RTL8188EEIEEE80211::timerFired);
     if (!_timer) return false;
     _wl->addEventSource(_timer);
 
@@ -574,15 +574,15 @@ bool RTW88IEEE80211::init(RTW88PCIDevice *dev, struct pci_dev *pci)
     IOWorkLoop *rxwl = _parent ? _parent->getRxWorkLoop() : nullptr;
     if (!rxwl) return false;
     _reorderTimer = IOTimerEventSource::timerEventSource(this,
-        &RTW88IEEE80211::reorderTimerFired);
+        &RTL8188EEIEEE80211::reorderTimerFired);
     if (!_reorderTimer) return false;
     rxwl->addEventSource(_reorderTimer);
 
-    IOLog("rtw88: RTW88IEEE80211 initialized\n");
+    IOLog("rtw88: RTL8188EEIEEE80211 initialized\n");
     return true;
 }
 
-void RTW88IEEE80211::free()
+void RTL8188EEIEEE80211::free()
 {
     clearKeys();
     releaseSta();
@@ -604,9 +604,9 @@ void RTW88IEEE80211::free()
     if (_bssLock){ IOLockFree(_bssLock); _bssLock = nullptr; }
 
     /* Free BSS list */
-    RTW88BSS *b = _bssList;
+    RTL8188EEBSS *b = _bssList;
     while (b) {
-        RTW88BSS *n = b->next;
+        RTL8188EEBSS *n = b->next;
         IOFree(b, sizeof(*b));
         b = n;
     }
@@ -614,7 +614,7 @@ void RTW88IEEE80211::free()
     super::free();
 }
 
-void RTW88IEEE80211::clearKeys()
+void RTL8188EEIEEE80211::clearKeys()
 {
     if (_powered && _hw && _hw->ops && _hw->ops->set_key) {
         if (_ptkConf)
@@ -637,7 +637,7 @@ void RTW88IEEE80211::clearKeys()
     _rxCcmpIvSkipLogged = false;
 }
 
-void RTW88IEEE80211::releaseSta()
+void RTL8188EEIEEE80211::releaseSta()
 {
     if (!_sta)
         return;
@@ -666,7 +666,7 @@ static const char *rtw88CipherName(uint32_t cipher)
     }
 }
 
-bool RTW88IEEE80211::installKey(struct ieee80211_key_conf **slot, bool pairwise,
+bool RTL8188EEIEEE80211::installKey(struct ieee80211_key_conf **slot, bool pairwise,
                                 uint8_t keyidx, uint32_t cipher,
                                 const uint8_t *tk, uint8_t tk_len)
 {
@@ -735,9 +735,9 @@ bool RTW88IEEE80211::installKey(struct ieee80211_key_conf **slot, bool pairwise,
  * and failed with "expected unqualified-id"). */
 extern "C" void rtlwifi_mark_interface_started(void);
 
-IOReturn RTW88IEEE80211::start()
+IOReturn RTL8188EEIEEE80211::start()
 {
-    RTW88_STAGE("IEEE80211::start entered");
+    RTL8188EE_STAGE("IEEE80211::start entered");
 
     /* RTL8188EE is a single-chip target — no lookup table, just confirm
      * the PCI device ID matches and use rtl88ee_hal_cfg directly. */
@@ -747,7 +747,7 @@ IOReturn RTW88IEEE80211::start()
         return kIOReturnUnsupported;
     }
     const struct rtl_hal_cfg *chip = &rtl88ee_hal_cfg;
-    RTW88_STAGE("chip matched: device=%04x", _pcidev->device);
+    RTL8188EE_STAGE("chip matched: device=%04x", _pcidev->device);
 
     const struct pci_device_id fake_id = {
         .vendor      = _pcidev->vendor,
@@ -757,9 +757,9 @@ IOReturn RTW88IEEE80211::start()
         .driver_data = (unsigned long)chip,
     };
 
-    RTW88_STAGE("calling rtl_pci_probe");
+    RTL8188EE_STAGE("calling rtl_pci_probe");
     int ret = rtl_pci_probe(_pcidev, &fake_id);
-    RTW88_STAGE("rtl_pci_probe returned %d", ret);
+    RTL8188EE_STAGE("rtl_pci_probe returned %d", ret);
     if (ret != 0) {
         IOLog("rtw88: rtl_pci_probe failed: %d\n", ret);
         return kIOReturnError;
@@ -792,14 +792,14 @@ IOReturn RTW88IEEE80211::start()
      *
      * FIRST ATTEMPT at this fix tried to set the bit directly here via
      * `probe_priv->status` -- does NOT compile: struct rtl_priv is only
-     * forward-declared in RTW88IEEE80211.hpp (`struct rtl_priv;`), this
+     * forward-declared in RTL8188EEIEEE80211.hpp (`struct rtl_priv;`), this
      * .cpp never #includes the real wifi.h that defines its full layout
      * (unlike rtlwifi_compat.c, which does). Every other place this
      * kext needs to touch real rtlwifi internals goes through a small
      * exported compat function instead (see rtlwifi_do_interrupt() for
      * the established pattern) -- this follows the same approach. */
     /* rtlwifi_mark_interface_started() -- see declaration comment above
-     * RTW88IEEE80211::start() and in rtlwifi_compat.h for the full trace
+     * RTL8188EEIEEE80211::start() and in rtlwifi_compat.h for the full trace
      * of why this call exists. */
     if (_hw)
         rtlwifi_mark_interface_started();
@@ -812,7 +812,7 @@ IOReturn RTW88IEEE80211::start()
         _rtwdev = nullptr;
     }
 
-    RTW88_STAGE("rtwdev=%p hw=%p", (void *)_rtwdev, (void *)_hw);
+    RTL8188EE_STAGE("rtwdev=%p hw=%p", (void *)_rtwdev, (void *)_hw);
 
     /* Read MAC address — SET_IEEE80211_PERM_ADDR() copies EFuse MAC into
      * hw->wiphy->perm_addr during rtw_register_hw(); read it from there. */
@@ -827,7 +827,7 @@ IOReturn RTW88IEEE80211::start()
      * NOTE: _rtwdev must NOT be reassigned here. It has been correctly set from
      * _hw->priv above. */
     if (_hw) {
-        RTW88_STAGE("adding STA interface");
+        RTL8188EE_STAGE("adding STA interface");
         _vif = (struct ieee80211_vif *)IOMallocZero(
             sizeof(struct ieee80211_vif) + 128);
     /* Register with the C-side single-station bridge as soon as _vif
@@ -844,12 +844,12 @@ IOReturn RTW88IEEE80211::start()
                 _hw->ops->add_interface(_hw, _vif);
             rtlwifi_register_vif(_vif);
         }
-        RTW88_STAGE("add_interface done");
+        RTL8188EE_STAGE("add_interface done");
 
-        RTW88_STAGE("calling hw->ops->start");
+        RTL8188EE_STAGE("calling hw->ops->start");
         if (_hw->ops && _hw->ops->start) {
             int ret = _hw->ops->start(_hw);
-            RTW88_STAGE("hw->ops->start returned %d", ret);
+            RTL8188EE_STAGE("hw->ops->start returned %d", ret);
             if (ret != 0) {
                 IOLog("rtw88: hw->ops->start failed: %d\n", ret);
             } else {
@@ -871,20 +871,20 @@ IOReturn RTW88IEEE80211::start()
         }
     }
 
-    _state = RTW88_STATE_IDLE;
-    _scanReturnState = RTW88_STATE_IDLE;
-    RTW88_STAGE("IEEE80211::start complete — SUCCESS");
+    _state = RTL8188EE_STATE_IDLE;
+    _scanReturnState = RTL8188EE_STATE_IDLE;
+    RTL8188EE_STAGE("IEEE80211::start complete — SUCCESS");
     return kIOReturnSuccess;
 }
 
-void RTW88IEEE80211::stop()
+void RTL8188EEIEEE80211::stop()
 {
     IOLog("rtw88: IEEE80211 stop\n");
     _timer->cancelTimeout();
 
-    if ((_state == RTW88_STATE_CONNECTED ||
-         (_state == RTW88_STATE_SCANNING &&
-          _scanReturnState == RTW88_STATE_CONNECTED)) && _powered)
+    if ((_state == RTL8188EE_STATE_CONNECTED ||
+         (_state == RTL8188EE_STATE_SCANNING &&
+          _scanReturnState == RTL8188EE_STATE_CONNECTED)) && _powered)
         doDisconnect();
     else {
         clearKeys();
@@ -907,15 +907,15 @@ void RTW88IEEE80211::stop()
     if (_pcidev) rtl_pci_disconnect(_pcidev);
     _rtwdev = nullptr;
     _hw     = nullptr;
-    _state  = RTW88_STATE_IDLE;
-    _scanReturnState = RTW88_STATE_IDLE;
+    _state  = RTL8188EE_STATE_IDLE;
+    _scanReturnState = RTL8188EE_STATE_IDLE;
 }
 
 /* ------------------------------------------------------------------ */
 /*  Power on/off (called from enable/disable)                          */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88IEEE80211::powerOn()
+IOReturn RTL8188EEIEEE80211::powerOn()
 {
     IOLog("rtw88: IEEE80211 powerOn\n");
     if (_powered) return kIOReturnSuccess;
@@ -929,7 +929,7 @@ IOReturn RTW88IEEE80211::powerOn()
     return kIOReturnSuccess;
 }
 
-void RTW88IEEE80211::powerOff()
+void RTL8188EEIEEE80211::powerOff()
 {
     IOLog("rtw88: IEEE80211 powerOff\n");
     if (!_powered) return;
@@ -948,7 +948,7 @@ void RTW88IEEE80211::powerOff()
  * not be reintroduced alongside this. */
 extern "C" bool rtlwifi_do_interrupt(void);
 
-void RTW88IEEE80211::handleInterrupt()
+void RTL8188EEIEEE80211::handleInterrupt()
 {
     rtlwifi_do_interrupt();
 }
@@ -957,12 +957,12 @@ void RTW88IEEE80211::handleInterrupt()
 /*  TX path: Ethernet → 802.11 data frame                              */
 /* ------------------------------------------------------------------ */
 
-UInt32 RTW88IEEE80211::outputPacket(mbuf_t m)
+UInt32 RTL8188EEIEEE80211::outputPacket(mbuf_t m)
 {
     /* Need an associated STA before data frames can be sent. */
-    bool connected = (_state == RTW88_STATE_CONNECTED) ||
-                     (_state == RTW88_STATE_SCANNING &&
-                      _scanReturnState == RTW88_STATE_CONNECTED &&
+    bool connected = (_state == RTL8188EE_STATE_CONNECTED) ||
+                     (_state == RTL8188EE_STATE_SCANNING &&
+                      _scanReturnState == RTL8188EE_STATE_CONNECTED &&
                       (_manualScanChannelCount == 0 ||
                        _manualScanOnHomeChannel));
     if (!connected || !_rtwdev || !_hw || !_vif || !_sta) {
@@ -979,7 +979,7 @@ UInt32 RTW88IEEE80211::outputPacket(mbuf_t m)
 /*  RX path: sk_buff from driver → mbuf to macOS                       */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::rxFrame(struct sk_buff *skb)
+void RTL8188EEIEEE80211::rxFrame(struct sk_buff *skb)
 {
     if (!skb) return;
 
@@ -1004,7 +1004,7 @@ void RTW88IEEE80211::rxFrame(struct sk_buff *skb)
      * first 20 frames per scan (via _rxFrameCount, reset at scan
      * start) to avoid flooding the ring buffer the way the interrupt-
      * loop diagnostic did in Section 98. */
-    if (_state == RTW88_STATE_SCANNING && _rxFrameCount <= 20) {
+    if (_state == RTL8188EE_STATE_SCANNING && _rxFrameCount <= 20) {
         uint16_t raw_fc = le16_to_cpu(fc);
         IOLog("rtw88: [rxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
               "len=%u ismgmt=%d isdata=%d\n",
@@ -1021,8 +1021,8 @@ void RTW88IEEE80211::rxFrame(struct sk_buff *skb)
      * 98) whenever we're actually waiting on a response. Strip once the
      * connect timeout root cause is found, per this project's standing
      * rule about not leaving permanent unconditional log spam. */
-    if (_state == RTW88_STATE_AUTHENTICATING ||
-        _state == RTW88_STATE_ASSOCIATING) {
+    if (_state == RTL8188EE_STATE_AUTHENTICATING ||
+        _state == RTL8188EE_STATE_ASSOCIATING) {
         uint16_t raw_fc = le16_to_cpu(fc);
         struct ieee80211_hdr_3addr *h3 = (struct ieee80211_hdr_3addr *)skb->data;
         bool have_addrs = skb->len >= sizeof(*h3);
@@ -1052,7 +1052,7 @@ void RTW88IEEE80211::rxFrame(struct sk_buff *skb)
     }
 }
 
-void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
+void RTL8188EEIEEE80211::processRxMgmt(struct sk_buff *skb)
 {
     struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
     __le16 fc = hdr->frame_control;
@@ -1061,10 +1061,10 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
     switch (stype) {
     case 0x0080: /* beacon */
     case 0x0050: /* probe response */
-        if (_state == RTW88_STATE_SCANNING) {
+        if (_state == RTL8188EE_STATE_SCANNING) {
             _rxScanRelevantCount++;
             processScanResult(skb);
-        } else if (_state == RTW88_STATE_CONNECTED) {
+        } else if (_state == RTL8188EE_STATE_CONNECTED) {
             /* findings.md Section 109.7-109.8: feed real upstream's own
              * link-liveness counter. rtl_beacon_statistic() internally
              * verifies link_state/opmode/frame-type/length/BSSID match
@@ -1085,7 +1085,7 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
         break;
 
     case 0x00B0: /* auth */
-        if (_state == RTW88_STATE_AUTHENTICATING) {
+        if (_state == RTL8188EE_STATE_AUTHENTICATING) {
             /* Only accept an auth response actually sent by our target AP.
              * Without this we'd treat any stray/stale auth frame as success,
              * falsely "associating" while the AP never admitted us. */
@@ -1109,7 +1109,7 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
                     doAssociate();
                 } else {
                     IOLog("rtw88: auth failed status=%u, retrying\n", status);
-                    _state = RTW88_STATE_IDLE;
+                    _state = RTL8188EE_STATE_IDLE;
                 }
             } else {
                 doAssociate(); /* assume success */
@@ -1119,14 +1119,14 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
         break;
 
     case 0x0010: /* assoc response */
-        if (_state == RTW88_STATE_ASSOCIATING)
+        if (_state == RTL8188EE_STATE_ASSOCIATING)
             processAssocResponse(skb);
         else
             kfree_skb(skb);
         break;
 
     case 0x0030: /* reassoc response */
-        if (_state == RTW88_STATE_ASSOCIATING)
+        if (_state == RTL8188EE_STATE_ASSOCIATING)
             processAssocResponse(skb);
         else
             kfree_skb(skb);
@@ -1134,10 +1134,10 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
 
     case 0x00A0: /* disassoc */
     case 0x00C0: /* deauth */
-        if (_state == RTW88_STATE_CONNECTED ||
-            _state == RTW88_STATE_HANDSHAKING ||
-            (_state == RTW88_STATE_SCANNING &&
-             _scanReturnState == RTW88_STATE_CONNECTED)) {
+        if (_state == RTL8188EE_STATE_CONNECTED ||
+            _state == RTL8188EE_STATE_HANDSHAKING ||
+            (_state == RTL8188EE_STATE_SCANNING &&
+             _scanReturnState == RTL8188EE_STATE_CONNECTED)) {
             struct ieee80211_hdr_3addr *h3 =
                 (struct ieee80211_hdr_3addr *)skb->data;
             bool fromTarget = memcmp(h3->addr3, _targetBSS.bssid, 6) == 0 ||
@@ -1161,8 +1161,8 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
             clearKeys();
             _txBaActive = false;
             rxBaTeardownAll();
-            _state = RTW88_STATE_IDLE;
-            _scanReturnState = RTW88_STATE_IDLE;
+            _state = RTL8188EE_STATE_IDLE;
+            _scanReturnState = RTL8188EE_STATE_IDLE;
             if (_parent)
                 _parent->setLinkStatus(kIONetworkLinkValid);
         }
@@ -1170,7 +1170,7 @@ void RTW88IEEE80211::processRxMgmt(struct sk_buff *skb)
         break;
 
     case 0x00D0: /* action */
-        if (_state == RTW88_STATE_CONNECTED) {
+        if (_state == RTL8188EE_STATE_CONNECTED) {
             struct ieee80211_hdr_3addr *h3 =
                 (struct ieee80211_hdr_3addr *)skb->data;
             const uint8_t *b = skb->data + sizeof(*h3);
@@ -1276,7 +1276,7 @@ static uint16_t rtw88BuildSelectedRsnIe(uint8_t *out, uint32_t group_cipher)
     return (uint16_t)(p - out);
 }
 
-void RTW88IEEE80211::processScanResult(struct sk_buff *skb)
+void RTL8188EEIEEE80211::processScanResult(struct sk_buff *skb)
 {
     if (!skb || skb->len < sizeof(struct ieee80211_hdr) + 12) {
         kfree_skb(skb);
@@ -1289,7 +1289,7 @@ void RTW88IEEE80211::processScanResult(struct sk_buff *skb)
     /* Skip: timestamp(8), beacon_int(2), capability(2) */
     body += 12;
 
-    RTW88BSS *bss = (RTW88BSS *)IOMallocZero(sizeof(RTW88BSS));
+    RTL8188EEBSS *bss = (RTL8188EEBSS *)IOMallocZero(sizeof(RTL8188EEBSS));
     if (!bss) { kfree_skb(skb); return; }
 
     /* BSSID is addr3 in a beacon from AP */
@@ -1354,10 +1354,10 @@ void RTW88IEEE80211::processScanResult(struct sk_buff *skb)
 
     /* Add to BSS list (deduplicate by BSSID) */
     IOLockLock(_bssLock);
-    for (RTW88BSS *e = _bssList; e; e = e->next) {
+    for (RTL8188EEBSS *e = _bssList; e; e = e->next) {
         if (memcmp(e->bssid, bss->bssid, 6) == 0) {
             /* Update existing */
-            RTW88BSS *saved_next = e->next;
+            RTL8188EEBSS *saved_next = e->next;
             memcpy(e, bss, sizeof(*bss));
             e->next = saved_next; /* preserve linkage */
             IOFree(bss, sizeof(*bss));
@@ -1374,12 +1374,12 @@ void RTW88IEEE80211::processScanResult(struct sk_buff *skb)
     kfree_skb(skb);
 }
 
-void RTW88IEEE80211::processRxData(struct sk_buff *skb)
+void RTL8188EEIEEE80211::processRxData(struct sk_buff *skb)
 {
-    bool connected = (_state == RTW88_STATE_CONNECTED) ||
-                     (_state == RTW88_STATE_HANDSHAKING) ||
-                     (_state == RTW88_STATE_SCANNING &&
-                      _scanReturnState == RTW88_STATE_CONNECTED);
+    bool connected = (_state == RTL8188EE_STATE_CONNECTED) ||
+                     (_state == RTL8188EE_STATE_HANDSHAKING) ||
+                     (_state == RTL8188EE_STATE_SCANNING &&
+                      _scanReturnState == RTL8188EE_STATE_CONNECTED);
     if (!connected) {
         kfree_skb(skb);
         return;
@@ -1437,7 +1437,7 @@ void RTW88IEEE80211::processRxData(struct sk_buff *skb)
 
 /* Strip the 802.11 header (+ optional CCMP IV), de-aggregate A-MSDU if present,
  * and hand each MSDU to the network stack as Ethernet.  Takes ownership of skb. */
-void RTW88IEEE80211::deliverDataFrame(struct sk_buff *skb)
+void RTL8188EEIEEE80211::deliverDataFrame(struct sk_buff *skb)
 {
     struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
     uint16_t hdrlen = ieee80211_get_hdrlen_from_skb(skb);
@@ -1503,7 +1503,7 @@ void RTW88IEEE80211::deliverDataFrame(struct sk_buff *skb)
     if (llc[0] == 0xAA && llc[1] == 0xAA && llc[2] == 0x03) {
         ethertype = (uint16_t)((llc[6] << 8) | llc[7]);
         /* Check for EAPOL during handshake (never aggregated). */
-        if (ethertype == ETH_P_PAE && _state == RTW88_STATE_HANDSHAKING) {
+        if (ethertype == ETH_P_PAE && _state == RTL8188EE_STATE_HANDSHAKING) {
             handleEAPOL(llc + 8, skb->len - payload_off - 8);
             kfree_skb(skb);
             return;
@@ -1542,7 +1542,7 @@ void RTW88IEEE80211::deliverDataFrame(struct sk_buff *skb)
 }
 
 /* Build one Ethernet frame [da][sa][ethertype][payload] and inject it. */
-void RTW88IEEE80211::deliverEthernet(const uint8_t *da, const uint8_t *sa,
+void RTL8188EEIEEE80211::deliverEthernet(const uint8_t *da, const uint8_t *sa,
                                      uint16_t ethertype,
                                      const uint8_t *payload, uint32_t paylen)
 {
@@ -1569,7 +1569,7 @@ void RTW88IEEE80211::deliverEthernet(const uint8_t *da, const uint8_t *sa,
 }
 
 /* Split an A-MSDU payload into its constituent MSDUs and deliver each. */
-void RTW88IEEE80211::deAmsdu(const uint8_t *data, uint32_t len)
+void RTL8188EEIEEE80211::deAmsdu(const uint8_t *data, uint32_t len)
 {
     uint32_t pos = 0;
     uint32_t delivered = 0;
@@ -1619,7 +1619,7 @@ void RTW88IEEE80211::deAmsdu(const uint8_t *data, uint32_t len)
 /*  RX A-MPDU reorder buffer                                            */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::rxBaSetup(uint8_t tid, uint16_t ssn, uint16_t bufsize)
+void RTL8188EEIEEE80211::rxBaSetup(uint8_t tid, uint16_t ssn, uint16_t bufsize)
 {
     if (tid >= kRxBaNumTid) return;
     if (bufsize == 0 || bufsize > kRxBaMaxBuf) bufsize = kRxBaMaxBuf;
@@ -1642,7 +1642,7 @@ void RTW88IEEE80211::rxBaSetup(uint8_t tid, uint16_t ssn, uint16_t bufsize)
     IOLockUnlock(_rxBaLock);
 }
 
-void RTW88IEEE80211::rxBaTeardown(uint8_t tid)
+void RTL8188EEIEEE80211::rxBaTeardown(uint8_t tid)
 {
     if (tid >= kRxBaNumTid) return;
     struct sk_buff *freelist[kRxBaMaxBuf];
@@ -1664,7 +1664,7 @@ void RTW88IEEE80211::rxBaTeardown(uint8_t tid)
     }
 }
 
-void RTW88IEEE80211::rxBaTeardownAll()
+void RTL8188EEIEEE80211::rxBaTeardownAll()
 {
     for (uint8_t tid = 0; tid < kRxBaNumTid; tid++)
         rxBaTeardown(tid);
@@ -1673,7 +1673,7 @@ void RTW88IEEE80211::rxBaTeardownAll()
      * every TID inactive/empty and does nothing). */
 }
 
-void RTW88IEEE80211::rxReorderInput(uint8_t tid, struct sk_buff *skb, uint16_t sn)
+void RTL8188EEIEEE80211::rxReorderInput(uint8_t tid, struct sk_buff *skb, uint16_t sn)
 {
     struct sk_buff *out[kRxBaMaxBuf];
     uint32_t nout = 0;
@@ -1737,7 +1737,7 @@ void RTW88IEEE80211::rxReorderInput(uint8_t tid, struct sk_buff *skb, uint16_t s
         rxReorderArmTimer();
 }
 
-void RTW88IEEE80211::rxReorderArmTimer()
+void RTL8188EEIEEE80211::rxReorderArmTimer()
 {
     if (_reorderTimer)
         _reorderTimer->setTimeoutMS(kReorderTimeoutMs);
@@ -1745,7 +1745,7 @@ void RTW88IEEE80211::rxReorderArmTimer()
 
 /* Timer: a hole has persisted past the reorder timeout (the missing frame is
  * not coming).  Force progress by releasing past the first hole on each TID. */
-void RTW88IEEE80211::rxReorderFlushStale()
+void RTL8188EEIEEE80211::rxReorderFlushStale()
 {
     struct sk_buff *out[kRxBaMaxBuf];
     uint32_t nout = 0;
@@ -1783,9 +1783,9 @@ void RTW88IEEE80211::rxReorderFlushStale()
         rxReorderArmTimer();
 }
 
-void RTW88IEEE80211::reorderTimerFired(OSObject *owner, IOTimerEventSource *)
+void RTL8188EEIEEE80211::reorderTimerFired(OSObject *owner, IOTimerEventSource *)
 {
-    RTW88IEEE80211 *self = OSDynamicCast(RTW88IEEE80211, owner);
+    RTL8188EEIEEE80211 *self = OSDynamicCast(RTL8188EEIEEE80211, owner);
     if (self) self->rxReorderFlushStale();
 }
 
@@ -1793,7 +1793,7 @@ void RTW88IEEE80211::reorderTimerFired(OSObject *owner, IOTimerEventSource *)
 /*  TX status                                                           */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::txStatus(struct sk_buff *skb)
+void RTL8188EEIEEE80211::txStatus(struct sk_buff *skb)
 {
     /* Nothing to do — skb freed by caller */
 }
@@ -1808,7 +1808,7 @@ void RTW88IEEE80211::txStatus(struct sk_buff *skb)
  * 80 MHz VHT AP gives 173 Mbps (20 MHz MCS8) instead of 866 Mbps (80 MHz MCS9).
  * TKIP links stay 20 MHz (HT disallowed — see htAllowed()).
  */
-void RTW88IEEE80211::setConnectedChandef(struct ieee80211_channel *chan)
+void RTL8188EEIEEE80211::setConnectedChandef(struct ieee80211_channel *chan)
 {
     _hw->conf.chandef.chan         = chan;
     _hw->conf.chandef.width        = NL80211_CHAN_WIDTH_20_NOHT;
@@ -1873,9 +1873,9 @@ void RTW88IEEE80211::setConnectedChandef(struct ieee80211_channel *chan)
 /*  Scan                                                                */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::restoreConnectedChannel()
+void RTL8188EEIEEE80211::restoreConnectedChannel()
 {
-    if (_scanReturnState != RTW88_STATE_CONNECTED || !_hw || !_vif)
+    if (_scanReturnState != RTL8188EE_STATE_CONNECTED || !_hw || !_vif)
         return;
 
     struct ieee80211_channel *chan = nullptr;
@@ -1910,12 +1910,12 @@ void RTW88IEEE80211::restoreConnectedChannel()
     _vif->cfg.aid   = _assocAID;
 }
 
-bool RTW88IEEE80211::abortActiveScan(bool waitForIdle)
+bool RTL8188EEIEEE80211::abortActiveScan(bool waitForIdle)
 {
-    if (_state != RTW88_STATE_SCANNING)
+    if (_state != RTL8188EE_STATE_SCANNING)
         return true;
 
-    RTW88State returnState = _scanReturnState;
+    RTL8188EEState returnState = _scanReturnState;
     if (_manualScanChannelCount) {
         _manualScanAbort = true;
     } else if (_hw && _hw->ops && _hw->ops->cancel_hw_scan) {
@@ -1925,35 +1925,35 @@ bool RTW88IEEE80211::abortActiveScan(bool waitForIdle)
     if (!waitForIdle)
         return true;
 
-    for (int i = 0; i < 40 && _state == RTW88_STATE_SCANNING; i++)
+    for (int i = 0; i < 40 && _state == RTL8188EE_STATE_SCANNING; i++)
         IOSleep(50);
 
-    if (_state == RTW88_STATE_SCANNING) {
+    if (_state == RTL8188EE_STATE_SCANNING) {
         if (_manualScanChannelCount)
             return false;
-        if (returnState == RTW88_STATE_CONNECTED)
+        if (returnState == RTL8188EE_STATE_CONNECTED)
             restoreConnectedChannel();
-        _state = (returnState == RTW88_STATE_IDLE) ?
-            RTW88_STATE_IDLE : returnState;
-        _scanReturnState = RTW88_STATE_IDLE;
+        _state = (returnState == RTL8188EE_STATE_IDLE) ?
+            RTL8188EE_STATE_IDLE : returnState;
+        _scanReturnState = RTL8188EE_STATE_IDLE;
         _manualScanChannelCount = 0;
         _manualScanOnHomeChannel = false;
     }
 
-    return _state != RTW88_STATE_SCANNING;
+    return _state != RTL8188EE_STATE_SCANNING;
 }
 
-void RTW88IEEE80211::scanDone(bool aborted)
+void RTL8188EEIEEE80211::scanDone(bool aborted)
 {
     if (!aborted) {
         IOLockLock(_bssLock);
-        RTW88BSS **link = &_bssList;
+        RTL8188EEBSS **link = &_bssList;
         while (*link) {
-            RTW88BSS *b = *link;
-            RTW88State effectiveState =
-                (_state == RTW88_STATE_SCANNING) ? _scanReturnState : _state;
-            bool isTarget = (effectiveState == RTW88_STATE_CONNECTED ||
-                             effectiveState == RTW88_STATE_HANDSHAKING) &&
+            RTL8188EEBSS *b = *link;
+            RTL8188EEState effectiveState =
+                (_state == RTL8188EE_STATE_SCANNING) ? _scanReturnState : _state;
+            bool isTarget = (effectiveState == RTL8188EE_STATE_CONNECTED ||
+                             effectiveState == RTL8188EE_STATE_HANDSHAKING) &&
                             memcmp(b->bssid, _targetBSS.bssid, 6) == 0;
             uint32_t age = _scanGeneration - b->last_seen_scan;
 
@@ -1970,13 +1970,13 @@ void RTW88IEEE80211::scanDone(bool aborted)
         IOLockUnlock(_bssLock);
     }
 
-    if (_state == RTW88_STATE_SCANNING) {
-        RTW88State returnState = _scanReturnState;
-        if (returnState == RTW88_STATE_CONNECTED && _manualScanChannelCount)
+    if (_state == RTL8188EE_STATE_SCANNING) {
+        RTL8188EEState returnState = _scanReturnState;
+        if (returnState == RTL8188EE_STATE_CONNECTED && _manualScanChannelCount)
             restoreConnectedChannel();
-        _state = (returnState == RTW88_STATE_IDLE) ?
-            RTW88_STATE_IDLE : returnState;
-        _scanReturnState = RTW88_STATE_IDLE;
+        _state = (returnState == RTL8188EE_STATE_IDLE) ?
+            RTL8188EE_STATE_IDLE : returnState;
+        _scanReturnState = RTL8188EE_STATE_IDLE;
         _manualScanOnHomeChannel = false;
     }
 
@@ -1989,25 +1989,25 @@ void RTW88IEEE80211::scanDone(bool aborted)
           aborted, _rxFrameCount, _rxScanRelevantCount, _bssCount);
 }
 
-IOReturn RTW88IEEE80211::cmdScan()
+IOReturn RTL8188EEIEEE80211::cmdScan()
 {
-    if (_state != RTW88_STATE_IDLE)
+    if (_state != RTL8188EE_STATE_IDLE)
         return kIOReturnBusy;
     if (!_hw || !_hw->ops) return kIOReturnNotReady;
-    RTW88State returnState = _state;
+    RTL8188EEState returnState = _state;
 
     IOLockLock(_bssLock);
     _scanGeneration++;
     if (_scanGeneration == 0) {
         _scanGeneration = 1;
-        for (RTW88BSS *b = _bssList; b; b = b->next)
+        for (RTL8188EEBSS *b = _bssList; b; b = b->next)
             b->last_seen_scan = 1;
     }
     IOLockUnlock(_bssLock);
 
-    _scanReturnState = (returnState == RTW88_STATE_CONNECTED) ?
-        returnState : RTW88_STATE_IDLE;
-    _state = RTW88_STATE_SCANNING;
+    _scanReturnState = (returnState == RTL8188EE_STATE_CONNECTED) ?
+        returnState : RTL8188EE_STATE_IDLE;
+    _state = RTL8188EE_STATE_SCANNING;
 
     struct ieee80211_scan_request req = {};
     struct ieee80211_channel *chans[256];
@@ -2032,14 +2032,14 @@ IOReturn RTW88IEEE80211::cmdScan()
     if (n_chans == 0) {
         IOLog("rtw88: scan has no enabled channels\n");
         _state = returnState;
-        _scanReturnState = RTW88_STATE_IDLE;
+        _scanReturnState = RTL8188EE_STATE_IDLE;
         return kIOReturnNotReady;
     }
 
     if (!_hw->ops->hw_scan || !rtlwifi_hw_scan_supported(_hw)) {
         if (!_manualScanTC) {
             _state = returnState;
-            _scanReturnState = RTW88_STATE_IDLE;
+            _scanReturnState = RTL8188EE_STATE_IDLE;
             return kIOReturnNotReady;
         }
 
@@ -2058,7 +2058,7 @@ IOReturn RTW88IEEE80211::cmdScan()
         }
         thread_call_enter(_manualScanTC);
 
-        _timeoutMs = (_scanReturnState == RTW88_STATE_CONNECTED) ?
+        _timeoutMs = (_scanReturnState == RTL8188EE_STATE_CONNECTED) ?
             30000 : 12000;
         uint64_t d;
         clock_interval_to_deadline(_timeoutMs, kMillisecondScale, &d);
@@ -2086,7 +2086,7 @@ IOReturn RTW88IEEE80211::cmdScan()
             _rxScanRelevantCount = 0;
             thread_call_enter(_manualScanTC);
 
-            _timeoutMs = (_scanReturnState == RTW88_STATE_CONNECTED) ?
+            _timeoutMs = (_scanReturnState == RTL8188EE_STATE_CONNECTED) ?
                 30000 : 12000;
             uint64_t d;
             clock_interval_to_deadline(_timeoutMs, kMillisecondScale, &d);
@@ -2094,7 +2094,7 @@ IOReturn RTW88IEEE80211::cmdScan()
             return kIOReturnSuccess;
         }
         _state = returnState;
-        _scanReturnState = RTW88_STATE_IDLE;
+        _scanReturnState = RTL8188EE_STATE_IDLE;
         return kIOReturnError;
     }
     /* Timeout: if scan doesn't complete in 10s */
@@ -2103,12 +2103,12 @@ IOReturn RTW88IEEE80211::cmdScan()
     return kIOReturnSuccess;
 }
 
-void RTW88IEEE80211::manualScanTCFn(thread_call_param_t self, thread_call_param_t)
+void RTL8188EEIEEE80211::manualScanTCFn(thread_call_param_t self, thread_call_param_t)
 {
-    ((RTW88IEEE80211 *)self)->runManualScan();
+    ((RTL8188EEIEEE80211 *)self)->runManualScan();
 }
 
-void RTW88IEEE80211::runManualScan()
+void RTL8188EEIEEE80211::runManualScan()
 {
     if (!_hw || !_vif) {
         scanDone(true);
@@ -2119,7 +2119,7 @@ void RTW88IEEE80211::runManualScan()
     uint32_t count = _manualScanChannelCount;
     if (count > 256)
         count = 256;
-    bool connectedScan = (_scanReturnState == RTW88_STATE_CONNECTED);
+    bool connectedScan = (_scanReturnState == RTL8188EE_STATE_CONNECTED);
 
     /* mac_addr NULL: this port does not do randomized-MAC probe
      * scanning, so there is no per-scan MAC to hand rtl_ops-
@@ -2180,14 +2180,14 @@ void RTW88IEEE80211::runManualScan()
 /*  Connect                                                             */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88IEEE80211::cmdConnect(const char *ssid, const char *password)
+IOReturn RTL8188EEIEEE80211::cmdConnect(const char *ssid, const char *password)
 {
     IOLog("rtw88: cmdConnect ENTER state=%d\n", (int)_state);
-    if (_state == RTW88_STATE_SCANNING && !abortActiveScan(true)) {
+    if (_state == RTL8188EE_STATE_SCANNING && !abortActiveScan(true)) {
         IOLog("rtw88: cmdConnect -> kIOReturnBusy (scanning, abort failed)\n");
         return kIOReturnBusy;
     }
-    if (_state != RTW88_STATE_IDLE) {
+    if (_state != RTL8188EE_STATE_IDLE) {
         IOLog("rtw88: cmdConnect -> kIOReturnBusy (state != IDLE, state=%d)\n", (int)_state);
         return kIOReturnBusy;
     }
@@ -2200,9 +2200,9 @@ IOReturn RTW88IEEE80211::cmdConnect(const char *ssid, const char *password)
 
     /* Find the SSID in our BSS list */
     IOLockLock(_bssLock);
-    RTW88BSS *target = nullptr;
+    RTL8188EEBSS *target = nullptr;
     int bss_count = 0;
-    for (RTW88BSS *b = _bssList; b; b = b->next) {
+    for (RTL8188EEBSS *b = _bssList; b; b = b->next) {
         bss_count++;
         if (strlen(b->ssid) == strlen(ssid) &&
             memcmp(b->ssid, ssid, strlen(ssid)) == 0) {
@@ -2221,7 +2221,7 @@ IOReturn RTW88IEEE80211::cmdConnect(const char *ssid, const char *password)
 
     strlcpy(_password, password ? password : "", sizeof(_password));
     _wpa2 = (_targetBSS.cipher == WLAN_CIPHER_SUITE_CCMP);
-    _state = RTW88_STATE_AUTHENTICATING;
+    _state = RTL8188EE_STATE_AUTHENTICATING;
 
     /* Run doAuthenticate on a background thread_call so the IOUserClient
      * call returns immediately.  The connect machinery (channel change,
@@ -2231,12 +2231,12 @@ IOReturn RTW88IEEE80211::cmdConnect(const char *ssid, const char *password)
     return kIOReturnSuccess;
 }
 
-void RTW88IEEE80211::connectTCFn(thread_call_param_t self, thread_call_param_t)
+void RTL8188EEIEEE80211::connectTCFn(thread_call_param_t self, thread_call_param_t)
 {
-    ((RTW88IEEE80211 *)self)->doAuthenticate();
+    ((RTL8188EEIEEE80211 *)self)->doAuthenticate();
 }
 
-void RTW88IEEE80211::doAuthenticate()
+void RTL8188EEIEEE80211::doAuthenticate()
 {
     if (!_hw || !_vif) return;
 
@@ -2332,12 +2332,12 @@ void RTW88IEEE80211::doAuthenticate()
     txMgmtFrame(auth, authlen);
     IOLog("rtw88: doAuthenticate: auth frame sent — waiting for response\n");
 
-    _state = RTW88_STATE_AUTHENTICATING;
+    _state = RTL8188EE_STATE_AUTHENTICATING;
     uint64_t d; clock_interval_to_deadline(3000, kMillisecondScale, &d);
     _timer->wakeAtTime(d);
 }
 
-void RTW88IEEE80211::doAssociate()
+void RTL8188EEIEEE80211::doAssociate()
 {
     if (!_hw || !_vif) return;
 
@@ -2346,11 +2346,11 @@ void RTW88IEEE80211::doAssociate()
     buildAssocReq(assoc, &assoclen);
     txMgmtFrame(assoc, assoclen);
 
-    _state = RTW88_STATE_ASSOCIATING;
+    _state = RTL8188EE_STATE_ASSOCIATING;
     uint64_t d; clock_interval_to_deadline(3000, kMillisecondScale, &d); _timer->wakeAtTime(d);
 }
 
-void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
+void RTL8188EEIEEE80211::processAssocResponse(struct sk_buff *skb)
 {
     /* Assoc-resp body (after 24-byte 802.11 hdr):
      * capability(2), status(2), AID(2), [IEs...] */
@@ -2371,7 +2371,7 @@ void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
 
     if (bodylen < 6) {
         IOLog("rtw88: assoc-resp too short\n");
-        _state = RTW88_STATE_IDLE;
+        _state = RTL8188EE_STATE_IDLE;
         return;
     }
     uint16_t status = (uint16_t)(body[2] | (body[3] << 8));
@@ -2379,7 +2379,7 @@ void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
 
     if (status != 0) {
         IOLog("rtw88: assoc failed status=%u\n", status);
-        _state = RTW88_STATE_IDLE;
+        _state = RTL8188EE_STATE_IDLE;
         return;
     }
     IOLog("rtw88: associated! AID=%u\n", aid);
@@ -2446,7 +2446,7 @@ void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
     }
 
     if (_wpa2) {
-        _state = RTW88_STATE_HANDSHAKING;
+        _state = RTL8188EE_STATE_HANDSHAKING;
         IOLog("rtw88: WPA2 — waiting for EAPOL M1\n");
         /* Derive PMK from passphrase now */
         derivePMK((uint8_t *)_password, (uint8_t *)_targetBSS.ssid,
@@ -2455,7 +2455,7 @@ void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
         clock_interval_to_deadline(8000, kMillisecondScale, &d);
         _timer->wakeAtTime(d);
     } else {
-        _state = RTW88_STATE_CONNECTED;
+        _state = RTL8188EE_STATE_CONNECTED;
         if (_parent)
             _parent->setLinkStatus(kIONetworkLinkActive | kIONetworkLinkValid);
         startTxAggregation();   /* negotiate uplink A-MPDU now the link is up */
@@ -2463,7 +2463,7 @@ void RTW88IEEE80211::processAssocResponse(struct sk_buff *skb)
     }
 }
 
-bool RTW88IEEE80211::buildAuthReq(uint8_t *buf, uint32_t *len)
+bool RTL8188EEIEEE80211::buildAuthReq(uint8_t *buf, uint32_t *len)
 {
     /* 802.11 Authentication frame (open system, seq 1) */
     struct ieee80211_hdr_3addr *hdr = (struct ieee80211_hdr_3addr *)buf;
@@ -2483,7 +2483,7 @@ bool RTW88IEEE80211::buildAuthReq(uint8_t *buf, uint32_t *len)
     return true;
 }
 
-bool RTW88IEEE80211::buildAssocReq(uint8_t *buf, uint32_t *len)
+bool RTL8188EEIEEE80211::buildAssocReq(uint8_t *buf, uint32_t *len)
 {
     struct ieee80211_hdr_3addr *hdr = (struct ieee80211_hdr_3addr *)buf;
     hdr->frame_control = cpu_to_le16(IEEE80211_FTYPE_MGMT | IEEE80211_STYPE_ASSOC_REQ);
@@ -2634,30 +2634,30 @@ bool RTW88IEEE80211::buildAssocReq(uint8_t *buf, uint32_t *len)
 /*  Disconnect                                                          */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88IEEE80211::cmdDisconnect()
+IOReturn RTL8188EEIEEE80211::cmdDisconnect()
 {
-    if (_state == RTW88_STATE_IDLE) return kIOReturnSuccess;
+    if (_state == RTL8188EE_STATE_IDLE) return kIOReturnSuccess;
     doDisconnect();
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88IEEE80211::cmdPowerOn()
+IOReturn RTL8188EEIEEE80211::cmdPowerOn()
 {
     IOReturn ret = powerOn();
-    if (ret == kIOReturnSuccess && _state == RTW88_STATE_DISCONNECTING)
-        _state = RTW88_STATE_IDLE;
+    if (ret == kIOReturnSuccess && _state == RTL8188EE_STATE_DISCONNECTING)
+        _state = RTL8188EE_STATE_IDLE;
     return ret;
 }
 
-IOReturn RTW88IEEE80211::cmdPowerOff()
+IOReturn RTL8188EEIEEE80211::cmdPowerOff()
 {
-    if (_state == RTW88_STATE_SCANNING)
+    if (_state == RTL8188EE_STATE_SCANNING)
         abortActiveScan(true);
 
-    if (_state == RTW88_STATE_CONNECTED ||
-        _state == RTW88_STATE_AUTHENTICATING ||
-        _state == RTW88_STATE_ASSOCIATING ||
-        _state == RTW88_STATE_HANDSHAKING)
+    if (_state == RTL8188EE_STATE_CONNECTED ||
+        _state == RTL8188EE_STATE_AUTHENTICATING ||
+        _state == RTL8188EE_STATE_ASSOCIATING ||
+        _state == RTL8188EE_STATE_HANDSHAKING)
         doDisconnect();
     else {
         clearKeys();
@@ -2665,18 +2665,18 @@ IOReturn RTW88IEEE80211::cmdPowerOff()
     }
 
     powerOff();
-    _state = RTW88_STATE_IDLE;
-    _scanReturnState = RTW88_STATE_IDLE;
+    _state = RTL8188EE_STATE_IDLE;
+    _scanReturnState = RTL8188EE_STATE_IDLE;
     if (_parent)
         _parent->setLinkStatus(kIONetworkLinkValid);
     return kIOReturnSuccess;
 }
 
-void RTW88IEEE80211::doDisconnect()
+void RTL8188EEIEEE80211::doDisconnect()
 {
     if (!_hw || !_vif) {
-        _state = RTW88_STATE_IDLE;
-        _scanReturnState = RTW88_STATE_IDLE;
+        _state = RTL8188EE_STATE_IDLE;
+        _scanReturnState = RTL8188EE_STATE_IDLE;
         return;
     }
     clearKeys();
@@ -2699,8 +2699,8 @@ void RTW88IEEE80211::doDisconnect()
         _hw->ops->bss_info_changed(_hw, _vif, bss, BSS_CHANGED_ASSOC);
     releaseSta();
 
-    _state = RTW88_STATE_IDLE;
-    _scanReturnState = RTW88_STATE_IDLE;
+    _state = RTL8188EE_STATE_IDLE;
+    _scanReturnState = RTL8188EE_STATE_IDLE;
     _timer->cancelTimeout();
     if (_parent)
         _parent->setLinkStatus(kIONetworkLinkValid);
@@ -2710,7 +2710,7 @@ void RTW88IEEE80211::doDisconnect()
 /*  WPA2 4-way handshake                                                */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
+void RTL8188EEIEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
 {
     if (len < 99 || data[1] != 3)
         return;
@@ -2784,7 +2784,7 @@ void RTW88IEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
             return;
 
         sendEAPOLKey(4, _replayCtr, false, false, true);
-        _state = RTW88_STATE_CONNECTED;
+        _state = RTL8188EE_STATE_CONNECTED;
         _timer->cancelTimeout();
         if (_parent)
             _parent->setLinkStatus(kIONetworkLinkActive | kIONetworkLinkValid);
@@ -2793,7 +2793,7 @@ void RTW88IEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
     }
 }
 
-void RTW88IEEE80211::sendEAPOLKey(int step, const uint8_t *replay_counter,
+void RTL8188EEIEEE80211::sendEAPOLKey(int step, const uint8_t *replay_counter,
                                     bool install, bool ack, bool mic)
 {
     uint8_t frame[512] = {};
@@ -2854,7 +2854,7 @@ void RTW88IEEE80211::sendEAPOLKey(int step, const uint8_t *replay_counter,
 /*  Frame TX helpers                                                    */
 /* ------------------------------------------------------------------ */
 
-bool RTW88IEEE80211::txMgmtFrame(const uint8_t *frame, uint32_t len)
+bool RTL8188EEIEEE80211::txMgmtFrame(const uint8_t *frame, uint32_t len)
 {
     if (!_hw || !_hw->ops || !_hw->ops->tx) return false;
 
@@ -2887,7 +2887,7 @@ bool RTW88IEEE80211::txMgmtFrame(const uint8_t *frame, uint32_t len)
 /*      (rtw88's ampdu_action is a no-op for RX_START/STOP).             */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::sendAddbaRequest(uint8_t tid)
+void RTL8188EEIEEE80211::sendAddbaRequest(uint8_t tid)
 {
     uint8_t f[24 + 9] = {};
     struct ieee80211_hdr_3addr *h = (struct ieee80211_hdr_3addr *)f;
@@ -2921,7 +2921,7 @@ void RTW88IEEE80211::sendAddbaRequest(uint8_t tid)
     txMgmtFrame(f, sizeof(f));
 }
 
-void RTW88IEEE80211::sendAddbaResponse(uint8_t tid, uint8_t dialog,
+void RTL8188EEIEEE80211::sendAddbaResponse(uint8_t tid, uint8_t dialog,
                                        uint16_t req_param, uint16_t ba_timeout)
 {
     uint8_t f[24 + 9] = {};
@@ -2954,7 +2954,7 @@ void RTW88IEEE80211::sendAddbaResponse(uint8_t tid, uint8_t dialog,
 /* HT/VHT and A-MPDU are not used with TKIP.  An AP whose BSS uses TKIP
  * (pairwise or group cipher) operates in a non-HT mode; advertising HT to it
  * stalls the 4-way handshake or draws a deauth.  Open and CCMP links use HT. */
-bool RTW88IEEE80211::htAllowed() const
+bool RTL8188EEIEEE80211::htAllowed() const
 {
     /* TKIP as either the pairwise or group cipher rules out HT (open and CCMP
      * links are fine).  _targetBSS.cipher/group_cipher are 0 for open networks. */
@@ -2963,7 +2963,7 @@ bool RTW88IEEE80211::htAllowed() const
     return true;
 }
 
-void RTW88IEEE80211::startTxAggregation()
+void RTL8188EEIEEE80211::startTxAggregation()
 {
     if (_txBaActive) return;
     if (!htAllowed()) return;
@@ -2972,7 +2972,7 @@ void RTW88IEEE80211::startTxAggregation()
     sendAddbaRequest(_baTid);
 }
 
-void RTW88IEEE80211::handleBackAction(const uint8_t *b, uint32_t len)
+void RTL8188EEIEEE80211::handleBackAction(const uint8_t *b, uint32_t len)
 {
     if (len < 2) return;
     switch (b[1]) {   /* BlockAck action field */
@@ -3027,7 +3027,7 @@ void RTW88IEEE80211::handleBackAction(const uint8_t *b, uint32_t len)
     }
 }
 
-bool RTW88IEEE80211::txNullFunc(bool powerSave)
+bool RTL8188EEIEEE80211::txNullFunc(bool powerSave)
 {
     if (!_hw || !_hw->ops || !_hw->ops->tx || !_vif || !_sta)
         return false;
@@ -3066,7 +3066,7 @@ bool RTW88IEEE80211::txNullFunc(bool powerSave)
     return true;
 }
 
-bool RTW88IEEE80211::txProbeRequest()
+bool RTL8188EEIEEE80211::txProbeRequest()
 {
     if (!_hw || !_hw->ops || !_hw->ops->tx)
         return false;
@@ -3105,7 +3105,7 @@ bool RTW88IEEE80211::txProbeRequest()
     return txMgmtFrame(frame, (uint32_t)(body - frame));
 }
 
-bool RTW88IEEE80211::txDataFrame(mbuf_t m)
+bool RTL8188EEIEEE80211::txDataFrame(mbuf_t m)
 {
     if (!_hw || !_hw->ops || !_hw->ops->tx || !_vif || !_sta) {
         mbuf_freem(m);
@@ -3289,7 +3289,7 @@ static mbuf_t rtw88_make_packet_mbuf(const void *src, uint32_t len)
     return m;
 }
 
-struct sk_buff *RTW88IEEE80211::mbufToSkb(mbuf_t m)
+struct sk_buff *RTL8188EEIEEE80211::mbufToSkb(mbuf_t m)
 {
     size_t total = mbuf_pkthdr_len(m);
     struct sk_buff *skb = alloc_skb((uint32_t)(total + 64), GFP_ATOMIC);
@@ -3308,7 +3308,7 @@ struct sk_buff *RTW88IEEE80211::mbufToSkb(mbuf_t m)
     return skb;
 }
 
-mbuf_t RTW88IEEE80211::skbToMbuf(struct sk_buff *skb)
+mbuf_t RTL8188EEIEEE80211::skbToMbuf(struct sk_buff *skb)
 {
     return rtw88_make_packet_mbuf(skb->data, skb->len);
 }
@@ -3317,16 +3317,16 @@ mbuf_t RTW88IEEE80211::skbToMbuf(struct sk_buff *skb)
 /*  Timer (state machine timeout)                                       */
 /* ------------------------------------------------------------------ */
 
-void RTW88IEEE80211::timerFired(OSObject *owner, IOTimerEventSource *timer)
+void RTL8188EEIEEE80211::timerFired(OSObject *owner, IOTimerEventSource *timer)
 {
-    RTW88IEEE80211 *self = OSDynamicCast(RTW88IEEE80211, owner);
+    RTL8188EEIEEE80211 *self = OSDynamicCast(RTL8188EEIEEE80211, owner);
     if (self) self->onTimer();
 }
 
-void RTW88IEEE80211::onTimer()
+void RTL8188EEIEEE80211::onTimer()
 {
     switch (_state) {
-    case RTW88_STATE_SCANNING:
+    case RTL8188EE_STATE_SCANNING:
         IOLog("rtw88: scan timeout\n");
         if (_manualScanChannelCount) {
             _manualScanAbort = true;
@@ -3335,26 +3335,26 @@ void RTW88IEEE80211::onTimer()
             _hw->ops->cancel_hw_scan(_hw, _vif);
         }
         {
-            RTW88State returnState = _scanReturnState;
-            if (returnState == RTW88_STATE_CONNECTED)
+            RTL8188EEState returnState = _scanReturnState;
+            if (returnState == RTL8188EE_STATE_CONNECTED)
                 restoreConnectedChannel();
-            _state = (returnState == RTW88_STATE_IDLE) ?
-                RTW88_STATE_IDLE : returnState;
-            _scanReturnState = RTW88_STATE_IDLE;
+            _state = (returnState == RTL8188EE_STATE_IDLE) ?
+                RTL8188EE_STATE_IDLE : returnState;
+            _scanReturnState = RTL8188EE_STATE_IDLE;
         }
         break;
 
-    case RTW88_STATE_AUTHENTICATING:
+    case RTL8188EE_STATE_AUTHENTICATING:
         IOLog("rtw88: auth timeout, retrying\n");
         doAuthenticate();
         break;
 
-    case RTW88_STATE_ASSOCIATING:
+    case RTL8188EE_STATE_ASSOCIATING:
         IOLog("rtw88: assoc timeout\n");
-        _state = RTW88_STATE_IDLE;
+        _state = RTL8188EE_STATE_IDLE;
         break;
 
-    case RTW88_STATE_HANDSHAKING:
+    case RTL8188EE_STATE_HANDSHAKING:
         IOLog("rtw88: 4-way handshake timeout\n");
         doDisconnect();
         break;
@@ -3368,7 +3368,7 @@ void RTW88IEEE80211::onTimer()
 /*  Status queries                                                       */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88IEEE80211::cmdGetState(struct RTW88StateResult *result)
+IOReturn RTL8188EEIEEE80211::cmdGetState(struct RTL8188EEStateResult *result)
 {
     if (!result) return kIOReturnBadArgument;
 
@@ -3385,7 +3385,7 @@ IOReturn RTW88IEEE80211::cmdGetState(struct RTW88StateResult *result)
      * rtl_efuse carry no chip-name string anywhere (confirmed by direct
      * grep of the real vendored header — Bucket E, findings.md Section
      * 81.2/83.2/rtlwifi_compat.h comment above rtlwifi_get_fw_version()).
-     * result->chip_name keeps whatever RTW88UserClient.cpp already
+     * result->chip_name keeps whatever RTL8188EEUserClient.cpp already
      * defaulted it to ("Uninitialized") rather than fabricate a value. */
     rtlwifi_get_stats(&result->tx_byte_count, &result->rx_byte_count);
     result->scan_offload_supported =
@@ -3396,13 +3396,13 @@ IOReturn RTW88IEEE80211::cmdGetState(struct RTW88StateResult *result)
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88IEEE80211::cmdGetRSSI(int *rssi)
+IOReturn RTL8188EEIEEE80211::cmdGetRSSI(int *rssi)
 {
     *rssi = _rssi;
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88IEEE80211::cmdGetBSSList(uint8_t *buf, uint32_t *len)
+IOReturn RTL8188EEIEEE80211::cmdGetBSSList(uint8_t *buf, uint32_t *len)
 {
     if (!buf || !len) return kIOReturnBadArgument;
 
@@ -3417,7 +3417,7 @@ IOReturn RTW88IEEE80211::cmdGetBSSList(uint8_t *buf, uint32_t *len)
     uint32_t written = 4; // reserve first 4 bytes for total length
 
     IOLockLock(_bssLock);
-    for (RTW88BSS *b = _bssList; b; b = b->next) {
+    for (RTL8188EEBSS *b = _bssList; b; b = b->next) {
         /* Each entry: ssid_len(1), ssid(ssid_len), bssid(6), rssi(2),
          *             channel(1), cipher(4) */
         uint32_t entry_sz = 1 + b->ssid_len + 6 + 2 + 1 + 4;
@@ -3444,7 +3444,7 @@ IOReturn RTW88IEEE80211::cmdGetBSSList(uint8_t *buf, uint32_t *len)
     return kIOReturnSuccess;
 }
 
-void RTW88IEEE80211::getMACAddress(uint8_t *mac)
+void RTL8188EEIEEE80211::getMACAddress(uint8_t *mac)
 {
     memcpy(mac, _macAddr, 6);
 }

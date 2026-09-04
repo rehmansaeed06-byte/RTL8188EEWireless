@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_CFG80211_H
-#define _RTW88_COMPAT_CFG80211_H
+#ifndef _RTL8188EE_COMPAT_CFG80211_H
+#define _RTL8188EE_COMPAT_CFG80211_H
 
 /*
  * rtlwifi/core.c does `#include <net/cfg80211.h>`. Most of what it
@@ -111,7 +111,7 @@ static inline void cfg80211_unlink_bss(struct wiphy *wiphy, struct cfg80211_bss 
 /*
  * Real signature: void wiphy_rfkill_set_hw_state(struct wiphy *wiphy, bool blocked);
  * Hardware rfkill switch state. This compat layer's IOKit driving
- * layer (RTW88PCIDevice.cpp) does not currently wire a software
+ * layer (RTL8188EEPCIDevice.cpp) does not currently wire a software
  * rfkill notification path — left as a no-op TODO rather than
  * invented behavior; matches this session's scope (build-error fix,
  * not new hardware-state plumbing).
@@ -353,4 +353,4 @@ freq_reg_info(struct wiphy *wiphy, u32 center_freq)
     return (const struct ieee80211_reg_rule *)ERR_PTR(-ERANGE);
 }
 
-#endif /* _RTW88_COMPAT_CFG80211_H */
+#endif /* _RTL8188EE_COMPAT_CFG80211_H */

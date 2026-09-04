@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * RTW88IEEE80211.hpp — 802.11 state machine for rtw88 macOS port.
+ * RTL8188EEIEEE80211.hpp — 802.11 state machine for rtw88 macOS port.
  *
  * Responsibilities:
  *  - Drives the compiled-in rtlwifi driver (hw->ops->start/stop/tx)
  *  - Manages scan, authenticate, associate, 4-way handshake
  *  - Converts between mbuf_t and sk_buff for the driver
- *  - Delivers decrypted data frames as Ethernet to RTW88PCIDevice
+ *  - Delivers decrypted data frames as Ethernet to RTL8188EEPCIDevice
  *  - Accepts Ethernet output frames and wraps them as 802.11 data frames
  */
 #pragma once
@@ -22,7 +22,7 @@
 struct rtl_priv;
 /* struct pci_dev / struct pci_device_id: real, complete definitions —
  * NOT forward declarations — pulled from src/compat/linux/pci.h.
- * Bucket B, findings.md Section 81.2/83.2/85: RTW88IEEE80211.cpp::start()
+ * Bucket B, findings.md Section 81.2/83.2/85: RTL8188EEIEEE80211.cpp::start()
  * dereferences _pcidev->device/->vendor and builds a real
  * `const struct pci_device_id fake_id = {...}` designated-initializer
  * value, both of which need the complete type — a forward declaration
@@ -39,12 +39,12 @@ struct ieee80211_sta;
 struct ieee80211_channel;
 struct sk_buff;
 
-class RTW88PCIDevice;
+class RTL8188EEPCIDevice;
 
 /* ------------------------------------------------------------------ */
 /*  BSS descriptor (scan result)                                        */
 /* ------------------------------------------------------------------ */
-struct RTW88BSS {
+struct RTL8188EEBSS {
     char   ssid[33];
     uint8_t ssid_len;
     uint8_t bssid[6];
@@ -59,35 +59,35 @@ struct RTW88BSS {
     /* Raw IE data for association */
     uint8_t  ies[512];
     uint16_t ies_len;
-    RTW88BSS *next;
+    RTL8188EEBSS *next;
 };
 
 /* ------------------------------------------------------------------ */
 /*  Connection state                                                     */
 /* ------------------------------------------------------------------ */
-enum RTW88State {
-    RTW88_STATE_IDLE = 0,
-    RTW88_STATE_SCANNING,
-    RTW88_STATE_AUTHENTICATING,
-    RTW88_STATE_ASSOCIATING,
-    RTW88_STATE_HANDSHAKING,
-    RTW88_STATE_CONNECTED,
-    RTW88_STATE_DISCONNECTING,
+enum RTL8188EEState {
+    RTL8188EE_STATE_IDLE = 0,
+    RTL8188EE_STATE_SCANNING,
+    RTL8188EE_STATE_AUTHENTICATING,
+    RTL8188EE_STATE_ASSOCIATING,
+    RTL8188EE_STATE_HANDSHAKING,
+    RTL8188EE_STATE_CONNECTED,
+    RTL8188EE_STATE_DISCONNECTING,
 };
 
 /* ------------------------------------------------------------------ */
-/*  RTW88IEEE80211                                                       */
+/*  RTL8188EEIEEE80211                                                       */
 /* ------------------------------------------------------------------ */
-class RTW88IEEE80211 : public OSObject {
-    OSDeclareDefaultStructors(RTW88IEEE80211)
+class RTL8188EEIEEE80211 : public OSObject {
+    OSDeclareDefaultStructors(RTL8188EEIEEE80211)
 
 public:
-    static RTW88IEEE80211 *create(RTW88PCIDevice *dev, struct pci_dev *pci);
+    static RTL8188EEIEEE80211 *create(RTL8188EEPCIDevice *dev, struct pci_dev *pci);
 
-    bool      init(RTW88PCIDevice *dev, struct pci_dev *pci);
+    bool      init(RTL8188EEPCIDevice *dev, struct pci_dev *pci);
     void      free() override;
 
-    /* Called by RTW88PCIDevice */
+    /* Called by RTL8188EEPCIDevice */
     IOReturn  start();       /* probe: chip info, efuse, register hw */
     void      stop();        /* full teardown */
     IOReturn  powerOn();     /* enable: hw->ops->start() */
@@ -101,13 +101,13 @@ public:
     void      txStatus(struct sk_buff *skb);
     void      scanDone(bool aborted);
 
-    /* Control interface — called from RTW88UserClient */
+    /* Control interface — called from RTL8188EEUserClient */
     IOReturn  cmdScan();
     IOReturn  cmdConnect(const char *ssid, const char *password);
     IOReturn  cmdDisconnect();
     IOReturn  cmdPowerOn();
     IOReturn  cmdPowerOff();
-    IOReturn  cmdGetState(struct RTW88StateResult *result);
+    IOReturn  cmdGetState(struct RTL8188EEStateResult *result);
     IOReturn  cmdGetBSSList(uint8_t *buf, uint32_t *len);
     IOReturn  cmdGetRSSI(int *rssi);
 
@@ -189,7 +189,7 @@ private:
     thread_call_t _manualScanTC = nullptr;
 
     /* ---------------------------------------------------------------- */
-    RTW88PCIDevice    *_parent        = nullptr;
+    RTL8188EEPCIDevice    *_parent        = nullptr;
     struct rtl_priv   *_rtwdev        = nullptr;
     struct ieee80211_hw *_hw          = nullptr;
     struct ieee80211_vif *_vif        = nullptr;
@@ -202,14 +202,14 @@ private:
     IOTimerEventSource *_timer        = nullptr;
     IOLock             *_lock         = nullptr;
 
-    RTW88State          _state        = RTW88_STATE_IDLE;
-    RTW88State          _scanReturnState = RTW88_STATE_IDLE;
+    RTL8188EEState          _state        = RTL8188EE_STATE_IDLE;
+    RTL8188EEState          _scanReturnState = RTL8188EE_STATE_IDLE;
     bool                _powered      = false;
     uint8_t             _macAddr[6]   = {};
     uint32_t            _timeoutMs    = 0;
 
     /* Scan results */
-    RTW88BSS           *_bssList      = nullptr;
+    RTL8188EEBSS           *_bssList      = nullptr;
     uint32_t            _bssCount     = 0;
     IOLock             *_bssLock      = nullptr;
     uint32_t            _scanGeneration = 0;
@@ -220,7 +220,7 @@ private:
     bool                _manualScanFallbackLogged = false;
 
     /* Target BSS for connection */
-    RTW88BSS            _targetBSS    = {};
+    RTL8188EEBSS            _targetBSS    = {};
     char                _password[64] = {};
 
     /* WPA2 key material */

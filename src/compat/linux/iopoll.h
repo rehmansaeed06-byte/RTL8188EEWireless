@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_IOPOLL_H
-#define _RTW88_COMPAT_IOPOLL_H
+#ifndef _RTL8188EE_COMPAT_IOPOLL_H
+#define _RTL8188EE_COMPAT_IOPOLL_H
 
 #include "types.h"
 #include "delay.h"
@@ -43,4 +43,4 @@
 #define readx_poll_timeout(op, addr, val, cond, sleep_us, timeout_us)         \
     read_poll_timeout(op, val, cond, sleep_us, timeout_us, false, addr)
 
-#endif /* _RTW88_COMPAT_IOPOLL_H */
+#endif /* _RTL8188EE_COMPAT_IOPOLL_H */

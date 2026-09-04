@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_COMPLETION_H
-#define _RTW88_COMPAT_COMPLETION_H
+#ifndef _RTL8188EE_COMPAT_COMPLETION_H
+#define _RTL8188EE_COMPAT_COMPLETION_H
 
 #include "types.h"
 #include "jiffies.h"
@@ -85,4 +85,4 @@ static inline void reinit_completion(struct completion *c)
     IOLockUnlock(c->lock);
 }
 
-#endif /* _RTW88_COMPAT_COMPLETION_H */
+#endif /* _RTL8188EE_COMPAT_COMPLETION_H */

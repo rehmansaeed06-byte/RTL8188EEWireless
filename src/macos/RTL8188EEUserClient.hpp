@@ -1,38 +1,38 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * RTW88UserClient.hpp — IOUserClient for rtw88ctl IPC
+ * RTL8188EEUserClient.hpp — IOUserClient for rtw88ctl IPC
  *
- * Selector numbers must match ctl/main.c RTW88_CMD_* defines.
+ * Selector numbers must match ctl/main.c RTL8188EE_CMD_* defines.
  */
 #pragma once
 
 #include <IOKit/IOUserClient.h>
 
-class RTW88PCIDevice;
+class RTL8188EEPCIDevice;
 
 /* ------------------------------------------------------------------ */
 /*  Selector constants — keep in sync with ctl/main.c                  */
 /* ------------------------------------------------------------------ */
-enum RTW88UserClientSelector {
-    kRTW88Scan        = 0,
-    kRTW88Connect     = 1,
-    kRTW88Disconnect  = 2,
-    kRTW88GetState    = 3,
-    kRTW88GetBSSList  = 4,
-    kRTW88GetRSSI     = 5,
-    kRTW88SetDebug    = 6,
-    kRTW88GetLog      = 7,
-    kRTW88PowerOn     = 8,
-    kRTW88PowerOff    = 9,
-    kRTW88NumSelectors
+enum RTL8188EEUserClientSelector {
+    kRTL8188EEScan        = 0,
+    kRTL8188EEConnect     = 1,
+    kRTL8188EEDisconnect  = 2,
+    kRTL8188EEGetState    = 3,
+    kRTL8188EEGetBSSList  = 4,
+    kRTL8188EEGetRSSI     = 5,
+    kRTL8188EESetDebug    = 6,
+    kRTL8188EEGetLog      = 7,
+    kRTL8188EEPowerOn     = 8,
+    kRTL8188EEPowerOff    = 9,
+    kRTL8188EENumSelectors
 };
 
 /* Structures passed through IOConnectCallStructMethod */
-struct RTW88ConnectArgs {
+struct RTL8188EEConnectArgs {
     char ssid[33];
     char password[64];
 };
 
-struct RTW88StateResult {
+struct RTL8188EEStateResult {
     uint32_t state;
     uint8_t  bssid[6];
     char     ssid[33];
@@ -49,11 +49,11 @@ struct RTW88StateResult {
 };
 
 /* ------------------------------------------------------------------ */
-class RTW88UserClient : public IOUserClient {
-    OSDeclareDefaultStructors(RTW88UserClient)
+class RTL8188EEUserClient : public IOUserClient {
+    OSDeclareDefaultStructors(RTL8188EEUserClient)
 
 public:
-    static RTW88UserClient *create(RTW88PCIDevice *dev, task_t owningTask);
+    static RTL8188EEUserClient *create(RTL8188EEPCIDevice *dev, task_t owningTask);
 
     bool     init(OSDictionary *props) override;
     bool     initWithTask(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties) override;
@@ -70,29 +70,29 @@ public:
 
 private:
     /* Dispatch table */
-    static IOReturn sScan(RTW88UserClient *target, void *ref,
+    static IOReturn sScan(RTL8188EEUserClient *target, void *ref,
                           IOExternalMethodArguments *args);
-    static IOReturn sConnect(RTW88UserClient *target, void *ref,
+    static IOReturn sConnect(RTL8188EEUserClient *target, void *ref,
                              IOExternalMethodArguments *args);
-    static IOReturn sDisconnect(RTW88UserClient *target, void *ref,
+    static IOReturn sDisconnect(RTL8188EEUserClient *target, void *ref,
                                 IOExternalMethodArguments *args);
-    static IOReturn sGetState(RTW88UserClient *target, void *ref,
+    static IOReturn sGetState(RTL8188EEUserClient *target, void *ref,
                               IOExternalMethodArguments *args);
-    static IOReturn sGetBSSList(RTW88UserClient *target, void *ref,
+    static IOReturn sGetBSSList(RTL8188EEUserClient *target, void *ref,
                                 IOExternalMethodArguments *args);
-    static IOReturn sGetRSSI(RTW88UserClient *target, void *ref,
+    static IOReturn sGetRSSI(RTL8188EEUserClient *target, void *ref,
                               IOExternalMethodArguments *args);
-    static IOReturn sSetDebug(RTW88UserClient *target, void *ref,
+    static IOReturn sSetDebug(RTL8188EEUserClient *target, void *ref,
                                IOExternalMethodArguments *args);
-    static IOReturn sGetLog(RTW88UserClient *target, void *ref,
+    static IOReturn sGetLog(RTL8188EEUserClient *target, void *ref,
                              IOExternalMethodArguments *args);
-    static IOReturn sPowerOn(RTW88UserClient *target, void *ref,
+    static IOReturn sPowerOn(RTL8188EEUserClient *target, void *ref,
                              IOExternalMethodArguments *args);
-    static IOReturn sPowerOff(RTW88UserClient *target, void *ref,
+    static IOReturn sPowerOff(RTL8188EEUserClient *target, void *ref,
                               IOExternalMethodArguments *args);
 
-    static const IOExternalMethodDispatch sMethods[kRTW88NumSelectors];
+    static const IOExternalMethodDispatch sMethods[kRTL8188EENumSelectors];
 
-    RTW88PCIDevice *_provider    = nullptr;
+    RTL8188EEPCIDevice *_provider    = nullptr;
     task_t          _owningTask  = nullptr;
 };

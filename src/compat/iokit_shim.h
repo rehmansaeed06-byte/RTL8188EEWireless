@@ -4,8 +4,8 @@
  * When KERNEL is defined (C++ kext build), MacKernelSDK provides the real
  * definitions; we only emit stubs for the Linux driver C files.
  */
-#ifndef _RTW88_IOKIT_SHIM_H
-#define _RTW88_IOKIT_SHIM_H
+#ifndef _RTL8188EE_IOKIT_SHIM_H
+#define _RTL8188EE_IOKIT_SHIM_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -98,7 +98,7 @@ extern void          thread_terminate(thread_t thread);
  * one of those inclusion paths funnels through.
  */
 #ifdef noinline
-#define _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#define _RTL8188EE_IOKIT_SHIM_SAVED_NOINLINE
 #undef noinline
 #endif
 
@@ -106,9 +106,9 @@ extern void          thread_terminate(thread_t thread);
 #include <kern/thread_call.h>
 #include <mach/thread_act.h>
 
-#ifdef _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#ifdef _RTL8188EE_IOKIT_SHIM_SAVED_NOINLINE
 #define noinline __attribute__((noinline))
-#undef _RTW88_IOKIT_SHIM_SAVED_NOINLINE
+#undef _RTL8188EE_IOKIT_SHIM_SAVED_NOINLINE
 #endif
 
 #ifndef THREAD_INTERRUPTIBLE
@@ -126,4 +126,4 @@ extern void clock_interval_to_deadline(uint32_t interval, uint32_t scale_factor,
 #define kMillisecondScale 1000000u
 #define kMicrosecondScale 1000u
 
-#endif /* _RTW88_IOKIT_SHIM_H */
+#endif /* _RTL8188EE_IOKIT_SHIM_H */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_AVERAGE_H
-#define _RTW88_COMPAT_AVERAGE_H
+#ifndef _RTL8188EE_COMPAT_AVERAGE_H
+#define _RTL8188EE_COMPAT_AVERAGE_H
 
 #include "types.h"
 
@@ -29,4 +29,4 @@
                           (val << ((_precision) - weight_rcp));            \
     }
 
-#endif /* _RTW88_COMPAT_AVERAGE_H */
+#endif /* _RTL8188EE_COMPAT_AVERAGE_H */

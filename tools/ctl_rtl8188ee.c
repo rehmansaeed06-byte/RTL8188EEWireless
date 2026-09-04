@@ -1,24 +1,24 @@
 /*
  * ctl_rtw88.c -- standalone diagnostic/control tool for the rtl8188ee kext.
  *
- * Extends ctl_getstate.c (which only called kRTW88GetState) to cover the
- * full RTW88UserClient selector table confirmed in src/kext/RTW88UserClient.hpp
- * and src/kext/RTW88UserClient.cpp:
+ * Extends ctl_getstate.c (which only called kRTL8188EEGetState) to cover the
+ * full RTL8188EEUserClient selector table confirmed in src/macos/RTL8188EEUserClient.hpp
+ * and src/macos/RTL8188EEUserClient.cpp:
  *
- *   kRTW88Scan        = 0   -- cmdScan(), no args
- *   kRTW88Connect     = 1   -- cmdConnect(ssid, password), input = RTW88ConnectArgs
- *   kRTW88Disconnect  = 2   -- cmdDisconnect(), no args
- *   kRTW88GetState    = 3   -- cmdGetState(), output = RTW88StateResult
- *   kRTW88GetBSSList  = 4   -- cmdGetBSSList(), output = raw packed bytes,
+ *   kRTL8188EEScan        = 0   -- cmdScan(), no args
+ *   kRTL8188EEConnect     = 1   -- cmdConnect(ssid, password), input = RTL8188EEConnectArgs
+ *   kRTL8188EEDisconnect  = 2   -- cmdDisconnect(), no args
+ *   kRTL8188EEGetState    = 3   -- cmdGetState(), output = RTL8188EEStateResult
+ *   kRTL8188EEGetBSSList  = 4   -- cmdGetBSSList(), output = raw packed bytes,
  *                              wired up as `bsslist` -- see cmd_bsslist()'s
  *                              own header comment for the confirmed wire
  *                              format (findings.md Section 102)
- *   kRTW88GetRSSI     = 5   -- not yet wired up here (output scalar; simplest
+ *   kRTL8188EEGetRSSI     = 5   -- not yet wired up here (output scalar; simplest
  *                              to add once needed, see NOTE below)
- *   kRTW88SetDebug    = 6   -- not yet wired up here (input scalar)
- *   kRTW88GetLog      = 7   -- not yet wired up here (output = log bytes)
- *   kRTW88PowerOn     = 8   -- cmdPowerOn(), no args
- *   kRTW88PowerOff    = 9   -- cmdPowerOff(), no args
+ *   kRTL8188EESetDebug    = 6   -- not yet wired up here (input scalar)
+ *   kRTL8188EEGetLog      = 7   -- not yet wired up here (output = log bytes)
+ *   kRTL8188EEPowerOn     = 8   -- cmdPowerOn(), no args
+ *   kRTL8188EEPowerOff    = 9   -- cmdPowerOff(), no args
  *
  * This does NOT exist anywhere in the upstream repo, same as
  * ctl_getstate.c before it -- purely a diagnostic/bring-up tool, not
@@ -46,7 +46,7 @@
  *   ./ctl_rtw88 state        # watch `state` field transition, check bssid/rssi/channel
  *
  * NOTE on selectors 5-7 (GetRSSI / SetDebug / GetLog):
- * their exact I/O shapes weren't confirmed against RTW88UserClient.cpp/
+ * their exact I/O shapes weren't confirmed against RTL8188EEUserClient.cpp/
  * .hpp before this tool was written. Adding them is mechanical once
  * confirmed -- see the stubs left below. (GetBSSList, selector 4, WAS
  * in this category until this session -- see cmd_bsslist().)
@@ -59,25 +59,25 @@
 #include <CoreFoundation/CoreFoundation.h>
 
 enum {
-    kRTW88Scan        = 0,
-    kRTW88Connect     = 1,
-    kRTW88Disconnect  = 2,
-    kRTW88GetState    = 3,
-    kRTW88GetBSSList  = 4,
-    kRTW88GetRSSI     = 5,
-    kRTW88SetDebug    = 6,
-    kRTW88GetLog      = 7,
-    kRTW88PowerOn     = 8,
-    kRTW88PowerOff    = 9,
+    kRTL8188EEScan        = 0,
+    kRTL8188EEConnect     = 1,
+    kRTL8188EEDisconnect  = 2,
+    kRTL8188EEGetState    = 3,
+    kRTL8188EEGetBSSList  = 4,
+    kRTL8188EEGetRSSI     = 5,
+    kRTL8188EESetDebug    = 6,
+    kRTL8188EEGetLog      = 7,
+    kRTL8188EEPowerOn     = 8,
+    kRTL8188EEPowerOff    = 9,
 };
 
-/* Must match RTW88UserClient.hpp exactly */
-struct RTW88ConnectArgs {
+/* Must match RTL8188EEUserClient.hpp exactly */
+struct RTL8188EEConnectArgs {
     char ssid[33];
     char password[64];
 };
 
-struct RTW88StateResult {
+struct RTL8188EEStateResult {
     uint32_t state;
     uint8_t  bssid[6];
     char     ssid[33];
@@ -99,7 +99,7 @@ struct RTW88StateResult {
 
 static int open_connection(io_connect_t *out_conn)
 {
-    CFMutableDictionaryRef matching = IOServiceMatching("RTW88PCIDevice");
+    CFMutableDictionaryRef matching = IOServiceMatching("RTL8188EEPCIDevice");
     if (!matching) {
         fprintf(stderr, "IOServiceMatching failed to build dictionary\n");
         return 1;
@@ -107,7 +107,7 @@ static int open_connection(io_connect_t *out_conn)
 
     io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, matching);
     if (!service) {
-        fprintf(stderr, "No RTW88PCIDevice service found in the IORegistry.\n");
+        fprintf(stderr, "No RTL8188EEPCIDevice service found in the IORegistry.\n");
         fprintf(stderr, "(This means the kext never matched/attached to a real PCI device.)\n");
         return 1;
     }
@@ -128,15 +128,15 @@ static int open_connection(io_connect_t *out_conn)
 
 static int print_state(io_connect_t conn)
 {
-    struct RTW88StateResult result;
+    struct RTL8188EEStateResult result;
     memset(&result, 0, sizeof(result));
     size_t outSize = sizeof(result);
 
-    kern_return_t kr = IOConnectCallStructMethod(conn, kRTW88GetState,
+    kern_return_t kr = IOConnectCallStructMethod(conn, kRTL8188EEGetState,
                                                   NULL, 0,
                                                   &result, &outSize);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88GetState failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEGetState failed: 0x%x\n", kr);
         return 1;
     }
 
@@ -171,10 +171,10 @@ static int cmd_state(io_connect_t conn)
 
 static int cmd_poweron(io_connect_t conn)
 {
-    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTW88PowerOn,
+    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTL8188EEPowerOn,
                                                   NULL, 0, NULL, NULL);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88PowerOn failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEPowerOn failed: 0x%x\n", kr);
         return 1;
     }
     printf("PowerOn issued.\n");
@@ -183,10 +183,10 @@ static int cmd_poweron(io_connect_t conn)
 
 static int cmd_poweroff(io_connect_t conn)
 {
-    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTW88PowerOff,
+    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTL8188EEPowerOff,
                                                   NULL, 0, NULL, NULL);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88PowerOff failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEPowerOff failed: 0x%x\n", kr);
         return 1;
     }
     printf("PowerOff issued.\n");
@@ -195,10 +195,10 @@ static int cmd_poweroff(io_connect_t conn)
 
 static int cmd_scan(io_connect_t conn)
 {
-    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTW88Scan,
+    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTL8188EEScan,
                                                   NULL, 0, NULL, NULL);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88Scan failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEScan failed: 0x%x\n", kr);
         return 1;
     }
     printf("Scan issued (async -- runManualScan() runs on a thread_call;\n"
@@ -207,11 +207,11 @@ static int cmd_scan(io_connect_t conn)
 }
 
 /*
- * cmd_bsslist() -- kRTW88GetBSSList (selector 4), previously left as a
+ * cmd_bsslist() -- kRTL8188EEGetBSSList (selector 4), previously left as a
  * stub (see this file's header comment) because the raw-bytes wire
  * format wasn't confirmed against source. Confirmed this session
- * directly against RTW88IEEE80211::cmdGetBSSList() (src/kext/
- * RTW88IEEE80211.cpp): kIOUCVariableStructureSize output, no input.
+ * directly against RTL8188EEIEEE80211::cmdGetBSSList() (src/macos/
+ * RTL8188EEIEEE80211.cpp): kIOUCVariableStructureSize output, no input.
  *
  * Wire format (all fields packed, no padding, little-endian for the
  * multi-byte ones since this only ever runs on x86_64):
@@ -236,7 +236,7 @@ static int cmd_scan(io_connect_t conn)
  *                                                memcpy on the kext side)
  *
  * Kext caps the whole buffer at 4095 bytes internally
- * (RTW88IEEE80211::cmdGetBSSList: "if (max > 4095) max = 4095;") even
+ * (RTL8188EEIEEE80211::cmdGetBSSList: "if (max > 4095) max = 4095;") even
  * if a larger buffer is requested -- request exactly that size here
  * rather than the 16KB this file's header comment originally
  * speculated, since asking for more just wastes a stack buffer with
@@ -247,11 +247,11 @@ static int cmd_bsslist(io_connect_t conn)
     uint8_t buf[4095];
     size_t outSize = sizeof(buf);
 
-    kern_return_t kr = IOConnectCallStructMethod(conn, kRTW88GetBSSList,
+    kern_return_t kr = IOConnectCallStructMethod(conn, kRTL8188EEGetBSSList,
                                                   NULL, 0,
                                                   buf, &outSize);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88GetBSSList failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEGetBSSList failed: 0x%x\n", kr);
         return 1;
     }
 
@@ -318,28 +318,28 @@ static int cmd_bsslist(io_connect_t conn)
 
 static int cmd_connect(io_connect_t conn, const char *ssid, const char *password)
 {
-    if (strlen(ssid) >= sizeof(((struct RTW88ConnectArgs *)0)->ssid)) {
+    if (strlen(ssid) >= sizeof(((struct RTL8188EEConnectArgs *)0)->ssid)) {
         fprintf(stderr, "SSID too long (max %zu bytes)\n",
-                sizeof(((struct RTW88ConnectArgs *)0)->ssid) - 1);
+                sizeof(((struct RTL8188EEConnectArgs *)0)->ssid) - 1);
         return 1;
     }
-    if (strlen(password) >= sizeof(((struct RTW88ConnectArgs *)0)->password)) {
+    if (strlen(password) >= sizeof(((struct RTL8188EEConnectArgs *)0)->password)) {
         fprintf(stderr, "Password too long (max %zu bytes)\n",
-                sizeof(((struct RTW88ConnectArgs *)0)->password) - 1);
+                sizeof(((struct RTL8188EEConnectArgs *)0)->password) - 1);
         return 1;
     }
 
-    struct RTW88ConnectArgs args;
+    struct RTL8188EEConnectArgs args;
     memset(&args, 0, sizeof(args));
     strncpy(args.ssid, ssid, sizeof(args.ssid) - 1);
     strncpy(args.password, password, sizeof(args.password) - 1);
 
     size_t outSize = 0;
-    kern_return_t kr = IOConnectCallStructMethod(conn, kRTW88Connect,
+    kern_return_t kr = IOConnectCallStructMethod(conn, kRTL8188EEConnect,
                                                   &args, sizeof(args),
                                                   NULL, &outSize);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88Connect failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEConnect failed: 0x%x\n", kr);
         return 1;
     }
     printf("Connect issued for SSID \"%s\".\n", ssid);
@@ -348,10 +348,10 @@ static int cmd_connect(io_connect_t conn, const char *ssid, const char *password
 
 static int cmd_disconnect(io_connect_t conn)
 {
-    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTW88Disconnect,
+    kern_return_t kr = IOConnectCallScalarMethod(conn, kRTL8188EEDisconnect,
                                                   NULL, 0, NULL, NULL);
     if (kr != KERN_SUCCESS) {
-        fprintf(stderr, "kRTW88Disconnect failed: 0x%x\n", kr);
+        fprintf(stderr, "kRTL8188EEDisconnect failed: 0x%x\n", kr);
         return 1;
     }
     printf("Disconnect issued.\n");

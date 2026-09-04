@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_WORKQUEUE_H
-#define _RTW88_COMPAT_WORKQUEUE_H
+#ifndef _RTL8188EE_COMPAT_WORKQUEUE_H
+#define _RTL8188EE_COMPAT_WORKQUEUE_H
 
 #include "types.h"
 #include "spinlock.h"
@@ -125,4 +125,4 @@ static inline bool mod_delayed_work(struct workqueue_struct *wq,
 int  rtw88_workqueue_init(void);
 void rtw88_workqueue_exit(void);
 
-#endif /* _RTW88_COMPAT_WORKQUEUE_H */
+#endif /* _RTL8188EE_COMPAT_WORKQUEUE_H */

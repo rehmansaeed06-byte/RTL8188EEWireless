@@ -6,8 +6,8 @@
  * compiling without modification while the IOKit layer calls the ops
  * directly.
  */
-#ifndef _RTW88_COMPAT_MAC80211_H
-#define _RTW88_COMPAT_MAC80211_H
+#ifndef _RTL8188EE_COMPAT_MAC80211_H
+#define _RTL8188EE_COMPAT_MAC80211_H
 
 #include "../linux/types.h"
 #include "../linux/skbuff.h"
@@ -860,7 +860,7 @@ struct ieee80211_sta {
  * entry points to kick off/tear down per-TID BlockAck session
  * bookkeeping inside mac80211's own state machine. This port bypasses
  * mac80211 entirely for ADDBA/BlockAck negotiation -- see the
- * AMPDU BlockAck comment block in RTW88IEEE80211.cpp
+ * AMPDU BlockAck comment block in RTL8188EEIEEE80211.cpp
  * (search "A-MPDU BlockAck negotiation"): TX aggregation is driven by
  * this driver's own MLME sending real ADDBA Request/Response frames
  * over the air, and RX aggregation is a hardware-automatic no-op
@@ -1287,7 +1287,7 @@ struct ieee80211_ops {
      * none of which previously existed on this struct. Note this is a
      * genuinely different check than findings.md Section 61's "9 of 9
      * signatures confirmed": that check only covered the 9 members
-     * RTW88IEEE80211.cpp *calls*, not the full set core.c's rtl_ops
+     * RTL8188EEIEEE80211.cpp *calls*, not the full set core.c's rtl_ops
      * *defines* — the two are different subsets of ieee80211_ops, and
      * this gap is why. Signatures taken from the real rtl_op_get_tsf/
      * rtl_op_set_tsf/rtl_op_reset_tsf/rtl_op_sta_notify function
@@ -1348,7 +1348,7 @@ static inline int ieee80211_emulate_switch_vif_chanctx(struct ieee80211_hw *hw,
  * software queue and calls ->ops->tx() per frame. This compat layer
  * has no such internal TX queue to drain: per the handover doc
  * (Section 52 / item 20), this port's TX path bypasses mac80211's TX
- * queueing entirely — RTW88IEEE80211::outputPacket() builds each
+ * queueing entirely — RTL8188EEIEEE80211::outputPacket() builds each
  * frame and calls hw->ops->tx() directly, so nothing ever calls
  * ieee80211_wake_tx_queue()/schedules a txq for this function to
  * drain. It exists here only so the literal function-pointer
@@ -1514,7 +1514,7 @@ struct ieee80211_ampdu_params {
  * _VENDOR_SPECIFIC — information element IDs, standard 802.11-2020
  * Table 9-77 values (the same table WLAN_EID_TIM=5 above already comes
  * from). Confirmed as the missing set via a real -fapple-kext clang++
- * compile of RTW88IEEE80211.cpp (findings.md Section 81.2, Bucket C):
+ * compile of RTL8188EEIEEE80211.cpp (findings.md Section 81.2, Bucket C):
  * 13 call sites across information-element parsing
  * (parseInformationElements-style code) and association-request/
  * IE-building code, none of which had these defined anywhere in this
@@ -1601,7 +1601,7 @@ static inline void ieee80211_unregister_hw(struct ieee80211_hw *hw) {}
  * periodically polling hardware rfkill state via
  * hw->ops->rfkill_poll(). This port has no rfkill polling
  * infrastructure of its own (no ops->rfkill_poll implementation
- * exists in RTW88IEEE80211.cpp), so both are true no-ops -- there is
+ * exists in RTL8188EEIEEE80211.cpp), so both are true no-ops -- there is
  * no polling loop for these to start or stop. Real upstream both
  * return void; real call sites don't check any return.
  */
@@ -1720,7 +1720,7 @@ ieee80211_get_tx_rate(struct ieee80211_hw *hw, const struct ieee80211_tx_info *i
  * sufficient -- kept as a parameter (rather than dropped) purely so
  * the signature matches every real call site without requiring call-
  * site edits. This driver builds and sends beacon frames itself via
- * `sendBeaconFrame`-style paths in RTW88IEEE80211.cpp rather than
+ * `sendBeaconFrame`-style paths in RTL8188EEIEEE80211.cpp rather than
  * through mac80211's beacon-template mechanism (mac80211 normally
  * caches a template built by cfg80211/hostapd and this function hands
  * back a fresh skb copy of it) -- there is no real beacon template to
@@ -2223,4 +2223,4 @@ void ieee80211_rate_control_unregister(const struct rate_control_ops *ops);
 
 
 #include "cfg80211.h"
-#endif /* _RTW88_COMPAT_MAC80211_H */
+#endif /* _RTL8188EE_COMPAT_MAC80211_H */

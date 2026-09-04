@@ -259,7 +259,7 @@ KMOD_SRCS := \
     $(KEXT_SRC)/kmod_info.c
 
 # IOKit C++ wrapper — TODO, THE BIG OPEN ITEM (handover item 2 /
-# findings.md Section 55.7 item 6): reusing RTW88PCIDevice.cpp/
+# findings.md Section 55.7 item 6): reusing RTL8188EEPCIDevice.cpp/
 # RTW88IEEE80211.cpp from Feixiao UNMODIFIED and UNCONFIRMED. rtl_priv's
 # struct layout has not been checked against what these files assume
 # about hw->priv. This is a placeholder so the Makefile is runnable-in-
@@ -268,10 +268,10 @@ KMOD_SRCS := \
 # still be wrong at runtime (wrong struct offsets, wrong assumptions
 # about mac80211 bypass shape, etc.).
 KEXT_SRCS := \
-    $(KEXT_SRC)/RTW88Kext.cpp \
-    $(KEXT_SRC)/RTW88PCIDevice.cpp \
-    $(KEXT_SRC)/RTW88IEEE80211.cpp \
-    $(KEXT_SRC)/RTW88UserClient.cpp
+    $(KEXT_SRC)/RTL8188EEKext.cpp \
+    $(KEXT_SRC)/RTL8188EEPCIDevice.cpp \
+    $(KEXT_SRC)/RTL8188EEIEEE80211.cpp \
+    $(KEXT_SRC)/RTL8188EEUserClient.cpp
 
 # ------------------------------------------------------------------ #
 # Object files                                                         #

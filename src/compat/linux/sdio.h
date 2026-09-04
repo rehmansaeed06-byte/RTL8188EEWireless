@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_SDIO_H
-#define _RTW88_COMPAT_SDIO_H
+#ifndef _RTL8188EE_COMPAT_SDIO_H
+#define _RTL8188EE_COMPAT_SDIO_H
 
 #include "types.h"
 #include "device.h"
@@ -115,4 +115,4 @@ static inline void sdio_unregister_driver(struct sdio_driver *d) {}
     static void __exit __sdio_driver##_exit(void) \
         { sdio_unregister_driver(&(__sdio_driver)); }
 
-#endif /* _RTW88_COMPAT_SDIO_H */
+#endif /* _RTL8188EE_COMPAT_SDIO_H */

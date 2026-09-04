@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_TIME_H
-#define _RTW88_COMPAT_TIME_H
+#ifndef _RTL8188EE_COMPAT_TIME_H
+#define _RTL8188EE_COMPAT_TIME_H
 
 #include "types.h"
 
@@ -29,4 +29,4 @@ static inline time64_t ktime_get_boottime_seconds(void)
     return ktime_get_real_seconds();
 }
 
-#endif /* _RTW88_COMPAT_TIME_H */
+#endif /* _RTL8188EE_COMPAT_TIME_H */

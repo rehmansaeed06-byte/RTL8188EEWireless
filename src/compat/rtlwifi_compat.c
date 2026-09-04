@@ -106,7 +106,7 @@ static struct ieee80211_hw *g_rtlwifi_hw = NULL;
  * g_rtlwifi_vif / g_rtlwifi_sta -- single-station bridge for
  * ieee80211_find_sta(). Mirrors g_rtlwifi_hw's own split-declaration/
  * global-pointer pattern immediately above, rather than inventing a
- * second bridging mechanism. Set from RTW88IEEE80211.cpp via
+ * second bridging mechanism. Set from RTL8188EEIEEE80211.cpp via
  * rtlwifi_set_vif_sta()/rtlwifi_clear_sta() (declared in
  * rtlwifi_compat.h). See ieee80211_find_sta()'s own comment below for
  * why a scalar pointer (not a list + real RCU) is the correct shape
@@ -277,7 +277,7 @@ struct ieee80211_hw *rtlwifi_get_hw(void)
  * CONFIRMED via live grep against the real repo — both the call site
  * and the full struct body, not just the signature:
  *
- *   src/kext/RTW88IEEE80211.cpp:565   rtw88_set_hw_callbacks(&cbs, this);
+ *   src/kext/RTL8188EEIEEE80211.cpp:565   rtw88_set_hw_callbacks(&cbs, this);
  *
  *   src/compat/rtw88_compat.c:363-365
  *     struct rtw88_hw_callbacks {
@@ -293,7 +293,7 @@ struct ieee80211_hw *rtlwifi_get_hw(void)
  *         g_kext_hw = kext_hw;
  *         // Populate the kext_hw back-pointer in the hw struct so all
  *         // callbacks that dereference hw->kext_hw actually reach the
- *         // RTW88IEEE80211 object.
+ *         // RTL8188EEIEEE80211 object.
  *         if (g_rtw88_hw)
  *             g_rtw88_hw->kext_hw = kext_hw;
  *     }
@@ -497,7 +497,7 @@ void ieee80211_scan_completed(struct ieee80211_hw *hw,
 /* ------------------------------------------------------------------ */
 /* rtlwifi_sw_scan_start / _switch_channel / _complete()               */
 /* rtlwifi-side equivalents of rtw88_sw_scan_start/_switch_channel/    */
-/* _complete(), which RTW88IEEE80211.cpp's runManualScan() calls       */
+/* _complete(), which RTL8188EEIEEE80211.cpp's runManualScan() calls       */
 /* (findings.md Section 59.4). CONFIRMED against live core.c read      */
 /* this session, not guessed:                                          */
 /*                                                                      */
@@ -512,7 +512,7 @@ void ieee80211_scan_completed(struct ieee80211_hw *hw,
 /*     function is real and correctly wired to the scan_done compat    */
 /*     callback, but rtlwifi's own sw_scan_complete never reaches it.  */
 /*     The actual scan-done signal for this port's manual-scan loop    */
-/*     comes from RTW88IEEE80211.cpp's runManualScan() calling         */
+/*     comes from RTL8188EEIEEE80211.cpp's runManualScan() calling         */
 /*     scanDone() directly at the end of its channel loop — this is    */
 /*     unaffected by rtlwifi_sw_scan_complete() below and needs no     */
 /*     change on the IOKit side.                                       */
@@ -595,7 +595,7 @@ void rtlwifi_sw_scan_complete(struct ieee80211_hw *hw, struct ieee80211_vif *vif
  * core.c, live-read this session) already do everything rtlwifi itself
  * needs for vif registration as a direct part of their own bodies;
  * there is no separate step left over to bridge to. Not deleted outright
- * so the call sites in RTW88IEEE80211.cpp (right after
+ * so the call sites in RTL8188EEIEEE80211.cpp (right after
  * ops->add_interface / right before ops->remove_interface) don't need
  * restructuring, and so a future reader sees this was checked, not
  * missed.
@@ -626,7 +626,7 @@ bool rtlwifi_hw_scan_supported(struct ieee80211_hw *hw)
 /*
  * Shared implementation for rtlwifi_connect_hw_setup() and
  * rtlwifi_restore_connected_hw() — both call sites in
- * RTW88IEEE80211.cpp do the identical job (set channel + BSSID,
+ * RTL8188EEIEEE80211.cpp do the identical job (set channel + BSSID,
  * bypassing the mac80211-ops path) at two different points in the
  * connection lifecycle (initial auth vs. post-scan restore), so one
  * real implementation backs both public names rather than duplicating
@@ -713,7 +713,7 @@ void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
 }
 
 /* ------------------------------------------------------------------ */
-/* RTW88PCIDevice.cpp's own unported-symbol gap (findings.md Section  */
+/* RTL8188EEPCIDevice.cpp's own unported-symbol gap (findings.md Section  */
 /* 87, Section 77's original catalogue corrected: 6 of the original   */
 /* 17 names were stale comment text with no compiled call site, and   */
 /* 3 more already had real bridging infrastructure sitting unused —   */
@@ -724,7 +724,7 @@ void rtlwifi_restore_connected_hw(struct ieee80211_hw *hw,
  * Real definitions for globals real rtlwifi/dma-mapping.h and pci.h
  * already declare `extern` and already read from internally
  * (rtw88_pci_io_ops used throughout linux/pci.h's inline wrappers,
- * rtw88_dma_ops throughout linux/dma-mapping.h's) — RTW88PCIDevice.cpp
+ * rtw88_dma_ops throughout linux/dma-mapping.h's) — RTL8188EEPCIDevice.cpp
  * already assigns to both by these exact names (start()/teardown()),
  * so no renaming is needed, only a single real (non-extern) definition
  * linked into the kext, same pattern as g_rtlwifi_hw.
@@ -852,7 +852,7 @@ void ieee80211_stop_queue(struct ieee80211_hw *hw, int q) {}
  * ieee80211_wake_queue() — UNLIKE its three siblings above, this one
  * is not a deliberate no-op: it's the real per-queue "TX has room
  * again" signal real rtlwifi's own _rtl_pci_tx_isr() calls after
- * freeing ring slots (pci.c:540, confirmed live read). RTW88PCIDevice
+ * freeing ring slots (pci.c:540, confirmed live read). RTL8188EEPCIDevice
  * .cpp's own flow-control mechanism (IOGatedOutputQueue +
  * kIOReturnOutputStall, resumeTxIfStalled()) is this port's IOKit-side
  * reimplementation of exactly the same concept — so this real
@@ -925,8 +925,8 @@ bool rtlwifi_is_scanning(void)
  * reached via rtl_hal(rtlpriv) (wifi.h:2756) — same cast/macro pattern
  * as rtlwifi_is_scanning() above, just a different sub-struct.
  *
- * Output fw_subversion is u8 (matching RTW88StateResult's actual field
- * width, RTW88UserClient.hpp), narrowed here from wifi.h's real u16
+ * Output fw_subversion is u8 (matching RTL8188EEStateResult's actual field
+ * width, RTL8188EEUserClient.hpp), narrowed here from wifi.h's real u16
  * fw_subversion — an explicit, visible truncation, not a raw pointer of
  * the wrong width handed across the call site.
  */
@@ -957,8 +957,8 @@ void rtlwifi_get_fw_version(u16 *fw_version, u8 *fw_subversion)
  * multicast/broadcast counters exist too but no existing call site
  * asks for them.
  *
- * Output width is u32 (matching RTW88StateResult's actual field width,
- * RTW88UserClient.hpp), narrowed here from wifi.h's real u64 counters —
+ * Output width is u32 (matching RTL8188EEStateResult's actual field width,
+ * RTL8188EEUserClient.hpp), narrowed here from wifi.h's real u64 counters —
  * an explicit, visible truncation, not a raw pointer of the wrong width
  * handed across the call site. Wraps past ~4GB of unicast traffic; this
  * is a diagnostics counter, not a byte-accurate accounting field.
@@ -986,7 +986,7 @@ void rtlwifi_get_stats(u32 *tx_bytes, u32 *rx_bytes)
  * findings.md Section 100 rationale (rx_byte_count's identical bug,
  * root cause, and why tx_byte_count needs a bridge function instead
  * of a single shared choke point the way the RX side has one).
- * Called once from RTW88IEEE80211::txDataFrame(), right after
+ * Called once from RTL8188EEIEEE80211::txDataFrame(), right after
  * _hw->ops->tx() returns, with the frame's data-payload length.
  */
 void rtlwifi_add_tx_bytes(u32 len)
@@ -1601,7 +1601,7 @@ void flush_scheduled_work(void)
  * ---------------------------------------------------------------------
  * Confirmed missing at kext-load time, not just a naming leftover: grep
  * across src/ found declarations only (src/compat/linux/kernel.h,
- * src/kext/RTW88UserClient.cpp) and zero definitions anywhere in this
+ * src/kext/RTL8188EEUserClient.cpp) and zero definitions anywhere in this
  * tree. pr_err/pr_warn/pr_info/pr_debug/printk/WARN/WARN_ON/BUG all
  * expand to rtw88_printk() (kernel.h) and are called throughout the
  * real, compiled-in rtlwifi source (base.c/core.c/pci.c/ps.c/etc. all
@@ -1610,7 +1610,7 @@ void flush_scheduled_work(void)
  * driver produces, which is exactly the wrong failure mode for a
  * still-unverified-on-real-hardware port.
  *
- * Kept the rtw88_-prefixed names from kernel.h/RTW88UserClient.cpp
+ * Kept the rtw88_-prefixed names from kernel.h/RTL8188EEUserClient.cpp
  * as-is here (rather than renaming to rtlwifi_) since both call sites
  * are in files reused verbatim from Feixiao and neither name collides
  * with anything real rtlwifi source defines — renaming would only
@@ -1623,16 +1623,16 @@ void flush_scheduled_work(void)
  * tasklets, not just process context, so this cannot use IOLock,
  * which can block). Every message is also mirrored to IOLog()
  * unconditionally, so console/log output works even before
- * RTW88UserClient's sGetLog() is ever called — the ring buffer exists
+ * RTL8188EEUserClient's sGetLog() is ever called — the ring buffer exists
  * for the userclient debug-drain path specifically, not as the only
  * way to see driver output.
  */
 
 int rtw88_log_level = KERN_INFO;
 
-#define RTW88_LOG_RING_SIZE 16384
+#define RTL8188EE_LOG_RING_SIZE 16384
 
-static char            s_rtw88_log_ring[RTW88_LOG_RING_SIZE];
+static char            s_rtw88_log_ring[RTL8188EE_LOG_RING_SIZE];
 static uint32_t        s_rtw88_log_head;   /* next byte to write */
 static uint32_t        s_rtw88_log_count;  /* valid bytes, <= ring size */
 static IOSimpleLock    *s_rtw88_log_lock;  /* lazily allocated, see below */
@@ -1673,7 +1673,7 @@ void rtw88_printk(int level, const char *fmt, ...)
 
     /* Always mirror to the real kernel log regardless of ring-buffer
      * state — this is the primary output path or a serial/verbose
-     * boot; the ring buffer below is secondary (RTW88UserClient's
+     * boot; the ring buffer below is secondary (RTL8188EEUserClient's
      * on-demand drain). */
     IOLog("%s", line);
 
@@ -1688,8 +1688,8 @@ void rtw88_printk(int level, const char *fmt, ...)
     IOSimpleLockLock(lock);
     for (int i = 0; i < len; i++) {
         s_rtw88_log_ring[s_rtw88_log_head] = line[i];
-        s_rtw88_log_head = (s_rtw88_log_head + 1) % RTW88_LOG_RING_SIZE;
-        if (s_rtw88_log_count < RTW88_LOG_RING_SIZE)
+        s_rtw88_log_head = (s_rtw88_log_head + 1) % RTL8188EE_LOG_RING_SIZE;
+        if (s_rtw88_log_count < RTL8188EE_LOG_RING_SIZE)
             s_rtw88_log_count++;
     }
     IOSimpleLockUnlock(lock);
@@ -1714,11 +1714,11 @@ uint32_t rtw88_read_log(char *out_buf, uint32_t max_len)
     if (to_copy > max_len)
         to_copy = max_len;
 
-    start = (s_rtw88_log_head + RTW88_LOG_RING_SIZE - s_rtw88_log_count)
-            % RTW88_LOG_RING_SIZE;
+    start = (s_rtw88_log_head + RTL8188EE_LOG_RING_SIZE - s_rtw88_log_count)
+            % RTL8188EE_LOG_RING_SIZE;
 
     for (uint32_t i = 0; i < to_copy; i++) {
-        out_buf[i] = s_rtw88_log_ring[(start + i) % RTW88_LOG_RING_SIZE];
+        out_buf[i] = s_rtw88_log_ring[(start + i) % RTL8188EE_LOG_RING_SIZE];
     }
 
     s_rtw88_log_count -= to_copy;
@@ -1732,7 +1732,7 @@ uint32_t rtw88_read_log(char *out_buf, uint32_t max_len)
  * ---------------------------------------------------------------------
  * rtw88_trigger_interrupt — debug-only manual IRQ trigger
  * ---------------------------------------------------------------------
- * Called from RTW88IEEE80211.cpp/RTW88PCIDevice.cpp (both reused
+ * Called from RTL8188EEIEEE80211.cpp/RTL8188EEPCIDevice.cpp (both reused
  * verbatim from Feixiao) as a debug/diagnostic hook. Confirmed no
  * equivalent exists anywhere in this tree under any name. Left as an
  * explicit no-op rather than guessing at a real MMIO trigger sequence
@@ -1756,7 +1756,7 @@ void rtw88_trigger_interrupt(void)
  * kernel calls on load/unload, not optional. Confirmed no definition
  * existed anywhere in this tree. Bodies are deliberately minimal: real
  * per-device bring-up happens later via IOKit's own probe/start() on
- * RTW88PCIDevice, not here.
+ * RTL8188EEPCIDevice, not here.
  */
 kern_return_t rtw88_module_start(kmod_info_t *ki, void *data)
 {
@@ -1778,7 +1778,7 @@ kern_return_t rtw88_module_stop(kmod_info_t *ki, void *data)
 /*
  * rtlwifi_set_vif_sta() / rtlwifi_clear_sta() -- see g_rtlwifi_vif's
  * declaration comment above for the full rationale. Called from
- * RTW88IEEE80211.cpp: once (with sta==NULL) right after _vif is
+ * RTL8188EEIEEE80211.cpp: once (with sta==NULL) right after _vif is
  * allocated, and again once _sta is fully populated inside
  * doAssociate()'s sta_add block. rtlwifi_clear_sta() is called from
  * releaseSta() on teardown/disconnect.
@@ -1806,7 +1806,7 @@ void rtlwifi_clear_sta(void)
  * No real RCU implementation exists anywhere in this port
  * (src/compat/linux/rcupdate.h's rcu_read_lock/unlock are deliberate
  * no-ops). Since this driver only ever tracks one associated station
- * (RTW88IEEE80211.hpp's _sta is scalar, not a list -- confirmed by
+ * (RTL8188EEIEEE80211.hpp's _sta is scalar, not a list -- confirmed by
  * direct header read, no AP-mode support), a real list-walk-under-RCU
  * emulation would be solving a problem that doesn't exist here. A
  * direct address compare against the one tracked station, with no
@@ -1828,7 +1828,7 @@ struct ieee80211_sta *ieee80211_find_sta(struct ieee80211_vif *vif,
  * rtlwifi_do_interrupt() -- real ISR body, port of _rtl_pci_interrupt()
  * (pci.c:835) + _rtl_pci_rx_interrupt()'s pdesc-only branch (pci.c:647).
  * See findings.md Section 96.4-96.6 for the full trace that led here:
- * RTW88PCIDevice::handleInterrupt() previously called only the no-op
+ * RTL8188EEPCIDevice::handleInterrupt() previously called only the no-op
  * rtw88_trigger_interrupt(), so no real PCI interrupt ever reached the
  * chip's ISR register at all -- the BSS list was structurally
  * guaranteed to stay empty, and (96.5) naively wiring the real
@@ -1888,7 +1888,7 @@ void rtlwifi_mark_interface_started(void)
  * toggles RCR_CBSSID_DATA|RCR_CBSSID_BCN) -- called only from
  * rtl88ee_set_network_type() (hw.c:1290-1298), itself only reachable from
  * real core.c's rtl_op_add_interface()/rtl_op_bss_info_changed(). This
- * port's RTW88IEEE80211::start() does call hw->ops->add_interface() (line
+ * port's RTL8188EEIEEE80211::start() does call hw->ops->add_interface() (line
  * ~835) before hw->ops->start() (line ~842), and rtl_pci_probe() (called
  * even earlier, before both) is what runs init_sw_vars() and first sets
  * rtlpci->receive_config's default -- so ordering looks correct on paper.
@@ -1902,7 +1902,7 @@ void rtlwifi_mark_interface_started(void)
  * instead. If they diverge, or CBSSID bits are unexpectedly set/unset,
  * that is the smoking gun this section's "single next step" was looking
  * for. Call once, right after hw->ops->start() returns in
- * RTW88IEEE80211::start() -- not in a hot path, no rate-limiting needed.
+ * RTL8188EEIEEE80211::start() -- not in a hot path, no rate-limiting needed.
  * Strip once RCR is confirmed correct or the real bug is found here,
  * per this project's own standing rule about not leaving permanent
  * unconditional log spam (95.4/96.1 precedent).
@@ -2031,7 +2031,7 @@ void rtlwifi_log_iqk_lc_state(void)
  * RTL_IMR_ROK/RTL_IMR_RDU (RX bits) -- confirmed via its own docstring
  * and body, neither of which mention or call any TX-related interrupt
  * bit or _rtl_pci_tx_isr(). rtlwifi_be_tx_avail() (used by both
- * RTW88PCIDevice::outputPacket()'s stall check and
+ * RTL8188EEPCIDevice::outputPacket()'s stall check and
  * resumeTxIfStalled()'s un-stall check) reads
  * `ring->entries - skb_queue_len(&ring->queue)` -- the exact same
  * ring->queue that real rtlwifi's TX submission path (inside
@@ -2039,7 +2039,7 @@ void rtlwifi_log_iqk_lc_state(void)
  * the Twentieth Update's "0 undefined symbols" milestone) pushes onto,
  * but which only _rtl_pci_tx_isr() ever pops from. With that function
  * never called, ring->queue's length only ever grows, so available
- * space monotonically shrinks to the kRTW88TxStallAvail threshold and
+ * space monotonically shrinks to the kRTL8188EETxStallAvail threshold and
  * never recovers -- exactly matching "works for a burst, then stops
  * forever," since outputPacket() stalls the queue once threshold is
  * crossed and nothing ever calls ieee80211_wake_queue() to un-stall
@@ -2090,9 +2090,9 @@ static void rtlwifi_pci_tx_isr(struct ieee80211_hw *hw, int prio)
      * safety here comes from _rtl_pci_tx_isr() only ever running inside
      * the single IRQ bottom half, same reasoning this port's own
      * rtlwifi_do_interrupt() already documents for omitting
-     * irq_th_lock. This port's TX-submit path (RTW88PCIDevice::
+     * irq_th_lock. This port's TX-submit path (RTL8188EEPCIDevice::
      * outputPacket(), via IOGatedOutputQueue) and this ISR both run
-     * gated on the same single _workLoop (RTW88PCIDevice.cpp), so they
+     * gated on the same single _workLoop (RTL8188EEPCIDevice.cpp), so they
      * were -- and still are, with no lock at all -- already mutually
      * exclusive on this port too. The Section 114 lock was therefore
      * unnecessary, didn't match any real precedent, and is the direct
@@ -2336,7 +2336,7 @@ bool rtlwifi_do_interrupt(void)
                 break; /* no more data filled by hardware -- ring drained */
 
             /* Section 108: this port's RX DMA path is a bounce-buffer
-             * design (RTW88PCIDevice.cpp's compat_dma_map() allocates a
+             * design (RTL8188EEPCIDevice.cpp's compat_dma_map() allocates a
              * separate physically-contiguous buffer for the hardware to
              * write into, tracked in a DMAEntry; compat_dma_sync_cpu()
              * copies bounce -> the original skb->data buffer). That sync
@@ -2348,7 +2348,7 @@ bool rtlwifi_do_interrupt(void)
              * every-frame symptom chased through Sections 103-107: every
              * descriptor-level field (len, own, drvinfo_size, crc,
              * hwerror) is read over MMIO from real DMA'd ring memory
-             * (RTW88PCIDevice::allocCoherent(), confirmed correct), so
+             * (RTL8188EEPCIDevice::allocCoherent(), confirmed correct), so
              * those always looked sane, while the actual payload bytes
              * were never copied out of the bounce buffer at all.
              *
@@ -2359,7 +2359,7 @@ bool rtlwifi_do_interrupt(void)
              * point. Fix: added the missing sync call, immediately
              * before the existing dma_unmap_single(), so the bounce
              * buffer's contents are copied into skb->data (via
-             * RTW88PCIDevice::syncBounceForCpu()) before compat_dma_unmap()
+             * RTL8188EEPCIDevice::syncBounceForCpu()) before compat_dma_unmap()
              * frees the DMAEntry that memcpy needs to find the bounce
              * buffer by physical address. Everything from query_rx_desc()
              * onward now reads real copied-back data instead of the
@@ -2435,7 +2435,7 @@ bool rtlwifi_do_interrupt(void)
                 memcpy(IEEE80211_SKB_RXCB(skb), &rx_status, sizeof(rx_status));
                 /* Deliver via the real intercept point, confirmed this
                  * session against pci.c:629/631 and base.c:1363: this is
-                 * what bridges to g_hw_cbs->rx_frame -> RTW88IEEE80211::
+                 * what bridges to g_hw_cbs->rx_frame -> RTL8188EEIEEE80211::
                  * rxFrame(), already fully wired on the delivery side. */
                 ieee80211_rx_irqsafe(hw, skb);
             } else {

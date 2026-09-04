@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_DEVICE_H
-#define _RTW88_COMPAT_DEVICE_H
+#ifndef _RTL8188EE_COMPAT_DEVICE_H
+#define _RTL8188EE_COMPAT_DEVICE_H
 
 #include "types.h"
 
@@ -58,4 +58,4 @@ void *devm_kmemdup_array(struct device *dev, const void *src, size_t n,
 static inline void *dev_get_drvdata(const struct device *dev) { return dev ? dev->kext_dev : NULL; }
 static inline void  dev_set_drvdata(struct device *dev, void *data) { if (dev) dev->kext_dev = data; }
 
-#endif /* _RTW88_COMPAT_DEVICE_H */
+#endif /* _RTL8188EE_COMPAT_DEVICE_H */

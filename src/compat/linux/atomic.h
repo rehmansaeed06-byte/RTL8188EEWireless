@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_ATOMIC_H
-#define _RTW88_COMPAT_ATOMIC_H
+#ifndef _RTL8188EE_COMPAT_ATOMIC_H
+#define _RTL8188EE_COMPAT_ATOMIC_H
 
 #include "types.h"
 
@@ -94,4 +94,4 @@ static inline unsigned long xchg(volatile unsigned long *ptr, unsigned long val)
 #define cmpxchg(ptr, old, new_val) \
     __sync_val_compare_and_swap(ptr, old, new_val)
 
-#endif /* _RTW88_COMPAT_ATOMIC_H */
+#endif /* _RTL8188EE_COMPAT_ATOMIC_H */

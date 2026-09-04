@@ -10,7 +10,7 @@
  * rtl_find_sta()/get_sta() inline wrappers).
  *
  * This port tracks at most ONE associated station at a time (confirmed:
- * RTW88IEEE80211.hpp's _sta is a scalar struct ieee80211_sta*, not a
+ * RTL8188EEIEEE80211.hpp's _sta is a scalar struct ieee80211_sta*, not a
  * list -- this driver has no AP-mode/multi-station support), so the real
  * concurrency hazard Linux's RCU protects against here (safe traversal
  * of a station list against concurrent removal from another CPU) does

@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
  * Linux bitops shims for rtw88 macOS port
  */
-#ifndef _RTW88_COMPAT_BITOPS_H
-#define _RTW88_COMPAT_BITOPS_H
+#ifndef _RTL8188EE_COMPAT_BITOPS_H
+#define _RTL8188EE_COMPAT_BITOPS_H
 
 #include "types.h"
 
@@ -202,4 +202,4 @@ static inline unsigned long find_next_zero_bit(const unsigned long *addr,
     return size;
 }
 
-#endif /* _RTW88_COMPAT_BITOPS_H */
+#endif /* _RTL8188EE_COMPAT_BITOPS_H */

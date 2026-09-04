@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_MODULE_H
-#define _RTW88_COMPAT_MODULE_H
+#ifndef _RTL8188EE_COMPAT_MODULE_H
+#define _RTL8188EE_COMPAT_MODULE_H
 
 /* Module stubs — not needed in kext context */
 #define MODULE_AUTHOR(x)
@@ -69,4 +69,4 @@ struct bus_type { const char *name; };
 #define __devexit
 #define __devexit_p(f) (f)
 
-#endif /* _RTW88_COMPAT_MODULE_H */
+#endif /* _RTL8188EE_COMPAT_MODULE_H */

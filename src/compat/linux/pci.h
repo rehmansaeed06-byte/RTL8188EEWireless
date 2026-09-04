@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_PCI_H
-#define _RTW88_COMPAT_PCI_H
+#ifndef _RTL8188EE_COMPAT_PCI_H
+#define _RTL8188EE_COMPAT_PCI_H
 
 #include "types.h"
 #include "kernel.h"    /* EOPNOTSUPP — pci.h uses it directly (line ~261)
@@ -10,7 +10,7 @@
                          * rtlwifi_compat.h's ordering. Surfaced as a real
                          * "undeclared identifier" error the first time
                          * pci.h was included on its own (findings.md
-                         * Section 85, RTW88IEEE80211.hpp's Bucket B fix). */
+                         * Section 85, RTL8188EEIEEE80211.hpp's Bucket B fix). */
 #include "slab.h"
 #include "dma-mapping.h"
 #include "device.h"
@@ -20,7 +20,7 @@
  * PCI shims for rtw88 macOS port.
  *
  * The actual PCI operations (config space reads/writes, MMIO mapping,
- * DMA, interrupts) are provided by RTW88PCIDevice via the global
+ * DMA, interrupts) are provided by RTL8188EEPCIDevice via the global
  * rtw88_pci_ops pointer set at driver start.
  */
 
@@ -426,4 +426,4 @@ static inline int pcie_capability_read_word(struct pci_dev *dev, int pos, u16 *v
 /* to_pci_dev — cast a struct device * to struct pci_dev * */
 #define to_pci_dev(d) container_of(d, struct pci_dev, dev)
 
-#endif /* _RTW88_COMPAT_PCI_H */
+#endif /* _RTL8188EE_COMPAT_PCI_H */

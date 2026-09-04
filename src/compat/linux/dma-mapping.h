@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_DMA_MAPPING_H
-#define _RTW88_COMPAT_DMA_MAPPING_H
+#ifndef _RTL8188EE_COMPAT_DMA_MAPPING_H
+#define _RTL8188EE_COMPAT_DMA_MAPPING_H
 
 #include "types.h"
 #include "slab.h"
@@ -138,4 +138,4 @@ static inline dma_addr_t dma_map_page(struct device *dev, struct page *page,
 static inline void dma_unmap_page(struct device *dev, dma_addr_t addr,
                                    size_t size, int dir) {}
 
-#endif /* _RTW88_COMPAT_DMA_MAPPING_H */
+#endif /* _RTL8188EE_COMPAT_DMA_MAPPING_H */

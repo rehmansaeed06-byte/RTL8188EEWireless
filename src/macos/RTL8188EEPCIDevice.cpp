@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-// RTW88PCIDevice.cpp — IOEthernetController for PCIe rtw88 adapters
+// RTL8188EEPCIDevice.cpp — IOEthernetController for PCIe rtw88 adapters
 
-#include "RTW88PCIDevice.hpp"
-#include "RTW88IEEE80211.hpp"
-#include "RTW88UserClient.hpp"
+#include "RTL8188EEPCIDevice.hpp"
+#include "RTL8188EEIEEE80211.hpp"
+#include "RTL8188EEUserClient.hpp"
 
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMessage.h>
@@ -33,16 +33,16 @@ extern "C" boolean_t preemption_enabled(void);
 extern "C" uint64_t mach_absolute_time(void);
 
 #define super IOEthernetController
-OSDefineMetaClassAndStructors(RTW88PCIDevice, IOEthernetController)
+OSDefineMetaClassAndStructors(RTL8188EEPCIDevice, IOEthernetController)
 
-static constexpr unsigned int kRTW88TxStallAvail = 96;
-static constexpr unsigned int kRTW88TxResumeAvail = 160;
+static constexpr unsigned int kRTL8188EETxStallAvail = 96;
+static constexpr unsigned int kRTL8188EETxResumeAvail = 160;
 
 /* ------------------------------------------------------------------ */
 /*  PCI ops shim (C linkage, called from driver C code)                */
 /* ------------------------------------------------------------------ */
 
-static RTW88PCIDevice *g_pci_dev_instance = nullptr;
+static RTL8188EEPCIDevice *g_pci_dev_instance = nullptr;
 
 static int compat_pci_read_config_byte(struct pci_dev *dev, int where, u8 *val)
 {
@@ -195,7 +195,7 @@ static struct rtw88_dma_alloc_ops _dma_ops = {
     .sync_single_for_device = compat_dma_sync_dev,
 };
 
-const char *RTW88PCIDevice::chipDisplayName() const
+const char *RTL8188EEPCIDevice::chipDisplayName() const
 {
     if (!_compatPciDev)
         return "Realtek Wireless";
@@ -220,17 +220,17 @@ const char *RTW88PCIDevice::chipDisplayName() const
     }
 }
 
-const OSString *RTW88PCIDevice::newVendorString() const
+const OSString *RTL8188EEPCIDevice::newVendorString() const
 {
     return OSString::withCString("Realtek");
 }
 
-const OSString *RTW88PCIDevice::newModelString() const
+const OSString *RTL8188EEPCIDevice::newModelString() const
 {
     return OSString::withCString(chipDisplayName());
 }
 
-void RTW88PCIDevice::publishHardwareIdentity()
+void RTL8188EEPCIDevice::publishHardwareIdentity()
 {
     const char *chip = chipDisplayName();
 
@@ -295,18 +295,18 @@ extern "C" void rtw88_tx_resume_trampoline(void)
 /*  IOService lifecycle                                                 */
 /* ------------------------------------------------------------------ */
 
-bool RTW88PCIDevice::init(OSDictionary *props)
+bool RTL8188EEPCIDevice::init(OSDictionary *props)
 {
-    IOLog("rtw88: RTW88PCIDevice::init\n");
+    IOLog("rtw88: RTL8188EEPCIDevice::init\n");
     if (!super::init(props)) return false;
     _dmaLock        = IOSimpleLockAlloc();
     _pendingFreeLock = IOSimpleLockAlloc();
     return _dmaLock != nullptr && _pendingFreeLock != nullptr;
 }
 
-bool RTW88PCIDevice::start(IOService *provider)
+bool RTL8188EEPCIDevice::start(IOService *provider)
 {
-    IOLog("rtw88: RTW88PCIDevice::start\n");
+    IOLog("rtw88: RTL8188EEPCIDevice::start\n");
     if (!super::start(provider)) return false;
 
     _pciDev = OSDynamicCast(IOPCIDevice, provider);
@@ -382,9 +382,9 @@ bool RTW88PCIDevice::start(IOService *provider)
     rtl8188ee_find_fw_dir();
 
     /* Create 802.11 state machine */
-    _ieee80211 = RTW88IEEE80211::create(this, _compatPciDev);
+    _ieee80211 = RTL8188EEIEEE80211::create(this, _compatPciDev);
     if (!_ieee80211) {
-        IOLog("rtw88: failed to create RTW88IEEE80211\n");
+        IOLog("rtw88: failed to create RTL8188EEIEEE80211\n");
         return false;
     }
 
@@ -418,7 +418,7 @@ bool RTW88PCIDevice::start(IOService *provider)
      * stop vs interrupt loss vs IMR masking when TX appears stuck. */
     _debugTimer = IOTimerEventSource::timerEventSource(
         this, OSMemberFunctionCast(IOTimerEventSource::Action,
-                                   this, &RTW88PCIDevice::debugTimerFired));
+                                   this, &RTL8188EEPCIDevice::debugTimerFired));
     if (_debugTimer) {
         _workLoop->addEventSource(_debugTimer);
         _debugTimer->setTimeoutMS(1000);
@@ -429,24 +429,24 @@ bool RTW88PCIDevice::start(IOService *provider)
     return true;
 }
 
-void RTW88PCIDevice::debugTimerFired(IOTimerEventSource *src)
+void RTL8188EEPCIDevice::debugTimerFired(IOTimerEventSource *src)
 {
     unsigned int avail = rtlwifi_be_tx_avail();
-    if (_txStalled && avail >= kRTW88TxResumeAvail)
+    if (_txStalled && avail >= kRTL8188EETxResumeAvail)
         resumeTxIfStalled();
-    if (_txStalled || avail < kRTW88TxStallAvail)
+    if (_txStalled || avail < kRTL8188EETxStallAvail)
         rtlwifi_debug_dump_tx_state();
     src->setTimeoutMS(1000);   /* re-arm */
 }
 
-void RTW88PCIDevice::stop(IOService *provider)
+void RTL8188EEPCIDevice::stop(IOService *provider)
 {
-    IOLog("rtw88: RTW88PCIDevice::stop\n");
+    IOLog("rtw88: RTL8188EEPCIDevice::stop\n");
     teardown();
     super::stop(provider);
 }
 
-void RTW88PCIDevice::free()
+void RTL8188EEPCIDevice::free()
 {
     if (_compatPciDev) { IOFree(_compatPciDev, sizeof(*_compatPciDev)); _compatPciDev = nullptr; }
     if (_pendingFreeLock) { drainPendingFree(); IOSimpleLockFree(_pendingFreeLock); _pendingFreeLock = nullptr; }
@@ -454,7 +454,7 @@ void RTW88PCIDevice::free()
     super::free();
 }
 
-void RTW88PCIDevice::teardown()
+void RTL8188EEPCIDevice::teardown()
 {
     /* Stop the IRQ bottom-half from calling back into us before we tear down
      * the output queue it services. */
@@ -494,12 +494,12 @@ void RTW88PCIDevice::teardown()
 /*  Interrupt                                                           */
 /* ------------------------------------------------------------------ */
 
-bool RTW88PCIDevice::setupInterrupt()
+bool RTL8188EEPCIDevice::setupInterrupt()
 {
     _intrSrc = IOInterruptEventSource::interruptEventSource(
         this,
         OSMemberFunctionCast(IOInterruptEventSource::Action,
-                             this, &RTW88PCIDevice::handleInterrupt),
+                             this, &RTL8188EEPCIDevice::handleInterrupt),
         _pciDev, 0);
 
     if (!_intrSrc) {
@@ -511,14 +511,14 @@ bool RTW88PCIDevice::setupInterrupt()
     return true;
 }
 
-void RTW88PCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
+void RTL8188EEPCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
 {
     /* RECONNECTED 2026-08-25 (findings.md Section 96.6): the 2026-08-25
      * revert (see prior history in git blame) was against calling
      * straight through to rtw88_trigger_interrupt(), a no-op that never
      * reads or clears the chip's ISR register -- that was the actual
      * cause of the confirmed 500k+/2min interrupt storm (Section 96.5),
-     * not the act of reaching RTW88IEEE80211::handleInterrupt() itself.
+     * not the act of reaching RTL8188EEIEEE80211::handleInterrupt() itself.
      * That method now calls rtlwifi_do_interrupt(), a real port of
      * _rtl_pci_interrupt()'s disable/read-clear/enable bracket plus an
      * RX ring drain (rtlwifi_compat.c) -- so the IRQ line is correctly
@@ -534,7 +534,7 @@ void RTW88PCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
 /*  IOEthernetController / IONetworkController                          */
 /* ------------------------------------------------------------------ */
 
-bool RTW88PCIDevice::attachDevice()
+bool RTL8188EEPCIDevice::attachDevice()
 {
     if (!attachInterface((IONetworkInterface **)&_iface)) {
         IOLog("rtw88: attachInterface failed\n");
@@ -552,7 +552,7 @@ bool RTW88PCIDevice::attachDevice()
     return true;
 }
 
-bool RTW88PCIDevice::setupMediumDict()
+bool RTL8188EEPCIDevice::setupMediumDict()
 {
     OSDictionary *mediums = OSDictionary::withCapacity(4);
     if (!mediums) return false;
@@ -576,7 +576,7 @@ bool RTW88PCIDevice::setupMediumDict()
     return true;
 }
 
-void RTW88PCIDevice::addMedium(OSDictionary *mediums, IOMediumType type, UInt64 speed)
+void RTL8188EEPCIDevice::addMedium(OSDictionary *mediums, IOMediumType type, UInt64 speed)
 {
     IONetworkMedium *m = IONetworkMedium::medium(type, speed * 1000000ULL);
     if (m) {
@@ -585,7 +585,7 @@ void RTW88PCIDevice::addMedium(OSDictionary *mediums, IOMediumType type, UInt64 
     }
 }
 
-IOReturn RTW88PCIDevice::enable(IONetworkInterface *iface)
+IOReturn RTL8188EEPCIDevice::enable(IONetworkInterface *iface)
 {
     IOLog("rtw88: enable\n");
     if (_enabled) return kIOReturnSuccess;
@@ -604,7 +604,7 @@ IOReturn RTW88PCIDevice::enable(IONetworkInterface *iface)
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::disable(IONetworkInterface *iface)
+IOReturn RTL8188EEPCIDevice::disable(IONetworkInterface *iface)
 {
     IOLog("rtw88: disable\n");
     if (!_enabled) return kIOReturnSuccess;
@@ -616,7 +616,7 @@ IOReturn RTW88PCIDevice::disable(IONetworkInterface *iface)
     return kIOReturnSuccess;
 }
 
-IOOutputQueue *RTW88PCIDevice::createOutputQueue()
+IOOutputQueue *RTL8188EEPCIDevice::createOutputQueue()
 {
     /*
      * Without an output queue, IONetworkController delivers outputPacket()
@@ -630,7 +630,7 @@ IOOutputQueue *RTW88PCIDevice::createOutputQueue()
     return IOGatedOutputQueue::withTarget(this, getWorkLoop(), 256);
 }
 
-UInt32 RTW88PCIDevice::outputPacket(mbuf_t m, void *param)
+UInt32 RTL8188EEPCIDevice::outputPacket(mbuf_t m, void *param)
 {
     drainPendingFree();
     if (!_enabled || !_ieee80211) {
@@ -674,28 +674,28 @@ UInt32 RTW88PCIDevice::outputPacket(mbuf_t m, void *param)
      * 87). Threshold leaves headroom so submission never actually hits
      * -ENOSPC.
      */
-    if (rtlwifi_be_tx_avail() < kRTW88TxStallAvail) {
+    if (rtlwifi_be_tx_avail() < kRTL8188EETxStallAvail) {
         _txStalled = true;
         return kIOReturnOutputStall;
     }
     return _ieee80211->outputPacket(m);
 }
 
-void RTW88PCIDevice::resumeTxIfStalled()
+void RTL8188EEPCIDevice::resumeTxIfStalled()
 {
     /* Called via ieee80211_wake_queue(), fired from real rtlwifi's
      * own _rtl_pci_tx_isr() (pci.c:540) after freeing BE ring slots —
      * runs on whatever thread/lock context that real ISR path itself
      * runs under (not independently verified here). Use async service
      * so we never block on the output-queue gate from here regardless. */
-    if (_txStalled && rtlwifi_be_tx_avail() >= kRTW88TxResumeAvail) {
+    if (_txStalled && rtlwifi_be_tx_avail() >= kRTL8188EETxResumeAvail) {
         _txStalled = false;
         if (_txQueue)
             _txQueue->service(IOBasicOutputQueue::kServiceAsync);
     }
 }
 
-IOReturn RTW88PCIDevice::getHardwareAddress(IOEthernetAddress *addr)
+IOReturn RTL8188EEPCIDevice::getHardwareAddress(IOEthernetAddress *addr)
 {
     if (!_ieee80211) return kIOReturnNotReady;
     _ieee80211->getMACAddress(addr->bytes);
@@ -703,30 +703,30 @@ IOReturn RTW88PCIDevice::getHardwareAddress(IOEthernetAddress *addr)
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::setHardwareAddress(const IOEthernetAddress *addr)
+IOReturn RTL8188EEPCIDevice::setHardwareAddress(const IOEthernetAddress *addr)
 {
     memcpy(_macAddr.bytes, addr->bytes, 6);
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::getMaxPacketSize(UInt32 *maxSize) const
+IOReturn RTL8188EEPCIDevice::getMaxPacketSize(UInt32 *maxSize) const
 {
     *maxSize = 2346; /* IEEE80211 max MSDU */
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::setMaxPacketSize(UInt32 maxSize)
+IOReturn RTL8188EEPCIDevice::setMaxPacketSize(UInt32 maxSize)
 {
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::selectMedium(const IONetworkMedium *medium)
+IOReturn RTL8188EEPCIDevice::selectMedium(const IONetworkMedium *medium)
 {
     setCurrentMedium(medium);
     return kIOReturnSuccess;
 }
 
-bool RTW88PCIDevice::configureInterface(IONetworkInterface *iface)
+bool RTL8188EEPCIDevice::configureInterface(IONetworkInterface *iface)
 {
     if (!super::configureInterface(iface)) return false;
     IONetworkData *nd = iface->getNetworkData(kIONetworkStatsKey);
@@ -734,7 +734,7 @@ bool RTW88PCIDevice::configureInterface(IONetworkInterface *iface)
     return true;
 }
 
-IOReturn RTW88PCIDevice::getPacketFilters(const OSSymbol *group,
+IOReturn RTL8188EEPCIDevice::getPacketFilters(const OSSymbol *group,
                                             UInt32 *filters) const
 {
     if (group->isEqualTo(kIOEthernetWakeOnLANFilterGroup)) {
@@ -744,22 +744,22 @@ IOReturn RTW88PCIDevice::getPacketFilters(const OSSymbol *group,
     return super::getPacketFilters(group, filters);
 }
 
-IOReturn RTW88PCIDevice::setMulticastMode(bool active)
+IOReturn RTL8188EEPCIDevice::setMulticastMode(bool active)
 {
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::setMulticastList(IOEthernetAddress *addrs, UInt32 count)
+IOReturn RTL8188EEPCIDevice::setMulticastList(IOEthernetAddress *addrs, UInt32 count)
 {
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::setPromiscuousMode(bool active)
+IOReturn RTL8188EEPCIDevice::setPromiscuousMode(bool active)
 {
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88PCIDevice::powerStateWillChangeTo(IOPMPowerFlags flags,
+IOReturn RTL8188EEPCIDevice::powerStateWillChangeTo(IOPMPowerFlags flags,
                                                   unsigned long state,
                                                   IOService *actor)
 {
@@ -768,10 +768,10 @@ IOReturn RTW88PCIDevice::powerStateWillChangeTo(IOPMPowerFlags flags,
 }
 
 /* ------------------------------------------------------------------ */
-/*  RX injection (called from RTW88IEEE80211 on frame receive)         */
+/*  RX injection (called from RTL8188EEIEEE80211 on frame receive)         */
 /* ------------------------------------------------------------------ */
 
-mbuf_t RTW88PCIDevice::allocateInputPacket(uint32_t len)
+mbuf_t RTL8188EEPCIDevice::allocateInputPacket(uint32_t len)
 {
     /* IONetworkController::allocatePacket returns an mbuf set up exactly the
      * way inputPacket() expects: m_len and m_pkthdr.len are both set and
@@ -781,7 +781,7 @@ mbuf_t RTW88PCIDevice::allocateInputPacket(uint32_t len)
     return allocatePacket(len);
 }
 
-void RTW88PCIDevice::injectRxFrame(mbuf_t m)
+void RTL8188EEPCIDevice::injectRxFrame(mbuf_t m)
 {
     drainPendingFree();
     if (!_iface || !_enabled) {
@@ -853,7 +853,7 @@ void RTW88PCIDevice::injectRxFrame(mbuf_t m)
 /*  DMA coherent allocation                                             */
 /* ------------------------------------------------------------------ */
 
-void *RTW88PCIDevice::allocCoherent(size_t size, IOPhysicalAddress *phys)
+void *RTL8188EEPCIDevice::allocCoherent(size_t size, IOPhysicalAddress *phys)
 {
     /*
      * rtw88 TX ring descriptors store DMA addresses in 32-bit fields.
@@ -899,7 +899,7 @@ void *RTW88PCIDevice::allocCoherent(size_t size, IOPhysicalAddress *phys)
     return va;
 }
 
-void RTW88PCIDevice::freeCoherent(size_t size, void *virt, IOPhysicalAddress phys)
+void RTL8188EEPCIDevice::freeCoherent(size_t size, void *virt, IOPhysicalAddress phys)
 {
     IOSimpleLockLock(_dmaLock);
     DMAEntry **prev = &_dmaList;
@@ -925,7 +925,7 @@ void RTW88PCIDevice::freeCoherent(size_t size, void *virt, IOPhysicalAddress phy
     IOLog("rtw88: freeCoherent: virt %p not found\n", virt);
 }
 
-void RTW88PCIDevice::freeCoherentByPhys(IOPhysicalAddress phys)
+void RTL8188EEPCIDevice::freeCoherentByPhys(IOPhysicalAddress phys)
 {
     IOSimpleLockLock(_dmaLock);
     DMAEntry **prev = &_dmaList;
@@ -950,7 +950,7 @@ void RTW88PCIDevice::freeCoherentByPhys(IOPhysicalAddress phys)
     IOSimpleLockUnlock(_dmaLock);
 }
 
-void RTW88PCIDevice::drainPendingFree()
+void RTL8188EEPCIDevice::drainPendingFree()
 {
     if (!_pendingFreeLock) return;
     IOSimpleLockLock(_pendingFreeLock);
@@ -967,7 +967,7 @@ void RTW88PCIDevice::drainPendingFree()
     }
 }
 
-void RTW88PCIDevice::setBounceOrigVA(IOPhysicalAddress phys, void *orig_va)
+void RTL8188EEPCIDevice::setBounceOrigVA(IOPhysicalAddress phys, void *orig_va)
 {
     IOSimpleLockLock(_dmaLock);
     for (DMAEntry *e = _dmaList; e; e = e->next) {
@@ -979,7 +979,7 @@ void RTW88PCIDevice::setBounceOrigVA(IOPhysicalAddress phys, void *orig_va)
     IOSimpleLockUnlock(_dmaLock);
 }
 
-void RTW88PCIDevice::syncBounceForCpu(IOPhysicalAddress dma, size_t size)
+void RTL8188EEPCIDevice::syncBounceForCpu(IOPhysicalAddress dma, size_t size)
 {
     /*
      * Called by dma_sync_single_for_cpu(DMA_FROM_DEVICE) after the chip
@@ -1002,31 +1002,31 @@ void RTW88PCIDevice::syncBounceForCpu(IOPhysicalAddress dma, size_t size)
 /*  PCI config space                                                    */
 /* ------------------------------------------------------------------ */
 
-UInt8 RTW88PCIDevice::pciReadByte(int offset)
+UInt8 RTL8188EEPCIDevice::pciReadByte(int offset)
 {
     return _pciDev->configRead8((UInt8)offset);
 }
-UInt16 RTW88PCIDevice::pciReadWord(int offset)
+UInt16 RTL8188EEPCIDevice::pciReadWord(int offset)
 {
     return _pciDev->configRead16((UInt8)offset);
 }
-UInt32 RTW88PCIDevice::pciReadDword(int offset)
+UInt32 RTL8188EEPCIDevice::pciReadDword(int offset)
 {
     return _pciDev->configRead32((UInt8)offset);
 }
-void RTW88PCIDevice::pciWriteByte(int offset, UInt8 val)
+void RTL8188EEPCIDevice::pciWriteByte(int offset, UInt8 val)
 {
     _pciDev->configWrite8((UInt8)offset, val);
 }
-void RTW88PCIDevice::pciWriteWord(int offset, UInt16 val)
+void RTL8188EEPCIDevice::pciWriteWord(int offset, UInt16 val)
 {
     _pciDev->configWrite16((UInt8)offset, val);
 }
-void RTW88PCIDevice::pciWriteDword(int offset, UInt32 val)
+void RTL8188EEPCIDevice::pciWriteDword(int offset, UInt32 val)
 {
     _pciDev->configWrite32((UInt8)offset, val);
 }
-int RTW88PCIDevice::pciFindCapability(int cap)
+int RTL8188EEPCIDevice::pciFindCapability(int cap)
 {
     /* Walk PCIe capability list */
     UInt8 cap_ptr = _pciDev->configRead8(0x34) & ~3;
@@ -1042,13 +1042,13 @@ int RTW88PCIDevice::pciFindCapability(int cap)
 /*  IOUserClient creation                                               */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88PCIDevice::newUserClient(task_t owningTask, void *securityID,
+IOReturn RTL8188EEPCIDevice::newUserClient(task_t owningTask, void *securityID,
                                         UInt32 type, OSDictionary *properties,
                                         IOUserClient **handler)
 {
-    RTW88UserClient *client = new RTW88UserClient;
+    RTL8188EEUserClient *client = new RTL8188EEUserClient;
     if (!client) {
-        IOLog("rtw88: RTW88UserClient allocation failed\n");
+        IOLog("rtw88: RTL8188EEUserClient allocation failed\n");
         return kIOReturnNoMemory;
     }
 
@@ -1056,19 +1056,19 @@ IOReturn RTW88PCIDevice::newUserClient(task_t owningTask, void *securityID,
      * Without this the kernel port is never "ready for callouts" and
      * IOServiceOpen returns kIOReturnBadArgument before our code runs. */
     if (!client->initWithTask(owningTask, securityID, type, properties)) {
-        IOLog("rtw88: RTW88UserClient::initWithTask failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::initWithTask failed\n");
         client->release();
         return kIOReturnBadArgument;
     }
 
     if (!client->attach(this)) {
-        IOLog("rtw88: RTW88UserClient::attach failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::attach failed\n");
         client->release();
         return kIOReturnBadArgument;
     }
 
     if (!client->start(this)) {
-        IOLog("rtw88: RTW88UserClient::start failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::start failed\n");
         client->detach(this);
         client->release();
         return kIOReturnBadArgument;

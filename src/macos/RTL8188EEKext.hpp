@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * RTW88Kext.hpp — top-level IOService provider matching
+ * RTL8188EEKext.hpp — top-level IOService provider matching
  */
 #pragma once
 
 #include <IOKit/IOService.h>
 
-class RTW88Kext : public IOService {
-    OSDeclareDefaultStructors(RTW88Kext)
+class RTL8188EEKext : public IOService {
+    OSDeclareDefaultStructors(RTL8188EEKext)
 
 public:
     bool init(OSDictionary *props) override;

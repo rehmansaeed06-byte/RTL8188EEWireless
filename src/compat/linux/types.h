@@ -2,8 +2,8 @@
  * Linux type shims for rtw88 macOS kext port.
  * Kernel-safe: no userspace headers included here.
  */
-#ifndef _RTW88_COMPAT_TYPES_H
-#define _RTW88_COMPAT_TYPES_H
+#ifndef _RTL8188EE_COMPAT_TYPES_H
+#define _RTL8188EE_COMPAT_TYPES_H
 
 /* Use only compiler built-ins and explicit externs — no libc cascade. */
 #include <stdint.h>
@@ -243,4 +243,4 @@ static inline void hlist_del_init(struct hlist_node *n)
          pos; \
          pos = pos->member.next ? container_of(pos->member.next, __typeof__(*pos), member) : NULL)
 
-#endif /* _RTW88_COMPAT_TYPES_H */
+#endif /* _RTL8188EE_COMPAT_TYPES_H */

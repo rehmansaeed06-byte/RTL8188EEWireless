@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_TIMER_H
-#define _RTW88_COMPAT_TIMER_H
+#ifndef _RTL8188EE_COMPAT_TIMER_H
+#define _RTL8188EE_COMPAT_TIMER_H
 
 #include "types.h"
 #include "jiffies.h"
@@ -50,4 +50,4 @@ static inline int timer_pending(const struct timer_list *timer)
     return timer->active;
 }
 
-#endif /* _RTW88_COMPAT_TIMER_H */
+#endif /* _RTL8188EE_COMPAT_TIMER_H */

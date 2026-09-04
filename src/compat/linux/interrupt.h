@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_INTERRUPT_H
-#define _RTW88_COMPAT_INTERRUPT_H
+#ifndef _RTL8188EE_COMPAT_INTERRUPT_H
+#define _RTL8188EE_COMPAT_INTERRUPT_H
 
 #include "types.h"
 
@@ -136,4 +136,4 @@ int rtw88_devm_request_threaded_irq(struct device *dev, unsigned int irq,
         unsigned long flags, const char *name, void *dev_id);
 #define devm_request_threaded_irq rtw88_devm_request_threaded_irq
 
-#endif /* _RTW88_COMPAT_INTERRUPT_H */
+#endif /* _RTL8188EE_COMPAT_INTERRUPT_H */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_JIFFIES_H
-#define _RTW88_COMPAT_JIFFIES_H
+#ifndef _RTL8188EE_COMPAT_JIFFIES_H
+#define _RTL8188EE_COMPAT_JIFFIES_H
 
 #include "types.h"
 #include "../iokit_shim.h"
@@ -72,4 +72,4 @@ static inline int time_after_eq(unsigned long a, unsigned long b)
 
 #define round_jiffies_relative(x) (x)
 
-#endif /* _RTW88_COMPAT_JIFFIES_H */
+#endif /* _RTL8188EE_COMPAT_JIFFIES_H */

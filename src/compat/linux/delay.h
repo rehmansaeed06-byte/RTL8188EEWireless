@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_DELAY_H
-#define _RTW88_COMPAT_DELAY_H
+#ifndef _RTL8188EE_COMPAT_DELAY_H
+#define _RTL8188EE_COMPAT_DELAY_H
 
 #include "../iokit_shim.h"
 
@@ -51,4 +51,4 @@ static inline void msleep_interruptible(unsigned int msecs)
     IOSleep(msecs);
 }
 
-#endif /* _RTW88_COMPAT_DELAY_H */
+#endif /* _RTL8188EE_COMPAT_DELAY_H */

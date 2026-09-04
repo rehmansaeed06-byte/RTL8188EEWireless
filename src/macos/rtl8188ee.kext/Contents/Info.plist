@@ -25,16 +25,16 @@
 			<key>CFBundleIdentifier</key>
 			<string>com.rtlwifi.rtl8188ee</string>
 			<key>IOClass</key>
-			<string>RTW88PCIDevice</string>
+			<string>RTL8188EEPCIDevice</string>
 			<key>IOPCIMatch</key>
 			<string>0x817910EC</string>
 			<key>IOProbeScore</key>
 			<integer>5000</integer>
 			<key>IOProviderClass</key>
 			<string>IOPCIDevice</string>
-			<key>RTW88ChipName</key>
+			<key>RTL8188EEChipName</key>
 			<string>rtl8188ee</string>
-			<key>RTW88FWName</key>
+			<key>RTL8188EEFWName</key>
 			<string>rtl8188efw.bin</string>
 		</dict>
 	</dict>

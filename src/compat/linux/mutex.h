@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_MUTEX_H
-#define _RTW88_COMPAT_MUTEX_H
+#ifndef _RTL8188EE_COMPAT_MUTEX_H
+#define _RTL8188EE_COMPAT_MUTEX_H
 
 #include "types.h"
 #include "../iokit_shim.h"
@@ -85,4 +85,4 @@ static inline void up(struct semaphore *sem)
     IOLockUnlock(sem->lock);
 }
 
-#endif /* _RTW88_COMPAT_MUTEX_H */
+#endif /* _RTL8188EE_COMPAT_MUTEX_H */

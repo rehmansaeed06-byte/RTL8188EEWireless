@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_IP_H
-#define _RTW88_COMPAT_IP_H
+#ifndef _RTL8188EE_COMPAT_IP_H
+#define _RTL8188EE_COMPAT_IP_H
 
 /*
  * Real rtlwifi/base.c usage (confirmed by grep, not assumed):
@@ -54,4 +54,4 @@ struct iphdr {
      * fixed header fields above (protocol/ports for classification) */
 };
 
-#endif /* _RTW88_COMPAT_IP_H */
+#endif /* _RTL8188EE_COMPAT_IP_H */

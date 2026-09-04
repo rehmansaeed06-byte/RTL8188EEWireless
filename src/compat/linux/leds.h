@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_LEDS_H
-#define _RTW88_COMPAT_LEDS_H
+#ifndef _RTL8188EE_COMPAT_LEDS_H
+#define _RTL8188EE_COMPAT_LEDS_H
 
 #include "types.h"
 
@@ -49,4 +49,4 @@ ieee80211_create_tpt_led_trigger(struct ieee80211_hw *hw, unsigned int flags,
 #define LED_TRIGGER_NOOP_NAME "none"
 static inline void led_trigger_event(void *t, enum led_brightness b) {}
 
-#endif /* _RTW88_COMPAT_LEDS_H */
+#endif /* _RTL8188EE_COMPAT_LEDS_H */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_FIRMWARE_H
-#define _RTW88_COMPAT_FIRMWARE_H
+#ifndef _RTL8188EE_COMPAT_FIRMWARE_H
+#define _RTL8188EE_COMPAT_FIRMWARE_H
 
 #include "types.h"
 #include "kernel.h"
@@ -68,4 +68,4 @@ static inline void release_firmware(const struct firmware *fw)
     rtl8188ee_release_firmware(fw);
 }
 
-#endif /* _RTW88_COMPAT_FIRMWARE_H */
+#endif /* _RTL8188EE_COMPAT_FIRMWARE_H */

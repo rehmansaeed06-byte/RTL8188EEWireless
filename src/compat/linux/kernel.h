@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_KERNEL_H
-#define _RTW88_COMPAT_KERNEL_H
+#ifndef _RTL8188EE_COMPAT_KERNEL_H
+#define _RTL8188EE_COMPAT_KERNEL_H
 
 #include "types.h"
 #include "bitops.h"
@@ -193,4 +193,4 @@ static inline void fsleep(unsigned long us)
 #define dev_dbg_ratelimited(dev, fmt, ...) \
     do { (void)(dev); } while (0)
 
-#endif /* _RTW88_COMPAT_KERNEL_H */
+#endif /* _RTL8188EE_COMPAT_KERNEL_H */

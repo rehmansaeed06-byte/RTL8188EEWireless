@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_SLAB_H
-#define _RTW88_COMPAT_SLAB_H
+#ifndef _RTL8188EE_COMPAT_SLAB_H
+#define _RTL8188EE_COMPAT_SLAB_H
 
 #include "types.h"
 #include "../iokit_shim.h"
@@ -129,4 +129,4 @@ static inline void kmem_cache_destroy(struct kmem_cache *c)
     kfree(c);
 }
 
-#endif /* _RTW88_COMPAT_SLAB_H */
+#endif /* _RTL8188EE_COMPAT_SLAB_H */

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_USB_H
-#define _RTW88_COMPAT_USB_H
+#ifndef _RTL8188EE_COMPAT_USB_H
+#define _RTL8188EE_COMPAT_USB_H
 
 #include "types.h"
 #include "slab.h"
@@ -312,4 +312,4 @@ static inline void usb_deregister(struct usb_driver *drv) {}
     static int __init __usb_driver##_init(void) { return usb_register(&(__usb_driver)); } \
     static void __exit __usb_driver##_exit(void) { usb_deregister(&(__usb_driver)); }
 
-#endif /* _RTW88_COMPAT_USB_H */
+#endif /* _RTL8188EE_COMPAT_USB_H */

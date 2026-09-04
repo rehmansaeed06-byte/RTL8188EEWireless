@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_IF_ETHER_H
-#define _RTW88_COMPAT_IF_ETHER_H
+#ifndef _RTL8188EE_COMPAT_IF_ETHER_H
+#define _RTL8188EE_COMPAT_IF_ETHER_H
 
 #define ETH_ALEN    6
 #define ETH_HLEN    14
@@ -18,4 +18,4 @@
 #define ETH_P_TDLS  0x890D
 #define ETH_P_8021Q 0x8100
 
-#endif /* _RTW88_COMPAT_IF_ETHER_H */
+#endif /* _RTL8188EE_COMPAT_IF_ETHER_H */

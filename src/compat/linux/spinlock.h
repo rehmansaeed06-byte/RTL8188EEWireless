@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_SPINLOCK_H
-#define _RTW88_COMPAT_SPINLOCK_H
+#ifndef _RTL8188EE_COMPAT_SPINLOCK_H
+#define _RTL8188EE_COMPAT_SPINLOCK_H
 
 #include "types.h"
 #include "../iokit_shim.h"
@@ -85,4 +85,4 @@ static inline void write_unlock(rwlock_t *rw)    { IOLockUnlock(rw->lock); }
 #define assert_spin_locked(l)       do {} while (0)
 #define lockdep_set_class(l, k)     do {} while (0)
 
-#endif /* _RTW88_COMPAT_SPINLOCK_H */
+#endif /* _RTL8188EE_COMPAT_SPINLOCK_H */

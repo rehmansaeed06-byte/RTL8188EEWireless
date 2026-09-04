@@ -1,50 +1,50 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-// RTW88UserClient.cpp — IOUserClient implementation
+// RTL8188EEUserClient.cpp — IOUserClient implementation
 
-#include "RTW88UserClient.hpp"
-#include "RTW88PCIDevice.hpp"
-#include "RTW88IEEE80211.hpp"
+#include "RTL8188EEUserClient.hpp"
+#include "RTL8188EEPCIDevice.hpp"
+#include "RTL8188EEIEEE80211.hpp"
 
 #include <IOKit/IOLib.h>
 #include <string.h>
 
 #define super IOUserClient
-OSDefineMetaClassAndStructors(RTW88UserClient, IOUserClient)
+OSDefineMetaClassAndStructors(RTL8188EEUserClient, IOUserClient)
 
 /* ------------------------------------------------------------------ */
 /*  Dispatch table                                                      */
 /* ------------------------------------------------------------------ */
 
-const IOExternalMethodDispatch RTW88UserClient::sMethods[kRTW88NumSelectors] = {
-    /* kRTW88Scan */
-    { (IOExternalMethodAction)&RTW88UserClient::sScan,
+const IOExternalMethodDispatch RTL8188EEUserClient::sMethods[kRTL8188EENumSelectors] = {
+    /* kRTL8188EEScan */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sScan,
       0, 0, 0, 0 },
-    /* kRTW88Connect: input struct = RTW88ConnectArgs */
-    { (IOExternalMethodAction)&RTW88UserClient::sConnect,
-      0, sizeof(RTW88ConnectArgs), 0, 0 },
-    /* kRTW88Disconnect */
-    { (IOExternalMethodAction)&RTW88UserClient::sDisconnect,
+    /* kRTL8188EEConnect: input struct = RTL8188EEConnectArgs */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sConnect,
+      0, sizeof(RTL8188EEConnectArgs), 0, 0 },
+    /* kRTL8188EEDisconnect */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sDisconnect,
       0, 0, 0, 0 },
-    /* kRTW88GetState: output struct = RTW88StateResult */
-    { (IOExternalMethodAction)&RTW88UserClient::sGetState,
-      0, 0, 0, sizeof(RTW88StateResult) },
-    /* kRTW88GetBSSList: output = raw bytes, max 16KB */
-    { (IOExternalMethodAction)&RTW88UserClient::sGetBSSList,
+    /* kRTL8188EEGetState: output struct = RTL8188EEStateResult */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sGetState,
+      0, 0, 0, sizeof(RTL8188EEStateResult) },
+    /* kRTL8188EEGetBSSList: output = raw bytes, max 16KB */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sGetBSSList,
       0, 0, 0, kIOUCVariableStructureSize },
-    /* kRTW88GetRSSI: output scalar */
-    { (IOExternalMethodAction)&RTW88UserClient::sGetRSSI,
+    /* kRTL8188EEGetRSSI: output scalar */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sGetRSSI,
       0, 0, 1, 0 },
-    /* kRTW88SetDebug: input scalar = debug level */
-    { (IOExternalMethodAction)&RTW88UserClient::sSetDebug,
+    /* kRTL8188EESetDebug: input scalar = debug level */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sSetDebug,
       1, 0, 0, 0 },
-    /* kRTW88GetLog: output = log bytes */
-    { (IOExternalMethodAction)&RTW88UserClient::sGetLog,
+    /* kRTL8188EEGetLog: output = log bytes */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sGetLog,
       0, 0, 0, kIOUCVariableStructureSize },
-    /* kRTW88PowerOn */
-    { (IOExternalMethodAction)&RTW88UserClient::sPowerOn,
+    /* kRTL8188EEPowerOn */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sPowerOn,
       0, 0, 0, 0 },
-    /* kRTW88PowerOff */
-    { (IOExternalMethodAction)&RTW88UserClient::sPowerOff,
+    /* kRTL8188EEPowerOff */
+    { (IOExternalMethodAction)&RTL8188EEUserClient::sPowerOff,
       0, 0, 0, 0 },
 };
 
@@ -52,9 +52,9 @@ const IOExternalMethodDispatch RTW88UserClient::sMethods[kRTW88NumSelectors] = {
 /*  Factory                                                             */
 /* ------------------------------------------------------------------ */
 
-RTW88UserClient *RTW88UserClient::create(RTW88PCIDevice *dev, task_t owningTask)
+RTL8188EEUserClient *RTL8188EEUserClient::create(RTL8188EEPCIDevice *dev, task_t owningTask)
 {
-    RTW88UserClient *uc = new RTW88UserClient;
+    RTL8188EEUserClient *uc = new RTL8188EEUserClient;
     if (uc && !uc->init(nullptr)) { uc->release(); return nullptr; }
     if (uc) { uc->_provider = dev; uc->_owningTask = owningTask; }
     return uc;
@@ -64,56 +64,56 @@ RTW88UserClient *RTW88UserClient::create(RTW88PCIDevice *dev, task_t owningTask)
 /*  IOService lifecycle                                                 */
 /* ------------------------------------------------------------------ */
 
-bool RTW88UserClient::init(OSDictionary *props)
+bool RTL8188EEUserClient::init(OSDictionary *props)
 {
     return super::init(props);
 }
 
-bool RTW88UserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties)
+bool RTL8188EEUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type, OSDictionary *properties)
 {
     _owningTask = owningTask;
     if (!super::initWithTask(owningTask, securityID, type, properties)) {
-        IOLog("rtw88: RTW88UserClient::initWithTask(4) super failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::initWithTask(4) super failed\n");
         return false;
     }
     return true;
 }
 
-bool RTW88UserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
+bool RTL8188EEUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
 {
     _owningTask = owningTask;
     if (!super::initWithTask(owningTask, securityID, type)) {
-        IOLog("rtw88: RTW88UserClient::initWithTask(3) super failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::initWithTask(3) super failed\n");
         return false;
     }
     return true;
 }
 
-bool RTW88UserClient::start(IOService *provider)
+bool RTL8188EEUserClient::start(IOService *provider)
 {
     if (!super::start(provider)) {
-        IOLog("rtw88: RTW88UserClient::start() super::start failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::start() super::start failed\n");
         return false;
     }
-    _provider = OSDynamicCast(RTW88PCIDevice, provider);
+    _provider = OSDynamicCast(RTL8188EEPCIDevice, provider);
     if (!_provider) {
-        IOLog("rtw88: RTW88UserClient::start() OSDynamicCast to RTW88PCIDevice failed\n");
+        IOLog("rtw88: RTL8188EEUserClient::start() OSDynamicCast to RTL8188EEPCIDevice failed\n");
         return false;
     }
     return true;
 }
 
-void RTW88UserClient::stop(IOService *provider)
+void RTL8188EEUserClient::stop(IOService *provider)
 {
     super::stop(provider);
 }
 
-void RTW88UserClient::free()
+void RTL8188EEUserClient::free()
 {
     super::free();
 }
 
-IOReturn RTW88UserClient::clientClose()
+IOReturn RTL8188EEUserClient::clientClose()
 {
     terminate();
     return kIOReturnSuccess;
@@ -123,12 +123,12 @@ IOReturn RTW88UserClient::clientClose()
 /*  externalMethod dispatch                                             */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88UserClient::externalMethod(uint32_t selector,
+IOReturn RTL8188EEUserClient::externalMethod(uint32_t selector,
                                           IOExternalMethodArguments *args,
                                           IOExternalMethodDispatch *dispatch,
                                           OSObject *target, void *reference)
 {
-    if (selector >= kRTW88NumSelectors)
+    if (selector >= kRTL8188EENumSelectors)
         return kIOReturnUnsupported;
 
     const IOExternalMethodDispatch *d = &sMethods[selector];
@@ -141,39 +141,39 @@ IOReturn RTW88UserClient::externalMethod(uint32_t selector,
 /*  Individual selectors                                                */
 /* ------------------------------------------------------------------ */
 
-IOReturn RTW88UserClient::sScan(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sScan(RTL8188EEUserClient *uc, void *ref,
                                   IOExternalMethodArguments *args)
 {
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;
     return uc->_provider->get80211()->cmdScan();
 }
 
-IOReturn RTW88UserClient::sConnect(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sConnect(RTL8188EEUserClient *uc, void *ref,
                                      IOExternalMethodArguments *args)
 {
     IOLog("rtw88: sConnect() ENTERED\n");
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;
-    if (!args->structureInput || args->structureInputSize < sizeof(RTW88ConnectArgs))
+    if (!args->structureInput || args->structureInputSize < sizeof(RTL8188EEConnectArgs))
         return kIOReturnBadArgument;
 
-    const RTW88ConnectArgs *ca = (const RTW88ConnectArgs *)args->structureInput;
+    const RTL8188EEConnectArgs *ca = (const RTL8188EEConnectArgs *)args->structureInput;
     return uc->_provider->get80211()->cmdConnect(ca->ssid, ca->password);
 }
 
-IOReturn RTW88UserClient::sDisconnect(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sDisconnect(RTL8188EEUserClient *uc, void *ref,
                                         IOExternalMethodArguments *args)
 {
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;
     return uc->_provider->get80211()->cmdDisconnect();
 }
 
-IOReturn RTW88UserClient::sGetState(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sGetState(RTL8188EEUserClient *uc, void *ref,
                                       IOExternalMethodArguments *args)
 {
-    if (!args->structureOutput || args->structureOutputSize < sizeof(RTW88StateResult))
+    if (!args->structureOutput || args->structureOutputSize < sizeof(RTL8188EEStateResult))
         return kIOReturnBadArgument;
 
-    RTW88StateResult *result = (RTW88StateResult *)args->structureOutput;
+    RTL8188EEStateResult *result = (RTL8188EEStateResult *)args->structureOutput;
     memset(result, 0, sizeof(*result));
 
     if (!uc->_provider || !uc->_provider->get80211()) {
@@ -189,7 +189,7 @@ IOReturn RTW88UserClient::sGetState(RTW88UserClient *uc, void *ref,
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88UserClient::sGetBSSList(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sGetBSSList(RTL8188EEUserClient *uc, void *ref,
                                         IOExternalMethodArguments *args)
 {
     if (!args->structureOutput) return kIOReturnBadArgument;
@@ -205,7 +205,7 @@ IOReturn RTW88UserClient::sGetBSSList(RTW88UserClient *uc, void *ref,
     return ret;
 }
 
-IOReturn RTW88UserClient::sGetRSSI(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sGetRSSI(RTL8188EEUserClient *uc, void *ref,
                                      IOExternalMethodArguments *args)
 {
     if (!args->scalarOutput || args->scalarOutputCount < 1) return kIOReturnBadArgument;
@@ -219,7 +219,7 @@ IOReturn RTW88UserClient::sGetRSSI(RTW88UserClient *uc, void *ref,
     return ret;
 }
 
-IOReturn RTW88UserClient::sSetDebug(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sSetDebug(RTL8188EEUserClient *uc, void *ref,
                                       IOExternalMethodArguments *args)
 {
     if (args->scalarInputCount >= 1) {
@@ -233,7 +233,7 @@ extern "C" {
     uint32_t rtw88_read_log(char *out_buf, uint32_t max_len);
 }
 
-IOReturn RTW88UserClient::sGetLog(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sGetLog(RTL8188EEUserClient *uc, void *ref,
                                     IOExternalMethodArguments *args)
 {
     if (!args->structureOutput || args->structureOutputSize == 0)
@@ -246,14 +246,14 @@ IOReturn RTW88UserClient::sGetLog(RTW88UserClient *uc, void *ref,
     return kIOReturnSuccess;
 }
 
-IOReturn RTW88UserClient::sPowerOn(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sPowerOn(RTL8188EEUserClient *uc, void *ref,
                                    IOExternalMethodArguments *args)
 {
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;
     return uc->_provider->get80211()->cmdPowerOn();
 }
 
-IOReturn RTW88UserClient::sPowerOff(RTW88UserClient *uc, void *ref,
+IOReturn RTL8188EEUserClient::sPowerOff(RTL8188EEUserClient *uc, void *ref,
                                     IOExternalMethodArguments *args)
 {
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;

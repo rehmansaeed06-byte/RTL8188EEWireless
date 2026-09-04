@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_MODULEPARAM_H
-#define _RTW88_COMPAT_MODULEPARAM_H
+#ifndef _RTL8188EE_COMPAT_MODULEPARAM_H
+#define _RTL8188EE_COMPAT_MODULEPARAM_H
 
 /*
  * Real rtlwifi source files sometimes #include <linux/moduleparam.h>
@@ -13,4 +13,4 @@
  */
 #include "module.h"
 
-#endif /* _RTW88_COMPAT_MODULEPARAM_H */
+#endif /* _RTL8188EE_COMPAT_MODULEPARAM_H */

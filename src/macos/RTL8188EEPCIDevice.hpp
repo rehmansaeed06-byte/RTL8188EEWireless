@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * RTW88PCIDevice.hpp — IOEthernetController subclass for PCIe rtw88 chips.
+ * RTL8188EEPCIDevice.hpp — IOEthernetController subclass for PCIe rtw88 chips.
  *
  * Approach mirrors itlwm: present a transparent Ethernet interface to macOS
  * while doing 802.11 management internally.  The 802.11 state machine lives
- * in RTW88IEEE80211; this class handles IOKit life-cycle and the Ethernet
+ * in RTL8188EEIEEE80211; this class handles IOKit life-cycle and the Ethernet
  * framing visible to macOS network stack.
  */
 #pragma once
@@ -24,15 +24,15 @@
 #include <IOKit/IOCommandGate.h>
 
 /* Forward declarations */
-class RTW88IEEE80211;
-class RTW88UserClient;
+class RTL8188EEIEEE80211;
+class RTL8188EEUserClient;
 
-/* RTW88PCIDevice --------------------------------------------------------- */
-class RTW88PCIDevice : public IOEthernetController {
-    OSDeclareDefaultStructors(RTW88PCIDevice)
+/* RTL8188EEPCIDevice --------------------------------------------------------- */
+class RTL8188EEPCIDevice : public IOEthernetController {
+    OSDeclareDefaultStructors(RTL8188EEPCIDevice)
 
-    friend class RTW88UserClient;
-    friend class RTW88IEEE80211;
+    friend class RTL8188EEUserClient;
+    friend class RTL8188EEIEEE80211;
 
 public:
     /* IOService */
@@ -79,9 +79,9 @@ public:
      * freed BE ring slots.  Called via a C trampoline from the compat layer. */
     void resumeTxIfStalled();
 
-    /* Called from RTW88IEEE80211 to deliver RX frames to macOS */
+    /* Called from RTL8188EEIEEE80211 to deliver RX frames to macOS */
     void injectRxFrame(mbuf_t m);
-    /* The workloop the RX/interrupt path runs on. RTW88IEEE80211 attaches its
+    /* The workloop the RX/interrupt path runs on. RTL8188EEIEEE80211 attaches its
      * RX reorder flush timer here so all frame delivery is serialized on one
      * thread (injectRxFrame's queue+flush is not safe against concurrent
      * callers). */
@@ -108,7 +108,7 @@ public:
     int    pciFindCapability(int cap);
 
     /* 802.11 state machine accessors */
-    RTW88IEEE80211 *get80211() { return _ieee80211; }
+    RTL8188EEIEEE80211 *get80211() { return _ieee80211; }
 
     /* MMIO base — used by compat ioremap shim */
     volatile void *mmioBase() const { return _mmioBase; }
@@ -139,8 +139,8 @@ private:
     IOEthernetInterface    *_iface        = nullptr;
     IOGatedOutputQueue     *_txQueue      = nullptr;
 
-    RTW88IEEE80211         *_ieee80211    = nullptr;
-    RTW88UserClient        *_userClient   = nullptr;
+    RTL8188EEIEEE80211         *_ieee80211    = nullptr;
+    RTL8188EEUserClient        *_userClient   = nullptr;
 
     IOEthernetAddress       _macAddr;
     bool                    _enabled      = false;

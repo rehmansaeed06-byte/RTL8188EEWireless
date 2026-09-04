@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause */
-#ifndef _RTW88_COMPAT_BITFIELD_H
-#define _RTW88_COMPAT_BITFIELD_H
+#ifndef _RTL8188EE_COMPAT_BITFIELD_H
+#define _RTL8188EE_COMPAT_BITFIELD_H
 
 #include "types.h"
 #include "bitops.h"
@@ -82,4 +82,4 @@ static inline u64 le64_get_bits(__le64 v, u64 mask)
     return u64_encode_bits((u64)v & mask, mask);
 }
 
-#endif /* _RTW88_COMPAT_BITFIELD_H */
+#endif /* _RTL8188EE_COMPAT_BITFIELD_H */

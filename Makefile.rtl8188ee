@@ -70,12 +70,12 @@ PROJ_ROOT    := $(shell pwd)
 
 # rtlwifi/rtl8188ee real source — confirmed present at this exact path
 # earlier in this project (find ... -iname "wifi.h" match).
-LINUX_SRC    := $(PROJ_ROOT)/../linux-kernel/drivers/net/wireless/realtek/rtlwifi
+LINUX_SRC    := $(PROJ_ROOT)/src/rtlwifi
 CHIP_SRC     := $(LINUX_SRC)/rtl8188ee
 
 COMPAT_DIR   := $(PROJ_ROOT)/src/compat
-KEXT_SRC     := $(PROJ_ROOT)/src/kext
-FIRMWARE_DIR := $(PROJ_ROOT)/firmware-rtl8188ee
+KEXT_SRC     := $(PROJ_ROOT)/src/macos
+FIRMWARE_DIR := $(PROJ_ROOT)/firmware
 
 # RESOLVED (findings.md Section 62): vendored as its own git submodule
 # directly in rtl8188ee-macos/, pinned to the SAME commit Feixiao's
@@ -89,8 +89,8 @@ BUILD_DIR    := $(PROJ_ROOT)/build
 OUT_DIR      := $(BUILD_DIR)/out
 
 # Source bundle: Info.plist skeleton (tracked in git) — already created
-# this project at src/kext/rtl8188ee.kext/Contents/Info.plist
-KEXT_SKEL    := $(PROJ_ROOT)/src/kext/rtl8188ee.kext
+# this project at src/macos/rtl8188ee.kext/Contents/Info.plist
+KEXT_SKEL    := $(PROJ_ROOT)/src/macos/rtl8188ee.kext
 
 # Output bundle: fully assembled kext ready for OpenCore / kextutil
 OUT_KEXT     := $(OUT_DIR)/rtl8188ee.kext
@@ -234,7 +234,7 @@ COMPAT_SRCS := \
 
 # Firmware loader — compiled with system headers only (no Linux compat
 # headers), mirrors rtw88_firmware.c's isolation exactly. fw_blobs_
-# rtl8188ee.c is auto-generated from firmware-rtl8188ee/*.bin.
+# rtl8188ee.c is auto-generated from firmware/*.bin.
 FIRMWARE_SRCS := \
     $(COMPAT_DIR)/rtl8188ee_firmware.c \
     $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
@@ -253,7 +253,7 @@ FW_BLOBS_C := $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
 # "Prelinked injection rtl8188ee.kext () - Invalid Parameter" failure
 # — confirmed by testing the exact build this Makefile produced
 # (UUID 3A873C87-4E56-35AA-9593-3C4907C20B66). Forked into this
-# project's own src/kext/kmod_info.c with corrected identity; no
+# project's own src/macos/kmod_info.c with corrected identity; no
 # longer depends on ../Feixiao existing.
 KMOD_SRCS := \
     $(KEXT_SRC)/kmod_info.c
@@ -344,10 +344,10 @@ $(BUILD_DIR)/compat/rtlwifi_compat.o: $(COMPAT_DIR)/rtlwifi_compat.c | $(BUILD_D
 	@echo "  CC   $(notdir $<)"
 	$(CC) $(DRIVER_CFLAGS) -c $< -o $@
 
-# Generate fw_blobs_rtl8188ee.c from firmware-rtl8188ee/*.bin
-$(FW_BLOBS_C): $(wildcard $(FIRMWARE_DIR)/*.bin) scripts/gen_fw_blobs_rtl8188ee.py
+# Generate fw_blobs_rtl8188ee.c from firmware/*.bin
+$(FW_BLOBS_C): $(wildcard $(FIRMWARE_DIR)/*.bin) tools/gen_fw_blobs_rtl8188ee.py
 	@echo "  GEN  fw_blobs_rtl8188ee.c"
-	python3 $(PROJ_ROOT)/scripts/gen_fw_blobs_rtl8188ee.py $(FIRMWARE_DIR) $@
+	python3 $(PROJ_ROOT)/tools/gen_fw_blobs_rtl8188ee.py $(FIRMWARE_DIR) $@
 
 # Compile firmware loader + blobs (system headers only — no compat
 # header conflicts, same isolation as rtw88_firmware.c)
@@ -366,7 +366,7 @@ $(BUILD_DIR)/compat/fw_blobs_rtl8188ee.o: $(COMPAT_DIR)/fw_blobs_rtl8188ee.c | $
 	$(CC) $(FW_CFLAGS) -c $< -o $@
 
 # Compile kmod_info.c (plain C, no compat headers). Forked into this
-# project's own src/kext/ with corrected identity — see KMOD_SRCS note above.
+# project's own src/macos/ with corrected identity — see KMOD_SRCS note above.
 $(BUILD_DIR)/kext/kmod_info.o: $(KEXT_SRC)/kmod_info.c | $(BUILD_DIR)/kext
 	@echo "  CC   kmod_info.c"
 	$(CC) $(KEXT_FLAGS) -c $< -o $@

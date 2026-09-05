@@ -1,4 +1,4 @@
-# Makefile.rtl8188ee for rtl8188ee-macos
+# Makefile.rtl8188ee for RTL8188EEWireless
 #
 # Structural mirror of Feixiao/Makefile (the real rtw88 build — confirmed
 # by direct read this session, NOT the Xcode project, which only tracks
@@ -78,7 +78,7 @@ KEXT_SRC     := $(PROJ_ROOT)/src/macos
 FIRMWARE_DIR := $(PROJ_ROOT)/firmware
 
 # RESOLVED (findings.md Section 62): vendored as its own git submodule
-# directly in rtl8188ee-macos/, pinned to the SAME commit Feixiao's
+# directly in RTL8188EEWireless/, pinned to the SAME commit Feixiao's
 # submodule uses (7af1933c27aefcbdf4809ee44478829aad30f9c1) so both
 # projects build against identical SDK headers rather than silently
 # drifting apart over time. This repo no longer depends on Feixiao/
@@ -120,10 +120,10 @@ KEXT_FLAGS   := -fno-exceptions -fno-rtti \
 #
 # RESOLVED (findings.md Section 62): vendored a local copy of both
 # src/compat/linux/ (33 headers + mmc/ subdir) and src/compat/net/
-# (mac80211.h) directly into rtl8188ee-macos/src/compat/. This project
+# (mac80211.h) directly into RTL8188EEWireless/src/compat/. This project
 # no longer depends on Feixiao/ existing as a sibling folder for these
 # paths either — combined with the MacKernelSDK submodule resolution
-# above, rtl8188ee-macos/ is now fully standalone.
+# above, RTL8188EEWireless/ is now fully standalone.
 COMPAT_FLAGS := \
     -I$(COMPAT_DIR) \
     -I$(COMPAT_DIR)/linux \

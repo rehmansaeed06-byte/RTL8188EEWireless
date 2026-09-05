@@ -1,5 +1,5 @@
 build/
-/ctl_rtw88
+/ctl_rtl8188ee
 .DS_Store
 **/.DS_Store
 docs/rtl8188ee_handover.txt

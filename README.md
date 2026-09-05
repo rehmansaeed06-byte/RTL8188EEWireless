@@ -1,4 +1,4 @@
-# rtl8188ee-macos
+# RTL8188EEWireless
 
 A native macOS kext port of the Realtek **RTL8188EE** PCIe Wi-Fi chip
 (PCI ID `10EC:8179`), for machines where no vendor driver exists for
@@ -124,7 +124,7 @@ cc tools/ctl_rtl8188ee.c -o ctl_rtl8188ee -framework IOKit -framework CoreFounda
 ## Repository layout
 
 ```
-rtl8188ee-macos/
+RTL8188EEWireless/
 ├── README.md
 ├── LICENSE
 ├── docs/

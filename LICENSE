@@ -1,4 +1,4 @@
-rtl8188ee-macos: a native macOS kext port of the Realtek RTL8188EE Wi-Fi driver
+RTL8188EEWireless: a native macOS kext port of the Realtek RTL8188EE Wi-Fi driver
 Copyright (C) 2026 Abdul Rehman
 
 Portions (src/rtlwifi/) are unmodified upstream Linux kernel driver code:

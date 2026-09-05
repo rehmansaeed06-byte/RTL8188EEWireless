@@ -1866,6 +1866,19 @@ void rtlwifi_mark_interface_started(void)
 }
 
 /*
+ * rtlwifi_mark_rx_activity() -- see declaration comment in
+ * rtlwifi_compat.h for the full trace of why this is needed.
+ */
+void rtlwifi_mark_rx_activity(struct ieee80211_hw *hw)
+{
+    if (!hw || !hw->priv)
+        return;
+
+    struct rtl_priv *rtlpriv = rtl_priv(hw);
+    rtlpriv->link_info.num_rx_inperiod++;
+}
+
+/*
  * rtlwifi_log_rcr_state() -- TEMPORARY DIAGNOSTIC (2026-08-26).
  *
  * findings.md Section 97.3: the interrupt->recognize->drain->deliver

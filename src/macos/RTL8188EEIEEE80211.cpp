@@ -1385,6 +1385,29 @@ void RTL8188EEIEEE80211::processRxData(struct sk_buff *skb)
         return;
     }
 
+    /* Mirrors the rtl_beacon_statistic() call in processRxMgmt() (findings.md
+     * Section 109.7-109.8): feed real upstream's OTHER link-liveness input.
+     * rtl_watchdog_wq_callback() (base.c) declares the AP dead after 10s of
+     * (link_info.bcn_rx_inperiod + link_info.num_rx_inperiod) == 0.
+     * num_rx_inperiod is only ever incremented in real rtlwifi's own PCI/USB
+     * RX interrupt handlers (pci.c/usb.c), which this port never reaches --
+     * RX is driven by this port's own IOKit interrupt path instead. Without
+     * this, the watchdog's only working input is bcn_rx_inperiod, so any
+     * burst that starves beacons specifically (not just data) for 10s still
+     * forces a disconnect even though real data is flowing. Counting every
+     * accepted data frame here closes that gap the same way real hardware's
+     * RX-interrupt-driven count would.
+     *
+     * Does NOT touch rtlpriv->link_info directly here: struct rtl_priv is
+     * only forward-declared in RTL8188EEIEEE80211.hpp (`struct rtl_priv;`),
+     * this .cpp never #includes the real wifi.h that defines its full
+     * layout (unlike rtlwifi_compat.c, which does) -- see the identical
+     * note above RTL8188EEIEEE80211::start()'s rtlwifi_mark_interface_started()
+     * call for the established pattern. Routed through a small exported
+     * compat function instead, same as that call and rtl_beacon_statistic(). */
+    if (_state == RTL8188EE_STATE_CONNECTED)
+        rtlwifi_mark_rx_activity(_hw);
+
     /* If this TID has an active downlink BlockAck agreement, run the frame
      * through the per-TID reorder buffer so A-MPDU subframes (and frames
      * retransmitted in a later A-MPDU) reach the stack in order.  Delivering

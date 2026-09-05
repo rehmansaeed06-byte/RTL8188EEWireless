@@ -424,6 +424,24 @@ bool rtlwifi_do_interrupt(void);
 void rtlwifi_mark_interface_started(void);
 
 /*
+ * rtlwifi_mark_rx_activity() -- increments rtlpriv->link_info.num_rx_inperiod,
+ * the counter real rtlwifi's own PCI/USB RX interrupt handlers
+ * (pci.c/usb.c) bump on every RX interrupt. This port's RX is driven by
+ * its own IOKit interrupt path instead, so that counter was permanently
+ * stuck at 0 (findings.md Section 109.7-109.8). rtl_watchdog_wq_callback()
+ * (base.c) declares the AP dead after 10s of
+ * (link_info.bcn_rx_inperiod + link_info.num_rx_inperiod) == 0, so
+ * without this, a burst that starves beacons specifically (even with
+ * real data still flowing) can still force a disconnect -- the beacon
+ * fix (rtl_beacon_statistic(), called from processRxMgmt()) only ever
+ * covered half of that OR condition. Call once per accepted data frame
+ * from processRxData(); kext .cpp files can't touch rtlpriv->link_info
+ * directly for the same forward-declaration reason documented on
+ * rtlwifi_mark_interface_started() above.
+ */
+void rtlwifi_mark_rx_activity(struct ieee80211_hw *hw);
+
+/*
  * rtlwifi_log_rcr_state() -- TEMPORARY DIAGNOSTIC (2026-08-26). Logs the
  * software-believed rtlpci->receive_config next to a live MMIO readback
  * of REG_RCR, plus the two RCR_CBSSID_* bits, via IOLog/dmesg (prefix

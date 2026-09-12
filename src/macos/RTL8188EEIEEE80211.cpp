@@ -33,8 +33,7 @@ extern "C" {
  * source read (findings.md Section 49.2, Section 40.11.3): declared in
  * pci.c, registered as rtl88ee_driver's .probe/.remove. Note the real
  * teardown function is rtl_pci_disconnect, not *_remove. This project
- * compiles rtlwifi, not rtl8188ee — the rtw_core_[star]/rtw_tx/rtw_pci_probe/
- * rtw_pci_remove names that used to be declared here belong to rtl8188ee's
+ * compiles rtlwifi, names that used to be declared here belong to rtl8188ee's
  * struct rtw_dev family and were never defined anywhere in this tree
  * (confirmed: kmutil load reported both as unresolved). */
 int  rtl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
@@ -45,8 +44,7 @@ void rtl_pci_disconnect(struct pci_dev *pdev);
  * for this chip, confirmed via direct source read of rtl8188ee/sw.c
  * (findings.md Section 40.11: bar_id = 2, name = "rtl88e_pci",
  * write_readback = true; Section 40.11.3: tied to PCI ID 0x8179 via
- * RTL_PCI_DEVICE() in rtl88ee_pci_ids[]). This replaces the multi-chip
- * rtl8188ee_pci_chip_table[] lookup this file previously carried over
+ * RTL_PCI_DEVICE() in rtl88ee_pci_ids[]). lookup this file previously carried over
  * unmodified from Feixiao — flagged as dead weight for a single-chip
  * target since Section 55.7/59, deleted per Section 78. */
 extern const struct rtl_hal_cfg rtl88ee_hal_cfg;
@@ -943,8 +941,7 @@ void RTL8188EEIEEE80211::powerOff()
 /* ------------------------------------------------------------------ */
 
 /* rtlwifi_do_interrupt() -- real ISR body (findings.md Section 96.6),
- * replacing the old rtl8188ee_trigger_interrupt() no-op stub. See the
- * declaration comment in rtlwifi_compat.h for why the old stub must
+ See the declaration comment in rtlwifi_compat.h for why the old stub must
  * not be reintroduced alongside this. */
 extern "C" bool rtlwifi_do_interrupt(void);
 

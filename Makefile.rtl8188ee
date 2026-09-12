@@ -1,12 +1,5 @@
 # Makefile.rtl8188ee for RTL8188EEWireless
-#
-# Structural mirror of Feixiao/Makefile (the real rtl8188ee build — confirmed
-# by direct read this session, NOT the Xcode project, which only tracks
-# the 8 hand-written compat/kext files; the actual "compile real upstream
-# Linux driver source" step happens entirely in that Makefile via
-# LINUX_SRC/DRIVER_SRCS/CHIP_SRCS + -include rtl8188ee_compat.h). This file
-# reproduces that same mechanism against rtlwifi/rtl8188ee instead.
-#
+
 # IMPORTANT — this is a genuinely separate build, not a modification of
 # Feixiao's Makefile and not a second Xcode target. Every path below
 # (BUILD_DIR, OUT_DIR, output kext name/bundle ID) is kept distinct from
@@ -21,22 +14,7 @@
 # work; it was a defensive naming choice made before this Makefile
 # existed, and can stay as extra safety margin (e.g. against accidental
 # future static linking) without being load-bearing.
-#
-# What this Makefile does NOT resolve, and what is still open:
-#   - RTL8188EEPCIDevice.cpp/RTL8188EEIEEE80211.cpp reuse (KEXT_SRCS below) —
-#     still unconfirmed against rtl_priv's real layout (handover item 2).
-#     Included here as a placeholder so the Makefile is runnable-in-
-#     principle, per the same caveat the original Makefile.rtl8188ee
-#     draft used earlier in this project.
-#   - Firmware blob itself (rtl8188efw.bin) is not yet in
-#     firmware-rtl8188ee/ — gen_fw_blobs_rtl8188ee.py emits an empty
-#     table and the build still succeeds, but the resulting kext cannot
-#     actually load firmware until that file is added.
-#   - linux/sched.h symbol usage, broader mac80211-stub coverage,
-#     rtlwifi_is_scanning()'s #error-gated body (rtl_priv field not yet
-#     identified) — all carried forward unchanged from findings.md
-#     Section 55.7.
-#
+
 # Prerequisites (same as Feixiao's Makefile):
 #   Xcode Command Line Tools, macOS SDK, IOKit headers (in SDK)
 #
@@ -77,12 +55,6 @@ COMPAT_DIR   := $(PROJ_ROOT)/src/compat
 KEXT_SRC     := $(PROJ_ROOT)/src/macos
 FIRMWARE_DIR := $(PROJ_ROOT)/firmware
 
-# RESOLVED (findings.md Section 62): vendored as its own git submodule
-# directly in RTL8188EEWireless/, pinned to the SAME commit Feixiao's
-# submodule uses (7af1933c27aefcbdf4809ee44478829aad30f9c1) so both
-# projects build against identical SDK headers rather than silently
-# drifting apart over time. This repo no longer depends on Feixiao/
-# existing as a sibling folder for this path.
 MKSDK        := $(PROJ_ROOT)/MacKernelSDK
 
 BUILD_DIR    := $(PROJ_ROOT)/build
@@ -116,7 +88,7 @@ KEXT_FLAGS   := -fno-exceptions -fno-rtti \
                 -I$(SDK)/System/Library/Frameworks/Kernel.framework/Headers
 
 # Compat include path overrides ALL linux/ and net/ headers so the real
-# rtlwifi driver C files find our shims instead of Feixiao's rtl8188ee ones.
+# rtlwifi driver C files find our shims
 #
 # RESOLVED (findings.md Section 62): vendored a local copy of both
 # src/compat/linux/ (33 headers + mmc/ subdir) and src/compat/net/
@@ -245,12 +217,7 @@ FW_BLOBS_C := $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
 #
 # RESOLVED: this WAS reused from Feixiao's kmod_info.c unmodified, and
 # that was a real bug, not a low-risk placeholder — Feixiao's file
-# hardcodes kmod_info.name = "com.rtl8188ee.driver" / version "1.1.0",
-# which doesn't match this project's Info.plist
-# (CFBundleIdentifier com.rtlwifi.rtl8188ee / CFBundleVersion 0.1.0).
-# That mismatch between the binary's self-declared identity and its
-# bundle's Info.plist identity is what produced the real-world
-# "Prelinked injection rtl8188ee.kext () - Invalid Parameter" failure
+
 # — confirmed by testing the exact build this Makefile produced
 # (UUID 3A873C87-4E56-35AA-9593-3C4907C20B66). Forked into this
 # project's own src/macos/kmod_info.c with corrected identity; no
@@ -437,5 +404,4 @@ clean:
 #      PlistPath: Contents/Info.plist
 #   3. Rebuild OC cache: sudo kextcache -i /
 #
-# Development/testing should use the USB EFI, per this project's
 # original goal notes — do not modify the stable internal EFI.

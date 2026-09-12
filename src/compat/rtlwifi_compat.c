@@ -797,8 +797,7 @@ static struct rtl8192_tx_ring *_rtlwifi_be_ring(void)
 }
 
 /*
- * CONFIRMED real mechanism: rtl8188ee has no get_available_desc
- * implementation (zero grep hits), so this mirrors the real fallback
+ * CONFIRMED real mechanism: his mirrors the real fallback
  * rtlwifi itself uses internally, _rtl_pci_tx_chk_waitq()
  * (pci.c:417-419): entries minus current queue length, for the BE
  * ring specifically (BE_QUEUE == 1).
@@ -1177,9 +1176,6 @@ const struct rate_control_ops *rtlwifi_get_rate_control_ops(void)
  * just at final detach (Section 49.5 "Port implication").
  */
 
-/* ------------------------------------------------------------------ */
-/* NOT YET PORTED — explicitly out of scope for this skeleton pass     */
-/* ------------------------------------------------------------------ */
 
 /*
  * - IRQ registration (rtl_pci_intr_mode_decide and friends): confirmed

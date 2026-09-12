@@ -169,9 +169,7 @@ static struct firmware *load_fw(const char *name)
 
 /* ------------------------------------------------------------------ */
 /*  Public API — signatures match linux/firmware.h; names prefixed    */
-/*  rtl8188ee_ to avoid colliding with rtl8188ee_firmware.c's symbols     */
-/*  by name alone (see file header comment — this is a naming         */
-/*  workaround, not the still-open build-target separation decision). */
+/*  rtl8188ee */
 /* ------------------------------------------------------------------ */
 
 struct module;
@@ -198,7 +196,7 @@ void rtl8188ee_release_firmware(const struct firmware *fw)
 
 /*
  * rtlwifi's own request_firmware() (its future linux/firmware.h) needs to
- * call THIS function, not rtl8188ee_load_firmware_sync() — confirmed by direct
+ * call THIS function,confirmed by direct
  * read that rtl8188ee's request_firmware() inline calls straight through to
  * rtl8188ee_load_firmware_sync() synchronously despite the "nowait" naming
  * elsewhere in that file. rtlwifi's compat firmware.h doesn't exist yet;

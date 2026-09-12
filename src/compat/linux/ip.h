@@ -3,7 +3,7 @@
 #define _RTL8188EE_COMPAT_IP_H
 
 /*
- * Real rtlwifi/base.c usage (confirmed by grep, not assumed):
+ * Real rtlwifi/base.c usage (confirmed, not assumed):
  *   const struct iphdr *ip;
  *   ip = (struct iphdr *)((u8 *)ether_type_ptr + ...);
  * used inside rtl_is_special_data() to classify DHCP/ARP/EAPOL-type

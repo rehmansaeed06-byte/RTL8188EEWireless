@@ -8,7 +8,7 @@
 #include <string.h>
 
 /*
- * sk_buff shim for rtw88 macOS port.
+ * sk_buff shim for rtl8188ee macOS port.
  *
  * The real implementation in the kext routes through mbuf_t, but the driver
  * C files see this struct. The kext sets up the sk_buff from mbuf data before
@@ -375,7 +375,7 @@ static inline void skb_copy_header(struct sk_buff *dst,
 }
 
 /* queue_mapping (AC -> ring) and priority (TID -> qsel) are DISTINCT in the
- * rtw88 driver: rtw_tx_queue_mapping() uses skb_get_queue_mapping() to choose
+ * rtl8188ee driver: rtw_tx_queue_mapping() uses skb_get_queue_mapping() to choose
  * the hardware ring, while rtw_tx_pkt_info_update() uses skb->priority as the
  * TX-descriptor qsel.  They must NOT alias (matches FreeBSD LinuxKPI's
  * separate ->qmap and ->priority). */

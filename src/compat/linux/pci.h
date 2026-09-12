@@ -17,11 +17,11 @@
 #include "interrupt.h"
 
 /*
- * PCI shims for rtw88 macOS port.
+ * PCI shims for the RTL8188EEWireless macOS port.
  *
  * The actual PCI operations (config space reads/writes, MMIO mapping,
  * DMA, interrupts) are provided by RTL8188EEPCIDevice via the global
- * rtw88_pci_ops pointer set at driver start.
+ * rtl8188ee_pci_ops pointer set at driver start.
  */
 
 #define PCI_ANY_ID  (~0U)
@@ -149,7 +149,7 @@ static inline const char *pci_name(const struct pci_dev *pdev)
 #define PCI_EXP_DEVCTL2                  0x28
 #define PCI_EXP_DEVCTL2_COMP_TMOUT_DIS   0x0010
 
-struct pci_ops_rtw88 {
+struct pci_ops_rtl8188ee {
     int  (*read_config_byte)(struct pci_dev *, int where, u8 *val);
     int  (*read_config_word)(struct pci_dev *, int where, u16 *val);
     int  (*read_config_dword)(struct pci_dev *, int where, u32 *val);
@@ -163,36 +163,36 @@ struct pci_ops_rtw88 {
     int  (*pci_find_capability)(struct pci_dev *, int cap);
 };
 
-extern struct pci_ops_rtw88 *rtw88_pci_io_ops;
+extern struct pci_ops_rtl8188ee *rtl8188ee_pci_io_ops;
 
 static inline int pci_read_config_byte(struct pci_dev *dev, int where, u8 *val)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->read_config_byte(dev, where, val);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->read_config_byte(dev, where, val);
     *val = 0xff; return -1;
 }
 static inline int pci_read_config_word(struct pci_dev *dev, int where, u16 *val)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->read_config_word(dev, where, val);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->read_config_word(dev, where, val);
     *val = 0xffff; return -1;
 }
 static inline int pci_read_config_dword(struct pci_dev *dev, int where, u32 *val)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->read_config_dword(dev, where, val);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->read_config_dword(dev, where, val);
     *val = 0xffffffff; return -1;
 }
 static inline int pci_write_config_byte(struct pci_dev *dev, int where, u8 val)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->write_config_byte(dev, where, val);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->write_config_byte(dev, where, val);
     return -1;
 }
 static inline int pci_write_config_word(struct pci_dev *dev, int where, u16 val)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->write_config_word(dev, where, val);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->write_config_word(dev, where, val);
     return -1;
 }
 static inline int pci_write_config_dword(struct pci_dev *dev, int where, u32 val)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->write_config_dword(dev, where, val);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->write_config_dword(dev, where, val);
     return -1;
 }
 
@@ -235,19 +235,19 @@ static inline int pcie_capability_clear_and_set_word(struct pci_dev *pdev, int w
 
 static inline int pci_find_capability(struct pci_dev *dev, int cap)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->pci_find_capability(dev, cap);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->pci_find_capability(dev, cap);
     return 0;
 }
 
 static inline void *pci_ioremap_bar(struct pci_dev *dev, int bar)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->ioremap(dev, bar, dev->resource_len[bar]);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->ioremap(dev, bar, dev->resource_len[bar]);
     return NULL;
 }
 
 static inline void pci_iounmap(struct pci_dev *dev, void __iomem *addr)
 {
-    if (rtw88_pci_io_ops) rtw88_pci_io_ops->iounmap(dev, addr);
+    if (rtl8188ee_pci_io_ops) rtl8188ee_pci_io_ops->iounmap(dev, addr);
 }
 
 /* MMIO accessors — mapped to the memory window */
@@ -284,13 +284,13 @@ static inline void pci_set_master(struct pci_dev *dev) {}
 
 static inline int pci_enable_msi(struct pci_dev *dev)
 {
-    if (rtw88_pci_io_ops) return rtw88_pci_io_ops->enable_msi(dev);
+    if (rtl8188ee_pci_io_ops) return rtl8188ee_pci_io_ops->enable_msi(dev);
     return -EOPNOTSUPP;
 }
 
 static inline void pci_disable_msi(struct pci_dev *dev)
 {
-    if (rtw88_pci_io_ops) rtw88_pci_io_ops->disable_msi(dev);
+    if (rtl8188ee_pci_io_ops) rtl8188ee_pci_io_ops->disable_msi(dev);
 }
 
 static inline void pci_set_drvdata(struct pci_dev *dev, void *data)

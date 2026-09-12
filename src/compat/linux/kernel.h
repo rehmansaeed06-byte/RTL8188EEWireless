@@ -6,35 +6,35 @@
 #include "bitops.h"
 #include "../iokit_shim.h"
 
-extern int rtw88_log_level;
+extern int rtl8188ee_log_level;
 
-void rtw88_printk(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void rtl8188ee_printk(int level, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 
 #define KERN_ERR   0
 #define KERN_WARN  1
 #define KERN_INFO  2
 #define KERN_DEBUG 3
 
-#define pr_err(fmt, ...)   rtw88_printk(KERN_ERR,   fmt, ##__VA_ARGS__)
-#define pr_warn(fmt, ...)  rtw88_printk(KERN_WARN,  fmt, ##__VA_ARGS__)
-#define pr_info(fmt, ...)  rtw88_printk(KERN_INFO,  fmt, ##__VA_ARGS__)
-#define pr_debug(fmt, ...) rtw88_printk(KERN_DEBUG, fmt, ##__VA_ARGS__)
-#define printk(fmt, ...)   rtw88_printk(KERN_INFO,  fmt, ##__VA_ARGS__)
+#define pr_err(fmt, ...)   rtl8188ee_printk(KERN_ERR,   fmt, ##__VA_ARGS__)
+#define pr_warn(fmt, ...)  rtl8188ee_printk(KERN_WARN,  fmt, ##__VA_ARGS__)
+#define pr_info(fmt, ...)  rtl8188ee_printk(KERN_INFO,  fmt, ##__VA_ARGS__)
+#define pr_debug(fmt, ...) rtl8188ee_printk(KERN_DEBUG, fmt, ##__VA_ARGS__)
+#define printk(fmt, ...)   rtl8188ee_printk(KERN_INFO,  fmt, ##__VA_ARGS__)
 
 /* WARN returns int so it can be used in if() conditions */
 #define WARN(cond, fmt, ...) \
-    ((cond) ? (rtw88_printk(KERN_WARN, "WARN at %s:%d: " fmt, \
+    ((cond) ? (rtl8188ee_printk(KERN_WARN, "WARN at %s:%d: " fmt, \
         __FILE__, __LINE__, ##__VA_ARGS__), 1) : 0)
 
 #define WARN_ON(cond) \
-    ((cond) ? (rtw88_printk(KERN_WARN, "WARN_ON at %s:%d\n", \
+    ((cond) ? (rtl8188ee_printk(KERN_WARN, "WARN_ON at %s:%d\n", \
         __FILE__, __LINE__), 1) : 0)
 
 #define WARN_ON_ONCE(cond)          WARN_ON(cond)
 #define WARN_ONCE(cond, fmt, ...)   WARN(cond, fmt, ##__VA_ARGS__)
 
 #define BUG() \
-    do { rtw88_printk(KERN_ERR, "BUG at %s:%d\n", __FILE__, __LINE__); \
+    do { rtl8188ee_printk(KERN_ERR, "BUG at %s:%d\n", __FILE__, __LINE__); \
          __builtin_trap(); } while (0)
 
 #define BUG_ON(cond) do { if (cond) BUG(); } while (0)
@@ -106,11 +106,11 @@ static inline int   IS_ERR_OR_NULL(const void *ptr) { return !ptr || IS_ERR(ptr)
 /* strlcpy available from libkern */
 #define round_jiffies_relative(x) (x)
 
-void rtw88_hex_dump(const char *prefix, const void *buf, size_t len);
+void rtl8188ee_hex_dump(const char *prefix, const void *buf, size_t len);
 #define print_hex_dump(level, prefix, ptype, gsz, ll, buf, len, ascii) \
-    rtw88_hex_dump(prefix, buf, len)
+    rtl8188ee_hex_dump(prefix, buf, len)
 #define print_hex_dump_bytes(prefix, ptype, buf, len) \
-    rtw88_hex_dump(prefix, buf, len)
+    rtl8188ee_hex_dump(prefix, buf, len)
 
 #define do_div(n, base) ({ \
     u32 __rem = (u64)(n) % (u32)(base); \
@@ -127,7 +127,7 @@ void rtw88_hex_dump(const char *prefix, const void *buf, size_t len);
 #define smp_wmb()  __sync_synchronize()
 #define barrier()  __asm__ __volatile__("" ::: "memory")
 
-#define KBUILD_MODNAME "rtw88"
+#define KBUILD_MODNAME "rtl8188ee"
 
 /* Common size constants */
 #define SZ_1K    (1024)
@@ -141,9 +141,21 @@ void rtw88_hex_dump(const char *prefix, const void *buf, size_t len);
 #define SZ_1M    (1024 * 1024)
 
 /* Scheduler / task stub — used for IRQ thread detection */
-struct task_struct { int dummy; };
-extern struct task_struct *__rtw88_current_task;
-#define current __rtw88_current_task
+/*
+ * struct task_struct -- minimal stub. Real upstream's `current` is the
+ * running Linux process/thread; there's no equivalent concept for a
+ * kext's own kernel-context logging on macOS. debug.c's
+ * _rtl_dbg_print_data() is the only real caller (comm/pid, for a
+ * "In process ... (pid ...)" debug log line) -- comm/pid exist here
+ * purely so that line has something stable and truthful to print,
+ * not to model a real process.
+ */
+struct task_struct {
+    char comm[16];
+    int  pid;
+};
+extern struct task_struct *__rtl8188ee_current_task;
+#define current __rtl8188ee_current_task
 
 #define U8_MAX   ((u8)~0U)
 #define U16_MAX  ((u16)~0U)

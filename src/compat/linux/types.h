@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * Linux type shims for rtw88 macOS kext port.
+ * Linux type shims for rtl8188ee macOS kext port.
  * Kernel-safe: no userspace headers included here.
  */
 #ifndef _RTL8188EE_COMPAT_TYPES_H

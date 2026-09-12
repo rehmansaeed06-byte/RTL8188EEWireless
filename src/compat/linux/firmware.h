@@ -17,13 +17,13 @@ struct device;
 
 /*
  * findings.md Section 87 / rtl8188ee_firmware.c's own header comment
- * (lines 10-29): this header previously declared/wired the rtw88_-
+ * (lines 10-29): this header previously declared/wired the rtl8188ee_-
  * prefixed names (request_firmware_nowait, release_firmware,
- * rtw88_load_firmware_sync), which have NO definition anywhere in
- * this tree — rtw88_compat.c doesn't exist in this project (Section
+ * rtl8188ee_load_firmware_sync), which have NO definition anywhere in
+ * this tree — rtl8188ee_compat.c doesn't exist in this project (Section
  * 77.1). Only the real rtl8188ee_-prefixed equivalents in
  * rtl8188ee_firmware.c exist. CONFIRMED via grep: zero non-declaration
- * hits for rtw88_load_firmware_sync anywhere under src/.
+ * hits for rtl8188ee_load_firmware_sync anywhere under src/.
  *
  * Fixed to declare/wire the real rtl8188ee_ names below — this is a
  * naming-mismatch fix, not new logic; the real implementations were

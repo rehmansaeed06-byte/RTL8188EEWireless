@@ -6,7 +6,7 @@
 
 /*
  * dev_warn() -- genuinely missing, no existing dev_* logging in this
- * file. Bridges to the same rtw88_printk mechanism kernel.h's
+ * file. Bridges to the same rtl8188ee_printk mechanism kernel.h's
  * pr_err()/pr_info() already use, rather than inventing a second
  * logging path. Real call site: efuse.c. The struct device * arg is
  * accepted for signature compatibility but not used in the message
@@ -14,7 +14,7 @@
  */
 #include "kernel.h"
 #define dev_warn(dev, fmt, ...) \
-    rtw88_printk(KERN_WARN, fmt, ##__VA_ARGS__)
+    rtl8188ee_printk(KERN_WARN, fmt, ##__VA_ARGS__)
 
 struct device {
     const char *name;
@@ -49,7 +49,7 @@ static inline void *devm_kzalloc(struct device *dev, size_t size, gfp_t flags)
     return kzalloc(size, flags);
 }
 
-/* devm_kmemdup / devm_kmemdup_array — managed copies, implemented in rtw88_compat.c */
+/* devm_kmemdup / devm_kmemdup_array — managed copies, implemented in rtl8188ee_compat.c */
 void *devm_kmemdup(struct device *dev, const void *src, size_t len, gfp_t gfp);
 void *devm_kmemdup_array(struct device *dev, const void *src, size_t n,
                           size_t size, gfp_t gfp);

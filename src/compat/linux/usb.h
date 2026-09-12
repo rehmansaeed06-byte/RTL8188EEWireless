@@ -7,7 +7,7 @@
 #include "device.h"
 #include "workqueue.h"
 
-/* USB vendor/device IDs for rtw88 chips */
+/* USB vendor/device IDs for rtl8188ee chips */
 #define USB_DEVICE(vend, prod) \
     .idVendor = (vend), .idProduct = (prod), \
     .bcdDevice_lo = 0, .bcdDevice_hi = 0xffff, \
@@ -213,7 +213,7 @@ struct usb_ctrlrequest {
 } __packed;
 
 /* USB ops provided by kext */
-struct rtw88_usb_ops {
+struct rtl8188ee_usb_ops {
     int (*bulk_msg_out)(struct usb_interface *intf, u8 ep,
                         void *buf, int len, int timeout_ms);
     int (*bulk_msg_in)(struct usb_interface *intf, u8 ep,
@@ -230,7 +230,7 @@ struct rtw88_usb_ops {
     int (*get_pipe_in)(struct usb_interface *intf, u8 ep);
 };
 
-extern struct rtw88_usb_ops *rtw88_usb_io_ops;
+extern struct rtl8188ee_usb_ops *rtl8188ee_usb_io_ops;
 
 static inline int usb_bulk_msg(struct usb_device *dev, unsigned int pipe,
                                 void *data, int len, int *actual_length,

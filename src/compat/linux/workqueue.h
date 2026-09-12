@@ -122,7 +122,7 @@ static inline bool mod_delayed_work(struct workqueue_struct *wq,
     return queue_delayed_work(wq, dwork, delay);
 }
 
-int  rtw88_workqueue_init(void);
-void rtw88_workqueue_exit(void);
+int  rtl8188ee_workqueue_init(void);
+void rtl8188ee_workqueue_exit(void);
 
 #endif /* _RTL8188EE_COMPAT_WORKQUEUE_H */

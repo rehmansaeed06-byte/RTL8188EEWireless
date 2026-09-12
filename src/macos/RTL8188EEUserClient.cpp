@@ -73,7 +73,7 @@ bool RTL8188EEUserClient::initWithTask(task_t owningTask, void *securityID, UInt
 {
     _owningTask = owningTask;
     if (!super::initWithTask(owningTask, securityID, type, properties)) {
-        IOLog("rtw88: RTL8188EEUserClient::initWithTask(4) super failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::initWithTask(4) super failed\n");
         return false;
     }
     return true;
@@ -83,7 +83,7 @@ bool RTL8188EEUserClient::initWithTask(task_t owningTask, void *securityID, UInt
 {
     _owningTask = owningTask;
     if (!super::initWithTask(owningTask, securityID, type)) {
-        IOLog("rtw88: RTL8188EEUserClient::initWithTask(3) super failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::initWithTask(3) super failed\n");
         return false;
     }
     return true;
@@ -92,12 +92,12 @@ bool RTL8188EEUserClient::initWithTask(task_t owningTask, void *securityID, UInt
 bool RTL8188EEUserClient::start(IOService *provider)
 {
     if (!super::start(provider)) {
-        IOLog("rtw88: RTL8188EEUserClient::start() super::start failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::start() super::start failed\n");
         return false;
     }
     _provider = OSDynamicCast(RTL8188EEPCIDevice, provider);
     if (!_provider) {
-        IOLog("rtw88: RTL8188EEUserClient::start() OSDynamicCast to RTL8188EEPCIDevice failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::start() OSDynamicCast to RTL8188EEPCIDevice failed\n");
         return false;
     }
     return true;
@@ -151,7 +151,7 @@ IOReturn RTL8188EEUserClient::sScan(RTL8188EEUserClient *uc, void *ref,
 IOReturn RTL8188EEUserClient::sConnect(RTL8188EEUserClient *uc, void *ref,
                                      IOExternalMethodArguments *args)
 {
-    IOLog("rtw88: sConnect() ENTERED\n");
+    IOLog("rtl8188ee: sConnect() ENTERED\n");
     if (!uc->_provider || !uc->_provider->get80211()) return kIOReturnOffline;
     if (!args->structureInput || args->structureInputSize < sizeof(RTL8188EEConnectArgs))
         return kIOReturnBadArgument;
@@ -223,14 +223,14 @@ IOReturn RTL8188EEUserClient::sSetDebug(RTL8188EEUserClient *uc, void *ref,
                                       IOExternalMethodArguments *args)
 {
     if (args->scalarInputCount >= 1) {
-        extern int rtw88_log_level;
-        rtw88_log_level = (int)args->scalarInput[0];
+        extern int rtl8188ee_log_level;
+        rtl8188ee_log_level = (int)args->scalarInput[0];
     }
     return kIOReturnSuccess;
 }
 
 extern "C" {
-    uint32_t rtw88_read_log(char *out_buf, uint32_t max_len);
+    uint32_t rtl8188ee_read_log(char *out_buf, uint32_t max_len);
 }
 
 IOReturn RTL8188EEUserClient::sGetLog(RTL8188EEUserClient *uc, void *ref,
@@ -240,7 +240,7 @@ IOReturn RTL8188EEUserClient::sGetLog(RTL8188EEUserClient *uc, void *ref,
         return kIOReturnBadArgument;
 
     uint32_t max_len = (uint32_t)args->structureOutputSize;
-    uint32_t read = rtw88_read_log((char *)args->structureOutput, max_len);
+    uint32_t read = rtl8188ee_read_log((char *)args->structureOutput, max_len);
     
     args->structureOutputSize = read;
     return kIOReturnSuccess;

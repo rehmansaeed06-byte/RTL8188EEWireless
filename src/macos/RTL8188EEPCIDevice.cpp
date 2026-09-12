@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
-// RTL8188EEPCIDevice.cpp — IOEthernetController for PCIe rtw88 adapters
+// RTL8188EEPCIDevice.cpp — IOEthernetController for PCIe rtl8188ee adapters
 
 #include "RTL8188EEPCIDevice.hpp"
 #include "RTL8188EEIEEE80211.hpp"
@@ -100,7 +100,7 @@ static int compat_pci_find_capability(struct pci_dev *dev, int cap)
     return g_pci_dev_instance->pciFindCapability(cap);
 }
 
-static struct pci_ops_rtw88 _pci_io_ops = {
+static struct pci_ops_rtl8188ee _pci_io_ops = {
     .read_config_byte   = compat_pci_read_config_byte,
     .read_config_word   = compat_pci_read_config_word,
     .read_config_dword  = compat_pci_read_config_dword,
@@ -186,7 +186,7 @@ static void compat_dma_sync_dev(struct device *dev, dma_addr_t addr,
     /* Re-arm for next DMA: bounce is already in place, nothing to do */
 }
 
-static struct rtw88_dma_alloc_ops _dma_ops = {
+static struct rtl8188ee_dma_alloc_ops _dma_ops = {
     .alloc_coherent         = compat_dma_alloc,
     .free_coherent          = compat_dma_free,
     .map_single             = compat_dma_map,
@@ -240,7 +240,7 @@ void RTL8188EEPCIDevice::publishHardwareIdentity()
     setName(chip);
     setProperty(kIOVendor, "Realtek");
     setProperty(kIOModel, chip);
-    setProperty(kIORevision, "rtw88");
+    setProperty(kIORevision, "rtl8188ee");
     setProperty(kIOBuiltin, kOSBooleanTrue);
     setProperty(kIOLocation, "Internal");
     setProperty("IOUserVisibleName", chip);
@@ -262,7 +262,7 @@ void RTL8188EEPCIDevice::publishHardwareIdentity()
         _iface->setName(chip);
         _iface->setProperty(kIOVendor, "Realtek");
         _iface->setProperty(kIOModel, chip);
-        _iface->setProperty(kIORevision, "rtw88");
+        _iface->setProperty(kIORevision, "rtl8188ee");
         _iface->setProperty(kIOBuiltin, kOSBooleanTrue);
         _iface->setProperty(kIOPrimaryInterface, kOSBooleanTrue);
         _iface->setProperty(kIOLocation, "Internal");
@@ -285,7 +285,7 @@ void RTL8188EEPCIDevice::publishHardwareIdentity()
 
 /* C-linkage trampoline registered with the compat layer; the IRQ bottom-half
  * calls it after tx_isr to resume a flow-control-stalled output queue. */
-extern "C" void rtw88_tx_resume_trampoline(void)
+extern "C" void rtl8188ee_tx_resume_trampoline(void)
 {
     if (g_pci_dev_instance)
         g_pci_dev_instance->resumeTxIfStalled();
@@ -297,7 +297,7 @@ extern "C" void rtw88_tx_resume_trampoline(void)
 
 bool RTL8188EEPCIDevice::init(OSDictionary *props)
 {
-    IOLog("rtw88: RTL8188EEPCIDevice::init\n");
+    IOLog("rtl8188ee: RTL8188EEPCIDevice::init\n");
     if (!super::init(props)) return false;
     _dmaLock        = IOSimpleLockAlloc();
     _pendingFreeLock = IOSimpleLockAlloc();
@@ -306,12 +306,12 @@ bool RTL8188EEPCIDevice::init(OSDictionary *props)
 
 bool RTL8188EEPCIDevice::start(IOService *provider)
 {
-    IOLog("rtw88: RTL8188EEPCIDevice::start\n");
+    IOLog("rtl8188ee: RTL8188EEPCIDevice::start\n");
     if (!super::start(provider)) return false;
 
     _pciDev = OSDynamicCast(IOPCIDevice, provider);
     if (!_pciDev) {
-        IOLog("rtw88: provider is not IOPCIDevice\n");
+        IOLog("rtl8188ee: provider is not IOPCIDevice\n");
         return false;
     }
     _pciDev->retain();
@@ -320,20 +320,20 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
     _pciDev->setBusMasterEnable(true);
     _pciDev->setMemoryEnable(true);
 
-    /* Map BAR2 — rtw88 driver hardcodes bar_id=2 in pci.c */
+    /* Map BAR2 — rtl8188ee driver hardcodes bar_id=2 in pci.c */
     _mmioMap = _pciDev->mapDeviceMemoryWithRegister(kIOPCIConfigBaseAddress2);
     if (!_mmioMap) {
-        IOLog("rtw88: failed to map BAR2\n");
+        IOLog("rtl8188ee: failed to map BAR2\n");
         return false;
     }
     _mmioBase = (volatile void *)_mmioMap->getVirtualAddress();
-    IOLog("rtw88: BAR2 mapped at %p, size 0x%llx\n",
+    IOLog("rtl8188ee: BAR2 mapped at %p, size 0x%llx\n",
           (void *)_mmioBase, (unsigned long long)_mmioMap->getLength());
 
     /* Install global compat ops */
     g_pci_dev_instance = this;
-    rtw88_pci_io_ops   = &_pci_io_ops;
-    rtw88_dma_ops      = &_dma_ops;
+    rtl8188ee_pci_io_ops   = &_pci_io_ops;
+    rtl8188ee_dma_ops      = &_dma_ops;
 
     /* Initialise compat runtime (workqueues, timers) */
     rtlwifi_compat_init();
@@ -361,7 +361,7 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
     _compatPciDev->bus_storage.number = (u8)_pciDev->getBusNumber();
     _compatPciDev->bus = &_compatPciDev->bus_storage;
 
-    IOLog("rtw88: PCI device %04x:%04x\n",
+    IOLog("rtl8188ee: PCI device %04x:%04x\n",
           _compatPciDev->vendor, _compatPciDev->device);
 
     /* Set up IOWorkLoop */
@@ -374,7 +374,7 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
 
     /* Set up interrupt */
     if (!setupInterrupt()) {
-        IOLog("rtw88: setupInterrupt failed\n");
+        IOLog("rtl8188ee: setupInterrupt failed\n");
         return false;
     }
 
@@ -384,7 +384,7 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
     /* Create 802.11 state machine */
     _ieee80211 = RTL8188EEIEEE80211::create(this, _compatPciDev);
     if (!_ieee80211) {
-        IOLog("rtw88: failed to create RTL8188EEIEEE80211\n");
+        IOLog("rtl8188ee: failed to create RTL8188EEIEEE80211\n");
         return false;
     }
 
@@ -401,7 +401,7 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
      * the Ethernet interface is attached. */
     IOReturn probeRet = _ieee80211->start();
     if (probeRet != kIOReturnSuccess) {
-        IOLog("rtw88: probe failed (0x%08x)\n", probeRet);
+        IOLog("rtl8188ee: probe failed (0x%08x)\n", probeRet);
         return false;
     }
 
@@ -411,7 +411,7 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
     _initialized = true;
     /* Wire TX flow-control resume: fired from the IRQ bottom-half after tx_isr
      * frees BE ring slots, so a stalled output queue gets re-serviced. */
-    rtlwifi_set_tx_resume_cb(rtw88_tx_resume_trampoline);
+    rtlwifi_set_tx_resume_cb(rtl8188ee_tx_resume_trampoline);
     if (_intrSrc) _intrSrc->enable();
 
     /* Debug: poll BE ring + HISR/HIMR every second. Logs distinguish chip
@@ -424,8 +424,8 @@ bool RTL8188EEPCIDevice::start(IOService *provider)
         _debugTimer->setTimeoutMS(1000);
     }
 
-    IOLog("rtw88: device started successfully\n");
-    registerService();   /* publish IOKit port for IOServiceOpen / rtw88ctl */
+    IOLog("rtl8188ee: device started successfully\n");
+    registerService();   /* publish IOKit port for IOServiceOpen / ctl_rtl8188ee */
     return true;
 }
 
@@ -441,7 +441,7 @@ void RTL8188EEPCIDevice::debugTimerFired(IOTimerEventSource *src)
 
 void RTL8188EEPCIDevice::stop(IOService *provider)
 {
-    IOLog("rtw88: RTL8188EEPCIDevice::stop\n");
+    IOLog("rtl8188ee: RTL8188EEPCIDevice::stop\n");
     teardown();
     super::stop(provider);
 }
@@ -486,8 +486,8 @@ void RTL8188EEPCIDevice::teardown()
     if (_pciDev)   { _pciDev->release();     _pciDev = nullptr; }
 
     g_pci_dev_instance = nullptr;
-    rtw88_pci_io_ops   = nullptr;
-    rtw88_dma_ops      = nullptr;
+    rtl8188ee_pci_io_ops   = nullptr;
+    rtl8188ee_dma_ops      = nullptr;
 }
 
 /* ------------------------------------------------------------------ */
@@ -503,7 +503,7 @@ bool RTL8188EEPCIDevice::setupInterrupt()
         _pciDev, 0);
 
     if (!_intrSrc) {
-        IOLog("rtw88: failed to create interrupt event source\n");
+        IOLog("rtl8188ee: failed to create interrupt event source\n");
         return false;
     }
     _workLoop->addEventSource(_intrSrc);
@@ -515,7 +515,7 @@ void RTL8188EEPCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
 {
     /* RECONNECTED 2026-08-25 (findings.md Section 96.6): the 2026-08-25
      * revert (see prior history in git blame) was against calling
-     * straight through to rtw88_trigger_interrupt(), a no-op that never
+     * straight through to rtl8188ee_trigger_interrupt(), a no-op that never
      * reads or clears the chip's ISR register -- that was the actual
      * cause of the confirmed 500k+/2min interrupt storm (Section 96.5),
      * not the act of reaching RTL8188EEIEEE80211::handleInterrupt() itself.
@@ -523,7 +523,7 @@ void RTL8188EEPCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
      * _rtl_pci_interrupt()'s disable/read-clear/enable bracket plus an
      * RX ring drain (rtlwifi_compat.c) -- so the IRQ line is correctly
      * acknowledged on every call. Do NOT revert this to calling
-     * rtw88_trigger_interrupt() directly again; see the extensive
+     * rtl8188ee_trigger_interrupt() directly again; see the extensive
      * comment on rtlwifi_do_interrupt()'s declaration in
      * rtlwifi_compat.h before touching this again. */
     if (_ieee80211)
@@ -537,7 +537,7 @@ void RTL8188EEPCIDevice::handleInterrupt(IOInterruptEventSource *src, int count)
 bool RTL8188EEPCIDevice::attachDevice()
 {
     if (!attachInterface((IONetworkInterface **)&_iface)) {
-        IOLog("rtw88: attachInterface failed\n");
+        IOLog("rtl8188ee: attachInterface failed\n");
         return false;
     }
 
@@ -587,14 +587,14 @@ void RTL8188EEPCIDevice::addMedium(OSDictionary *mediums, IOMediumType type, UIn
 
 IOReturn RTL8188EEPCIDevice::enable(IONetworkInterface *iface)
 {
-    IOLog("rtw88: enable\n");
+    IOLog("rtl8188ee: enable\n");
     if (_enabled) return kIOReturnSuccess;
     if (!_ieee80211) return kIOReturnNotReady;
 
     /* Probe ran in start(); now power on the hardware for TX/RX */
     IOReturn ret = _ieee80211->powerOn();
     if (ret != kIOReturnSuccess) {
-        IOLog("rtw88: powerOn failed (0x%08x)\n", ret);
+        IOLog("rtl8188ee: powerOn failed (0x%08x)\n", ret);
         return ret;
     }
 
@@ -606,7 +606,7 @@ IOReturn RTL8188EEPCIDevice::enable(IONetworkInterface *iface)
 
 IOReturn RTL8188EEPCIDevice::disable(IONetworkInterface *iface)
 {
-    IOLog("rtw88: disable\n");
+    IOLog("rtl8188ee: disable\n");
     if (!_enabled) return kIOReturnSuccess;
     _enabled = false;
     if (_intrSrc) _intrSrc->disable();
@@ -643,7 +643,7 @@ UInt32 RTL8188EEPCIDevice::outputPacket(mbuf_t m, void *param)
          * session where TX went completely silent (zero [txdatadiag]
          * lines, zero [txstalldiag] lines, zero "BE ring:" lines) for
          * an extended period while the 802.11 link itself still
-         * reported connected (ctl_rtw88 state: state=5, healthy RSSI)
+         * reported connected (ctl_rtl8188ee state: state=5, healthy RSSI)
          * -- meaning if this is the actual drop point, `_enabled` or
          * `_ieee80211` went false/null while the higher-level
          * connection state never reflected it. Rate-limited the same
@@ -653,7 +653,7 @@ UInt32 RTL8188EEPCIDevice::outputPacket(mbuf_t m, void *param)
         static uint64_t s_last_drop_log_ticks = 0;
         uint64_t now_ticks = mach_absolute_time();
         if ((now_ticks - s_last_drop_log_ticks) > 1000000000ULL) {
-            IOLog("rtw88: [txdropdiag] outputPacket dropped, "
+            IOLog("rtl8188ee: [txdropdiag] outputPacket dropped, "
                   "_enabled=%d _ieee80211=%p\n",
                   (int)_enabled, (void *)_ieee80211);
             s_last_drop_log_ticks = now_ticks;
@@ -763,7 +763,7 @@ IOReturn RTL8188EEPCIDevice::powerStateWillChangeTo(IOPMPowerFlags flags,
                                                   unsigned long state,
                                                   IOService *actor)
 {
-    IOLog("rtw88: powerStateWillChangeTo %lu\n", state);
+    IOLog("rtl8188ee: powerStateWillChangeTo %lu\n", state);
     return IOPMAckImplied;
 }
 
@@ -816,7 +816,7 @@ void RTL8188EEPCIDevice::injectRxFrame(mbuf_t m)
         static uint64_t s_last_rxdrop_log_ticks = 0;
         uint64_t now_ticks = mach_absolute_time();
         if ((now_ticks - s_last_rxdrop_log_ticks) > 1000000000ULL) {
-            IOLog("rtw88: [rxdropdiag] injectRxFrame dropped, "
+            IOLog("rtl8188ee: [rxdropdiag] injectRxFrame dropped, "
                   "_iface=%p _enabled=%d\n", (void *)_iface, (int)_enabled);
             s_last_rxdrop_log_ticks = now_ticks;
         }
@@ -831,7 +831,7 @@ void RTL8188EEPCIDevice::injectRxFrame(mbuf_t m)
     size_t plen = mbuf_pkthdr_len(m);
     size_t mlen = mbuf_len(m);
     if (plen < 14 || plen > 4096 || mlen < 14 || mlen > 4096) {
-        IOLog("rtw88: injectRxFrame: dropping bogus mbuf (pkthdr.len=%zu m_len=%zu)\n",
+        IOLog("rtl8188ee: injectRxFrame: dropping bogus mbuf (pkthdr.len=%zu m_len=%zu)\n",
               plen, mlen);
         freePacket(m);
         return;
@@ -856,7 +856,7 @@ void RTL8188EEPCIDevice::injectRxFrame(mbuf_t m)
 void *RTL8188EEPCIDevice::allocCoherent(size_t size, IOPhysicalAddress *phys)
 {
     /*
-     * rtw88 TX ring descriptors store DMA addresses in 32-bit fields.
+     * rtl8188ee TX ring descriptors store DMA addresses in 32-bit fields.
      * Restrict physical allocation to the first 4GB so truncation to
      * cpu_to_le32() in the ring descriptor is lossless.
      * 0x00000000FFFFFFF0 = below 4GB, 16-byte aligned.
@@ -867,7 +867,7 @@ void *RTL8188EEPCIDevice::allocCoherent(size_t size, IOPhysicalAddress *phys)
         size,
         0x00000000FFFFFFF0ULL);
 
-    if (!desc) { IOLog("rtw88: dma alloc failed, size=%zu\n", size); return nullptr; }
+    if (!desc) { IOLog("rtl8188ee: dma alloc failed, size=%zu\n", size); return nullptr; }
     desc->prepare();
 
     IOPhysicalAddress pa = desc->getPhysicalAddress();
@@ -922,7 +922,7 @@ void RTL8188EEPCIDevice::freeCoherent(size_t size, void *virt, IOPhysicalAddress
         prev = &e->next;
     }
     IOSimpleLockUnlock(_dmaLock);
-    IOLog("rtw88: freeCoherent: virt %p not found\n", virt);
+    IOLog("rtl8188ee: freeCoherent: virt %p not found\n", virt);
 }
 
 void RTL8188EEPCIDevice::freeCoherentByPhys(IOPhysicalAddress phys)
@@ -1048,7 +1048,7 @@ IOReturn RTL8188EEPCIDevice::newUserClient(task_t owningTask, void *securityID,
 {
     RTL8188EEUserClient *client = new RTL8188EEUserClient;
     if (!client) {
-        IOLog("rtw88: RTL8188EEUserClient allocation failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient allocation failed\n");
         return kIOReturnNoMemory;
     }
 
@@ -1056,19 +1056,19 @@ IOReturn RTL8188EEPCIDevice::newUserClient(task_t owningTask, void *securityID,
      * Without this the kernel port is never "ready for callouts" and
      * IOServiceOpen returns kIOReturnBadArgument before our code runs. */
     if (!client->initWithTask(owningTask, securityID, type, properties)) {
-        IOLog("rtw88: RTL8188EEUserClient::initWithTask failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::initWithTask failed\n");
         client->release();
         return kIOReturnBadArgument;
     }
 
     if (!client->attach(this)) {
-        IOLog("rtw88: RTL8188EEUserClient::attach failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::attach failed\n");
         client->release();
         return kIOReturnBadArgument;
     }
 
     if (!client->start(this)) {
-        IOLog("rtw88: RTL8188EEUserClient::start failed\n");
+        IOLog("rtl8188ee: RTL8188EEUserClient::start failed\n");
         client->detach(this);
         client->release();
         return kIOReturnBadArgument;

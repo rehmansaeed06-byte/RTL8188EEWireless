@@ -55,7 +55,7 @@ static inline void spin_unlock(spinlock_t *sl)
 #define spin_lock_irq(sl)   spin_lock(sl)
 #define spin_unlock_irq(sl) spin_unlock(sl)
 
-typedef unsigned long rtw88_irq_flags_t;
+typedef unsigned long rtl8188ee_irq_flags_t;
 
 #define spin_lock_irqsave(sl, flags) \
     do { (void)(flags); IORecursiveLockLock((sl)->lock); } while (0)
@@ -64,7 +64,7 @@ typedef unsigned long rtw88_irq_flags_t;
     do { (void)(flags); IORecursiveLockUnlock((sl)->lock); } while (0)
 
 /*
- * rwlock_t — plain IOLock (read/write parallelism not needed for rtw88).
+ * rwlock_t — plain IOLock (read/write parallelism not needed for rtl8188ee).
  */
 typedef struct {
     IOLock *lock;

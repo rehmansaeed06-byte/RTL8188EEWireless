@@ -16,10 +16,10 @@ struct device;  /* forward decl */
 /*
  * On macOS, DMA coherent memory is allocated by the kext using
  * IOBufferMemoryDescriptor (kIOMemoryPhysicallyContiguous).
- * The C driver code calls these helpers; the kext installs rtw88_dma_ops
+ * The C driver code calls these helpers; the kext installs rtl8188ee_dma_ops
  * before probe so the fallback path never runs in production.
  */
-struct rtw88_dma_alloc_ops {
+struct rtl8188ee_dma_alloc_ops {
     void      *(*alloc_coherent)(struct device *dev, size_t size,
                                   dma_addr_t *dma_handle, gfp_t flag);
     void       (*free_coherent)(struct device *dev, size_t size,
@@ -34,13 +34,13 @@ struct rtw88_dma_alloc_ops {
                                           size_t size, int dir);
 };
 
-extern struct rtw88_dma_alloc_ops *rtw88_dma_ops;
+extern struct rtl8188ee_dma_alloc_ops *rtl8188ee_dma_ops;
 
 static inline void *dma_alloc_coherent(struct device *dev, size_t size,
                                         dma_addr_t *dma_handle, gfp_t flag)
 {
-    if (rtw88_dma_ops && rtw88_dma_ops->alloc_coherent)
-        return rtw88_dma_ops->alloc_coherent(dev, size, dma_handle, flag);
+    if (rtl8188ee_dma_ops && rtl8188ee_dma_ops->alloc_coherent)
+        return rtl8188ee_dma_ops->alloc_coherent(dev, size, dma_handle, flag);
     /* Fallback: plain kernel allocation (not DMA-safe) */
     void *ptr = kzalloc(size, GFP_KERNEL);
     if (ptr) *dma_handle = (dma_addr_t)(uintptr_t)ptr;
@@ -50,8 +50,8 @@ static inline void *dma_alloc_coherent(struct device *dev, size_t size,
 static inline void dma_free_coherent(struct device *dev, size_t size,
                                       void *cpu_addr, dma_addr_t dma_handle)
 {
-    if (rtw88_dma_ops && rtw88_dma_ops->free_coherent) {
-        rtw88_dma_ops->free_coherent(dev, size, cpu_addr, dma_handle);
+    if (rtl8188ee_dma_ops && rtl8188ee_dma_ops->free_coherent) {
+        rtl8188ee_dma_ops->free_coherent(dev, size, cpu_addr, dma_handle);
         return;
     }
     kfree(cpu_addr);
@@ -60,32 +60,32 @@ static inline void dma_free_coherent(struct device *dev, size_t size,
 static inline dma_addr_t dma_map_single(struct device *dev, void *ptr,
                                           size_t size, int direction)
 {
-    if (rtw88_dma_ops && rtw88_dma_ops->map_single)
-        return rtw88_dma_ops->map_single(dev, ptr, size, direction);
+    if (rtl8188ee_dma_ops && rtl8188ee_dma_ops->map_single)
+        return rtl8188ee_dma_ops->map_single(dev, ptr, size, direction);
     return (dma_addr_t)(uintptr_t)ptr;
 }
 
 static inline void dma_unmap_single(struct device *dev, dma_addr_t addr,
                                      size_t size, int direction)
 {
-    if (rtw88_dma_ops && rtw88_dma_ops->unmap_single)
-        rtw88_dma_ops->unmap_single(dev, addr, size, direction);
+    if (rtl8188ee_dma_ops && rtl8188ee_dma_ops->unmap_single)
+        rtl8188ee_dma_ops->unmap_single(dev, addr, size, direction);
 }
 
 static inline void dma_sync_single_for_cpu(struct device *dev,
                                              dma_addr_t addr,
                                              size_t size, int dir)
 {
-    if (rtw88_dma_ops && rtw88_dma_ops->sync_single_for_cpu)
-        rtw88_dma_ops->sync_single_for_cpu(dev, addr, size, dir);
+    if (rtl8188ee_dma_ops && rtl8188ee_dma_ops->sync_single_for_cpu)
+        rtl8188ee_dma_ops->sync_single_for_cpu(dev, addr, size, dir);
 }
 
 static inline void dma_sync_single_for_device(struct device *dev,
                                                 dma_addr_t addr,
                                                 size_t size, int dir)
 {
-    if (rtw88_dma_ops && rtw88_dma_ops->sync_single_for_device)
-        rtw88_dma_ops->sync_single_for_device(dev, addr, size, dir);
+    if (rtl8188ee_dma_ops && rtl8188ee_dma_ops->sync_single_for_device)
+        rtl8188ee_dma_ops->sync_single_for_device(dev, addr, size, dir);
 }
 
 static inline int dma_set_mask_and_coherent(struct device *dev, u64 mask) { return 0; }

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * Linux bitops shims for rtw88 macOS port
+ * Linux bitops shims for rtl8188ee macOS port
  */
 #ifndef _RTL8188EE_COMPAT_BITOPS_H
 #define _RTL8188EE_COMPAT_BITOPS_H

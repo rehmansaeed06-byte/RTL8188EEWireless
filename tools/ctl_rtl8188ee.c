@@ -1,5 +1,5 @@
 /*
- * ctl_rtw88.c -- standalone diagnostic/control tool for the rtl8188ee kext.
+ * ctl_rtl8188ee.c -- standalone diagnostic/control tool for the rtl8188ee kext.
  *
  * Extends ctl_getstate.c (which only called kRTL8188EEGetState) to cover the
  * full RTL8188EEUserClient selector table confirmed in src/macos/RTL8188EEUserClient.hpp
@@ -25,25 +25,25 @@
  * part of the committed project.
  *
  * Build:
- *   clang -o ctl_rtw88 ctl_rtw88.c -framework IOKit -framework CoreFoundation
+ *   clang -o ctl_rtl8188ee ctl_rtl8188ee.c -framework IOKit -framework CoreFoundation
  *
  * Run:
- *   ./ctl_rtw88 state
- *   ./ctl_rtw88 poweron
- *   ./ctl_rtw88 scan
- *   ./ctl_rtw88 bsslist
- *   ./ctl_rtw88 connect "MySSID" "MyPassword"
- *   ./ctl_rtw88 disconnect
- *   ./ctl_rtw88 poweroff
+ *   ./ctl_rtl8188ee state
+ *   ./ctl_rtl8188ee poweron
+ *   ./ctl_rtl8188ee scan
+ *   ./ctl_rtl8188ee bsslist
+ *   ./ctl_rtl8188ee connect "MySSID" "MyPassword"
+ *   ./ctl_rtl8188ee disconnect
+ *   ./ctl_rtl8188ee poweroff
  *
  * Typical first real association test, in order:
- *   ./ctl_rtw88 poweron
- *   ./ctl_rtw88 state        # confirm powered=1 before going further
- *   ./ctl_rtw88 scan
- *   ./ctl_rtw88 bsslist      # confirm real APs were actually found before
+ *   ./ctl_rtl8188ee poweron
+ *   ./ctl_rtl8188ee state        # confirm powered=1 before going further
+ *   ./ctl_rtl8188ee scan
+ *   ./ctl_rtl8188ee bsslist      # confirm real APs were actually found before
  *                             # trying to connect to one
- *   ./ctl_rtw88 connect "YourSSID" "YourPassword"
- *   ./ctl_rtw88 state        # watch `state` field transition, check bssid/rssi/channel
+ *   ./ctl_rtl8188ee connect "YourSSID" "YourPassword"
+ *   ./ctl_rtl8188ee state        # watch `state` field transition, check bssid/rssi/channel
  *
  * NOTE on selectors 5-7 (GetRSSI / SetDebug / GetLog):
  * their exact I/O shapes weren't confirmed against RTL8188EEUserClient.cpp/
@@ -202,7 +202,7 @@ static int cmd_scan(io_connect_t conn)
         return 1;
     }
     printf("Scan issued (async -- runManualScan() runs on a thread_call;\n"
-           "poll `ctl_rtw88 state` or watch console log for scanDone()).\n");
+           "poll `ctl_rtl8188ee state` or watch console log for scanDone()).\n");
     return 0;
 }
 
@@ -310,7 +310,7 @@ static int cmd_bsslist(io_connect_t conn)
 
     if (count == 0)
         printf("(no BSS entries -- scan may not have found anything yet,\n"
-               " or hasn't been run: try `ctl_rtw88 scan` first and wait\n"
+               " or hasn't been run: try `ctl_rtl8188ee scan` first and wait\n"
                " a few seconds before checking again)\n");
 
     return 0;

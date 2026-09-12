@@ -9,19 +9,19 @@ OSDefineMetaClassAndStructors(RTL8188EEKext, IOService)
 
 bool RTL8188EEKext::init(OSDictionary *props)
 {
-    IOLog("rtw88: RTL8188EEKext::init\n");
+    IOLog("rtl8188ee: RTL8188EEKext::init\n");
     return super::init(props);
 }
 
 IOService *RTL8188EEKext::probe(IOService *provider, SInt32 *score)
 {
-    IOLog("rtw88: RTL8188EEKext::probe\n");
+    IOLog("rtl8188ee: RTL8188EEKext::probe\n");
     return super::probe(provider, score);
 }
 
 bool RTL8188EEKext::start(IOService *provider)
 {
-    IOLog("rtw88: RTL8188EEKext::start\n");
+    IOLog("rtl8188ee: RTL8188EEKext::start\n");
     if (!super::start(provider)) return false;
     registerService();
     return true;
@@ -29,7 +29,7 @@ bool RTL8188EEKext::start(IOService *provider)
 
 void RTL8188EEKext::stop(IOService *provider)
 {
-    IOLog("rtw88: RTL8188EEKext::stop\n");
+    IOLog("rtl8188ee: RTL8188EEKext::stop\n");
     super::stop(provider);
 }
 

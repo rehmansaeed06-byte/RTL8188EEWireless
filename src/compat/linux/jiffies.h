@@ -19,18 +19,18 @@
  * mach_absolute_time() returns nanoseconds on ARM64 (1 unit = 1 ns).
  * On x86 it is in TSC-derived units (~1 ns at GHz frequencies).
  * Dividing by 1,000,000 gives a monotonic millisecond counter sufficient
- * for the loose timeouts used by rtw88.
+ * for the loose timeouts used by rtl8188ee.
  */
 #include <kern/clock.h>
 
-static inline unsigned long rtw88_get_jiffies(void)
+static inline unsigned long rtl8188ee_get_jiffies(void)
 {
     uint64_t nsecs;
     absolutetime_to_nanoseconds(mach_absolute_time(), &nsecs);
     return (unsigned long)(nsecs / 1000000ULL);
 }
 
-#define jiffies rtw88_get_jiffies()
+#define jiffies rtl8188ee_get_jiffies()
 
 static inline unsigned long msecs_to_jiffies(unsigned int msecs)
 {

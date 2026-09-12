@@ -21,10 +21,10 @@
 extern "C" uint64_t mach_absolute_time(void);
 
 /* Debug stage checkpoint — logs message only (no sleep). */
-#define RTL8188EE_STAGE(fmt, ...) IOLog("rtw88: ---- STAGE: " fmt " ----\n", ##__VA_ARGS__)
+#define RTL8188EE_STAGE(fmt, ...) IOLog("rtl8188ee: ---- STAGE: " fmt " ----\n", ##__VA_ARGS__)
 
 /* Chain-safe packet mbuf builder (defined below). */
-static mbuf_t rtw88_make_packet_mbuf(const void *src, uint32_t len);
+static mbuf_t rtl8188ee_make_packet_mbuf(const void *src, uint32_t len);
 
 extern "C" {
 #include "../compat/rtlwifi_compat.h"
@@ -33,8 +33,8 @@ extern "C" {
  * source read (findings.md Section 49.2, Section 40.11.3): declared in
  * pci.c, registered as rtl88ee_driver's .probe/.remove. Note the real
  * teardown function is rtl_pci_disconnect, not *_remove. This project
- * compiles rtlwifi, not rtw88 — the rtw_core_[star]/rtw_tx/rtw_pci_probe/
- * rtw_pci_remove names that used to be declared here belong to rtw88's
+ * compiles rtlwifi, not rtl8188ee — the rtw_core_[star]/rtw_tx/rtw_pci_probe/
+ * rtw_pci_remove names that used to be declared here belong to rtl8188ee's
  * struct rtw_dev family and were never defined anywhere in this tree
  * (confirmed: kmutil load reported both as unresolved). */
 int  rtl_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id);
@@ -46,7 +46,7 @@ void rtl_pci_disconnect(struct pci_dev *pdev);
  * (findings.md Section 40.11: bar_id = 2, name = "rtl88e_pci",
  * write_readback = true; Section 40.11.3: tied to PCI ID 0x8179 via
  * RTL_PCI_DEVICE() in rtl88ee_pci_ids[]). This replaces the multi-chip
- * rtw88_pci_chip_table[] lookup this file previously carried over
+ * rtl8188ee_pci_chip_table[] lookup this file previously carried over
  * unmodified from Feixiao — flagged as dead weight for a single-chip
  * target since Section 55.7/59, deleted per Section 78. */
 extern const struct rtl_hal_cfg rtl88ee_hal_cfg;
@@ -578,7 +578,7 @@ bool RTL8188EEIEEE80211::init(RTL8188EEPCIDevice *dev, struct pci_dev *pci)
     if (!_reorderTimer) return false;
     rxwl->addEventSource(_reorderTimer);
 
-    IOLog("rtw88: RTL8188EEIEEE80211 initialized\n");
+    IOLog("rtl8188ee: RTL8188EEIEEE80211 initialized\n");
     return true;
 }
 
@@ -654,7 +654,7 @@ void RTL8188EEIEEE80211::releaseSta()
     rxBaTeardownAll();
 }
 
-static const char *rtw88CipherName(uint32_t cipher)
+static const char *rtl8188eeCipherName(uint32_t cipher)
 {
     switch (cipher) {
     case WLAN_CIPHER_SUITE_CCMP:
@@ -700,8 +700,8 @@ bool RTL8188EEIEEE80211::installKey(struct ieee80211_key_conf **slot, bool pairw
 
     int ret = _hw->ops->set_key(_hw, SET_KEY, _vif, pairwise ? _sta : nullptr, key);
     if (ret) {
-        IOLog("rtw88: failed to install %s %s key ret=%d\n",
-              pairwise ? "pairwise" : "group", rtw88CipherName(cipher), ret);
+        IOLog("rtl8188ee: failed to install %s %s key ret=%d\n",
+              pairwise ? "pairwise" : "group", rtl8188eeCipherName(cipher), ret);
         IOFree(key, sizeof(*key));
         return false;
     }
@@ -709,8 +709,8 @@ bool RTL8188EEIEEE80211::installKey(struct ieee80211_key_conf **slot, bool pairw
     *slot = key;
     if (pairwise)
         memset(_ccmpTxPn, 0, sizeof(_ccmpTxPn));
-    IOLog("rtw88: installed %s %s key idx=%u hw_idx=%u\n",
-          pairwise ? "pairwise" : "group", rtw88CipherName(cipher),
+    IOLog("rtl8188ee: installed %s %s key idx=%u hw_idx=%u\n",
+          pairwise ? "pairwise" : "group", rtl8188eeCipherName(cipher),
           keyidx, key->hw_key_idx);
     return true;
 }
@@ -742,7 +742,7 @@ IOReturn RTL8188EEIEEE80211::start()
     /* RTL8188EE is a single-chip target — no lookup table, just confirm
      * the PCI device ID matches and use rtl88ee_hal_cfg directly. */
     if (_pcidev->device != RTL8188EE_PCI_DEVICE_ID) {
-        IOLog("rtw88: unexpected PCI device %04x (expected %04x) — cannot probe\n",
+        IOLog("rtl8188ee: unexpected PCI device %04x (expected %04x) — cannot probe\n",
               _pcidev->device, RTL8188EE_PCI_DEVICE_ID);
         return kIOReturnUnsupported;
     }
@@ -761,13 +761,13 @@ IOReturn RTL8188EEIEEE80211::start()
     int ret = rtl_pci_probe(_pcidev, &fake_id);
     RTL8188EE_STAGE("rtl_pci_probe returned %d", ret);
     if (ret != 0) {
-        IOLog("rtw88: rtl_pci_probe failed: %d\n", ret);
+        IOLog("rtl8188ee: rtl_pci_probe failed: %d\n", ret);
         return kIOReturnError;
     }
 
     /* Use the hw pointer that ieee80211_alloc_hw() registered in the compat
-     * layer via rtw88_register_hw().  rtw88_get_hw() is the external-linkage
-     * accessor for the static g_rtw88_hw variable — avoids both the fragile
+     * layer via rtl8188ee_register_hw().  rtl8188ee_get_hw() is the external-linkage
+     * accessor for the static g_rtl8188ee_hw variable — avoids both the fragile
      * *(ieee80211_hw **)rtwdev double-dereference and the UB of declaring
      * 'extern' on a static variable from another TU. */
     _hw = rtlwifi_get_hw();
@@ -818,7 +818,7 @@ IOReturn RTL8188EEIEEE80211::start()
      * hw->wiphy->perm_addr during rtw_register_hw(); read it from there. */
     if (_hw && _hw->wiphy) {
         memcpy(_macAddr, _hw->wiphy->perm_addr, 6);
-        IOLog("rtw88: MAC address: %02x:%02x:%02x:%02x:%02x:%02x\n",
+        IOLog("rtl8188ee: MAC address: %02x:%02x:%02x:%02x:%02x:%02x\n",
               _macAddr[0], _macAddr[1], _macAddr[2],
               _macAddr[3], _macAddr[4], _macAddr[5]);
     }
@@ -851,7 +851,7 @@ IOReturn RTL8188EEIEEE80211::start()
             int ret = _hw->ops->start(_hw);
             RTL8188EE_STAGE("hw->ops->start returned %d", ret);
             if (ret != 0) {
-                IOLog("rtw88: hw->ops->start failed: %d\n", ret);
+                IOLog("rtl8188ee: hw->ops->start failed: %d\n", ret);
             } else {
                 _powered = true;
                 /* TEMPORARY DIAGNOSTIC (2026-08-26) -- see
@@ -879,7 +879,7 @@ IOReturn RTL8188EEIEEE80211::start()
 
 void RTL8188EEIEEE80211::stop()
 {
-    IOLog("rtw88: IEEE80211 stop\n");
+    IOLog("rtl8188ee: IEEE80211 stop\n");
     _timer->cancelTimeout();
 
     if ((_state == RTL8188EE_STATE_CONNECTED ||
@@ -917,12 +917,12 @@ void RTL8188EEIEEE80211::stop()
 
 IOReturn RTL8188EEIEEE80211::powerOn()
 {
-    IOLog("rtw88: IEEE80211 powerOn\n");
+    IOLog("rtl8188ee: IEEE80211 powerOn\n");
     if (_powered) return kIOReturnSuccess;
     if (!_hw || !_hw->ops || !_hw->ops->start) return kIOReturnNotReady;
     int ret = _hw->ops->start(_hw);
     if (ret) {
-        IOLog("rtw88: hw->ops->start failed: %d\n", ret);
+        IOLog("rtl8188ee: hw->ops->start failed: %d\n", ret);
         return kIOReturnError;
     }
     _powered = true;
@@ -931,7 +931,7 @@ IOReturn RTL8188EEIEEE80211::powerOn()
 
 void RTL8188EEIEEE80211::powerOff()
 {
-    IOLog("rtw88: IEEE80211 powerOff\n");
+    IOLog("rtl8188ee: IEEE80211 powerOff\n");
     if (!_powered) return;
     if (_hw && _hw->ops && _hw->ops->stop)
         _hw->ops->stop(_hw, false);
@@ -943,7 +943,7 @@ void RTL8188EEIEEE80211::powerOff()
 /* ------------------------------------------------------------------ */
 
 /* rtlwifi_do_interrupt() -- real ISR body (findings.md Section 96.6),
- * replacing the old rtw88_trigger_interrupt() no-op stub. See the
+ * replacing the old rtl8188ee_trigger_interrupt() no-op stub. See the
  * declaration comment in rtlwifi_compat.h for why the old stub must
  * not be reintroduced alongside this. */
 extern "C" bool rtlwifi_do_interrupt(void);
@@ -1006,7 +1006,7 @@ void RTL8188EEIEEE80211::rxFrame(struct sk_buff *skb)
      * loop diagnostic did in Section 98. */
     if (_state == RTL8188EE_STATE_SCANNING && _rxFrameCount <= 20) {
         uint16_t raw_fc = le16_to_cpu(fc);
-        IOLog("rtw88: [rxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
+        IOLog("rtl8188ee: [rxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
               "len=%u ismgmt=%d isdata=%d\n",
               _rxFrameCount, raw_fc, raw_fc & 0x000c, raw_fc & 0x00f0,
               skb->len, ieee80211_is_mgmt(fc), ieee80211_is_data(fc));
@@ -1027,7 +1027,7 @@ void RTL8188EEIEEE80211::rxFrame(struct sk_buff *skb)
         struct ieee80211_hdr_3addr *h3 = (struct ieee80211_hdr_3addr *)skb->data;
         bool have_addrs = skb->len >= sizeof(*h3);
         _rxAuthFrameCount++;
-        IOLog("rtw88: [authrxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
+        IOLog("rtl8188ee: [authrxdiag] frame #%u fc=0x%04x type=0x%x stype=0x%x "
               "len=%u ismgmt=%d isdata=%d addr1=%02x:%02x:%02x:%02x:%02x:%02x "
               "addr2=%02x:%02x:%02x:%02x:%02x:%02x addr3=%02x:%02x:%02x:%02x:%02x:%02x\n",
               _rxAuthFrameCount, raw_fc, raw_fc & 0x000c, raw_fc & 0x00f0,
@@ -1092,7 +1092,7 @@ void RTL8188EEIEEE80211::processRxMgmt(struct sk_buff *skb)
             struct ieee80211_hdr_3addr *h3 =
                 (struct ieee80211_hdr_3addr *)skb->data;
             if (memcmp(h3->addr3, _targetBSS.bssid, 6) != 0) {
-                IOLog("rtw88: auth resp from %02x:%02x:%02x:%02x:%02x:%02x "
+                IOLog("rtl8188ee: auth resp from %02x:%02x:%02x:%02x:%02x:%02x "
                       "!= target BSSID — ignoring\n",
                       h3->addr3[0], h3->addr3[1], h3->addr3[2],
                       h3->addr3[3], h3->addr3[4], h3->addr3[5]);
@@ -1105,10 +1105,10 @@ void RTL8188EEIEEE80211::processRxMgmt(struct sk_buff *skb)
             if (body_len >= 6) {
                 uint16_t status = (uint16_t)(body[4] | (body[5] << 8));
                 if (status == 0) {
-                    IOLog("rtw88: auth success, sending assoc\n");
+                    IOLog("rtl8188ee: auth success, sending assoc\n");
                     doAssociate();
                 } else {
-                    IOLog("rtw88: auth failed status=%u, retrying\n", status);
+                    IOLog("rtl8188ee: auth failed status=%u, retrying\n", status);
                     _state = RTL8188EE_STATE_IDLE;
                 }
             } else {
@@ -1155,7 +1155,7 @@ void RTL8188EEIEEE80211::processRxMgmt(struct sk_buff *skb)
                 const uint8_t *rb = skb->data + sizeof(*h3);
                 uint16_t reason = (skb->len >= sizeof(*h3) + 2) ?
                                   (uint16_t)(rb[0] | (rb[1] << 8)) : 0;
-                IOLog("rtw88: %s from AP, reason=%u — disconnecting\n",
+                IOLog("rtl8188ee: %s from AP, reason=%u — disconnecting\n",
                       (stype == 0x00C0) ? "deauth" : "disassoc", reason);
             }
             clearKeys();
@@ -1190,13 +1190,13 @@ void RTL8188EEIEEE80211::processRxMgmt(struct sk_buff *skb)
     }
 }
 
-static uint32_t rtw88ReadSuite(const uint8_t *p)
+static uint32_t rtl8188eeReadSuite(const uint8_t *p)
 {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
            ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-static void rtw88WriteSuite(uint8_t *p, uint32_t suite)
+static void rtl8188eeWriteSuite(uint8_t *p, uint32_t suite)
 {
     p[0] = (uint8_t)(suite >> 24);
     p[1] = (uint8_t)(suite >> 16);
@@ -1204,7 +1204,7 @@ static void rtw88WriteSuite(uint8_t *p, uint32_t suite)
     p[3] = (uint8_t)suite;
 }
 
-static bool rtw88RsnSelectCcmpPsk(const uint8_t *rsn, uint8_t len,
+static bool rtl8188eeRsnSelectCcmpPsk(const uint8_t *rsn, uint8_t len,
                                   uint32_t *pairwise_cipher,
                                   uint32_t *group_cipher)
 {
@@ -1215,7 +1215,7 @@ static bool rtw88RsnSelectCcmpPsk(const uint8_t *rsn, uint8_t len,
         return false;
 
     p += 2; /* version */
-    uint32_t group = rtw88ReadSuite(p);
+    uint32_t group = rtl8188eeReadSuite(p);
     p += 4;
 
     if (p + 2 > end)
@@ -1227,7 +1227,7 @@ static bool rtw88RsnSelectCcmpPsk(const uint8_t *rsn, uint8_t len,
 
     bool hasCcmp = false;
     for (uint16_t i = 0; i < pairwiseCount; i++, p += 4) {
-        if (rtw88ReadSuite(p) == WLAN_CIPHER_SUITE_CCMP)
+        if (rtl8188eeReadSuite(p) == WLAN_CIPHER_SUITE_CCMP)
             hasCcmp = true;
     }
 
@@ -1240,7 +1240,7 @@ static bool rtw88RsnSelectCcmpPsk(const uint8_t *rsn, uint8_t len,
 
     bool hasPsk = false;
     for (uint16_t i = 0; i < akmCount; i++, p += 4) {
-        if (rtw88ReadSuite(p) == 0x000FAC02) /* 00-0f-ac:2 PSK */
+        if (rtl8188eeReadSuite(p) == 0x000FAC02) /* 00-0f-ac:2 PSK */
             hasPsk = true;
     }
 
@@ -1258,7 +1258,7 @@ static bool rtw88RsnSelectCcmpPsk(const uint8_t *rsn, uint8_t len,
     return true;
 }
 
-static uint16_t rtw88BuildSelectedRsnIe(uint8_t *out, uint32_t group_cipher)
+static uint16_t rtl8188eeBuildSelectedRsnIe(uint8_t *out, uint32_t group_cipher)
 {
     if (group_cipher != WLAN_CIPHER_SUITE_TKIP)
         group_cipher = WLAN_CIPHER_SUITE_CCMP;
@@ -1267,11 +1267,11 @@ static uint16_t rtw88BuildSelectedRsnIe(uint8_t *out, uint32_t group_cipher)
     *p++ = WLAN_EID_RSN;
     *p++ = 20;           /* body length */
     *p++ = 1; *p++ = 0;  /* version */
-    rtw88WriteSuite(p, group_cipher); p += 4;
+    rtl8188eeWriteSuite(p, group_cipher); p += 4;
     *p++ = 1; *p++ = 0;  /* one pairwise cipher */
-    rtw88WriteSuite(p, WLAN_CIPHER_SUITE_CCMP); p += 4;
+    rtl8188eeWriteSuite(p, WLAN_CIPHER_SUITE_CCMP); p += 4;
     *p++ = 1; *p++ = 0;  /* one AKM */
-    rtw88WriteSuite(p, 0x000FAC02); p += 4; /* PSK */
+    rtl8188eeWriteSuite(p, 0x000FAC02); p += 4; /* PSK */
     *p++ = 0; *p++ = 0;  /* RSN capabilities */
     return (uint16_t)(p - out);
 }
@@ -1312,7 +1312,7 @@ void RTL8188EEIEEE80211::processScanResult(struct sk_buff *skb)
         } else if (id == WLAN_EID_RSN) {
             uint32_t pairwise = 0;
             uint32_t group = 0;
-            if (rtw88RsnSelectCcmpPsk(body + 2, len, &pairwise, &group)) {
+            if (rtl8188eeRsnSelectCcmpPsk(body + 2, len, &pairwise, &group)) {
                 bss->cipher = pairwise;
                 bss->group_cipher = group;
                 bss->akm = 0x000FAC02; /* PSK */
@@ -1445,7 +1445,7 @@ void RTL8188EEIEEE80211::processRxData(struct sk_buff *skb)
                     uint32_t stored = (r && r->active) ? r->stored : 0;
                     uint16_t headSn = (r && r->active) ? r->headSn : 0;
                     IOLockUnlock(_rxBaLock);
-                    IOLog("rtw88: [rxbadiag] tid=%u sn=%u headSn=%u "
+                    IOLog("rtl8188ee: [rxbadiag] tid=%u sn=%u headSn=%u "
                           "stored=%u\n", tid, sn, headSn, stored);
                     s_last_ba_log_ticks[tid] = now_ticks;
                 }
@@ -1475,7 +1475,7 @@ void RTL8188EEIEEE80211::deliverDataFrame(struct sk_buff *skb)
     {
         bool prot = ieee80211_has_protected(hdr->frame_control);
         uint16_t rawfc = le16_to_cpu(hdr->frame_control);
-        IOLog("rtw88: [rxdatadiag] fc=0x%04x protected=%d hdrlen=%u len=%u "
+        IOLog("rtl8188ee: [rxdatadiag] fc=0x%04x protected=%d hdrlen=%u len=%u "
               "addr1=%02x:%02x:%02x:%02x:%02x:%02x "
               "addr2=%02x:%02x:%02x:%02x:%02x:%02x\n",
               rawfc, prot, hdrlen, skb->len,
@@ -1490,7 +1490,7 @@ void RTL8188EEIEEE80211::deliverDataFrame(struct sk_buff *skb)
         amsdu = (skb->data[hdrlen - 2] & 0x80) != 0;  /* QoS-ctl A-MSDU bit */
 
     if (amsdu) {
-        /* QoS A-MSDU: header [+ CCMP IV] then a chain of subframes.  rtw88
+        /* QoS A-MSDU: header [+ CCMP IV] then a chain of subframes.  rtl8188ee
          * leaves the CCMP IV in the frame (mac80211 would normally strip it). */
         uint32_t off = hdrlen;
         if (ieee80211_has_protected(hdr->frame_control)) {
@@ -1515,7 +1515,7 @@ void RTL8188EEIEEE80211::deliverDataFrame(struct sk_buff *skb)
             payload_off += 8;
             llc = ccmp_llc;
             if (!_rxCcmpIvSkipLogged) {
-                IOLog("rtw88: rx protected data includes CCMP IV, skipping it\n");
+                IOLog("rtl8188ee: rx protected data includes CCMP IV, skipping it\n");
                 _rxCcmpIvSkipLogged = true;
             }
         }
@@ -1550,7 +1550,7 @@ void RTL8188EEIEEE80211::deliverDataFrame(struct sk_buff *skb)
         static uint64_t s_last_ethertype0_log_ticks = 0;
         uint64_t now_ticks = mach_absolute_time();
         if ((now_ticks - s_last_ethertype0_log_ticks) > 1000000000ULL) {
-            IOLog("rtw88: [ethertype0diag] protected=%d llc0=%02x llc1=%02x "
+            IOLog("rtl8188ee: [ethertype0diag] protected=%d llc0=%02x llc1=%02x "
                   "llc2=%02x skblen=%u payload_off=%u\n",
                   (int)ieee80211_has_protected(hdr->frame_control),
                   llc[0], llc[1], llc[2], skb->len, payload_off);
@@ -1631,7 +1631,7 @@ void RTL8188EEIEEE80211::deAmsdu(const uint8_t *data, uint32_t len)
         static uint64_t s_last_amsdu_log_ticks = 0;
         uint64_t now_ticks = mach_absolute_time();
         if ((now_ticks - s_last_amsdu_log_ticks) > 1000000000ULL) {
-            IOLog("rtw88: [amsdudiag] len=%u consumed=%u delivered=%u "
+            IOLog("rtl8188ee: [amsdudiag] len=%u consumed=%u delivered=%u "
                   "remaining=%u\n", len, pos, delivered, len - pos);
             s_last_amsdu_log_ticks = now_ticks;
         }
@@ -1888,7 +1888,7 @@ void RTL8188EEIEEE80211::setConnectedChandef(struct ieee80211_channel *chan)
         _hw->conf.chandef.center_freq1 = (uint32_t)(5000 + 5 * vhtSeg0);
     }
 
-    IOLog("rtw88: connected chandef: %u MHz (primary=%u cf1=%u)\n",
+    IOLog("rtl8188ee: connected chandef: %u MHz (primary=%u cf1=%u)\n",
           _connChanWidth, chan->center_freq, _hw->conf.chandef.center_freq1);
 }
 
@@ -1918,7 +1918,7 @@ void RTL8188EEIEEE80211::restoreConnectedChannel()
     if (chan) {
         setConnectedChandef(chan);
     } else {
-        IOLog("rtw88: scan restore: ch=%u not in band table\n",
+        IOLog("rtl8188ee: scan restore: ch=%u not in band table\n",
               _targetBSS.channel);
     }
 
@@ -2007,7 +2007,7 @@ void RTL8188EEIEEE80211::scanDone(bool aborted)
      * scan window" from "RX happened but none were beacon/probe-resp
      * frames processScanResult() would have used" -- logged once per
      * scan completion so this is visible without a separate query. */
-    IOLog("rtw88: scan complete (aborted=%d): rxFrameCount=%u "
+    IOLog("rtl8188ee: scan complete (aborted=%d): rxFrameCount=%u "
           "rxScanRelevantCount=%u bssCount=%u\n",
           aborted, _rxFrameCount, _rxScanRelevantCount, _bssCount);
 }
@@ -2053,7 +2053,7 @@ IOReturn RTL8188EEIEEE80211::cmdScan()
     }
 
     if (n_chans == 0) {
-        IOLog("rtw88: scan has no enabled channels\n");
+        IOLog("rtl8188ee: scan has no enabled channels\n");
         _state = returnState;
         _scanReturnState = RTL8188EE_STATE_IDLE;
         return kIOReturnNotReady;
@@ -2075,7 +2075,7 @@ IOReturn RTL8188EEIEEE80211::cmdScan()
         _rxScanRelevantCount = 0;
 
         if (!_manualScanFallbackLogged) {
-            IOLog("rtw88: scan offload unavailable, using passive channel scan (%d channels)\n",
+            IOLog("rtl8188ee: scan offload unavailable, using passive channel scan (%d channels)\n",
                   n_chans);
             _manualScanFallbackLogged = true;
         }
@@ -2097,7 +2097,7 @@ IOReturn RTL8188EEIEEE80211::cmdScan()
 
     int hw_scan_ret = _hw->ops->hw_scan(_hw, _vif, &req);
     if (hw_scan_ret != 0) {
-        IOLog("rtw88: hw_scan returned %d -- falling back to passive scan\n",
+        IOLog("rtl8188ee: hw_scan returned %d -- falling back to passive scan\n",
               hw_scan_ret);
         if (_manualScanTC) {
             _manualScanChannelCount = (uint32_t)n_chans;
@@ -2205,17 +2205,17 @@ void RTL8188EEIEEE80211::runManualScan()
 
 IOReturn RTL8188EEIEEE80211::cmdConnect(const char *ssid, const char *password)
 {
-    IOLog("rtw88: cmdConnect ENTER state=%d\n", (int)_state);
+    IOLog("rtl8188ee: cmdConnect ENTER state=%d\n", (int)_state);
     if (_state == RTL8188EE_STATE_SCANNING && !abortActiveScan(true)) {
-        IOLog("rtw88: cmdConnect -> kIOReturnBusy (scanning, abort failed)\n");
+        IOLog("rtl8188ee: cmdConnect -> kIOReturnBusy (scanning, abort failed)\n");
         return kIOReturnBusy;
     }
     if (_state != RTL8188EE_STATE_IDLE) {
-        IOLog("rtw88: cmdConnect -> kIOReturnBusy (state != IDLE, state=%d)\n", (int)_state);
+        IOLog("rtl8188ee: cmdConnect -> kIOReturnBusy (state != IDLE, state=%d)\n", (int)_state);
         return kIOReturnBusy;
     }
     if (!ssid) {
-        IOLog("rtw88: cmdConnect -> kIOReturnBadArgument (null ssid)\n");
+        IOLog("rtl8188ee: cmdConnect -> kIOReturnBadArgument (null ssid)\n");
         return kIOReturnBadArgument;
     }
     clearKeys();
@@ -2235,10 +2235,10 @@ IOReturn RTL8188EEIEEE80211::cmdConnect(const char *ssid, const char *password)
     }
     if (!target) {
         IOLockUnlock(_bssLock);
-        IOLog("rtw88: cmdConnect -> kIOReturnNotFound (ssid not in list, list had %d entries)\n", bss_count);
+        IOLog("rtl8188ee: cmdConnect -> kIOReturnNotFound (ssid not in list, list had %d entries)\n", bss_count);
         return kIOReturnNotFound;
     }
-    IOLog("rtw88: cmdConnect found target BSS\n");
+    IOLog("rtl8188ee: cmdConnect found target BSS\n");
     memcpy(&_targetBSS, target, sizeof(_targetBSS));
     IOLockUnlock(_bssLock);
 
@@ -2265,7 +2265,7 @@ void RTL8188EEIEEE80211::doAuthenticate()
 
     _rxAuthFrameCount = 0;  /* reset [authrxdiag] counter for this attempt */
 
-    IOLog("rtw88: doAuthenticate entry — BSSID %02x:%02x:%02x:%02x:%02x:%02x ch=%u\n",
+    IOLog("rtl8188ee: doAuthenticate entry — BSSID %02x:%02x:%02x:%02x:%02x:%02x ch=%u\n",
           _targetBSS.bssid[0], _targetBSS.bssid[1], _targetBSS.bssid[2],
           _targetBSS.bssid[3], _targetBSS.bssid[4], _targetBSS.bssid[5],
           _targetBSS.channel);
@@ -2277,7 +2277,7 @@ void RTL8188EEIEEE80211::doAuthenticate()
         if (!rtlwifi_is_scanning()) break;
         IOSleep(50);
     }
-    IOLog("rtw88: doAuthenticate: scan flag clear\n");
+    IOLog("rtl8188ee: doAuthenticate: scan flag clear\n");
 
     /* Firmware settle delay.
      *
@@ -2290,7 +2290,7 @@ void RTL8188EEIEEE80211::doAuthenticate()
      * system freeze.  500 ms is comfortably below the watch-dog LPS timer
      * (~2 s), so the chip stays awake. */
     IOSleep(500);
-    IOLog("rtw88: doAuthenticate: firmware settled\n");
+    IOLog("rtl8188ee: doAuthenticate: firmware settled\n");
 
     /* ----- 1. Channel switch + BSSID (single mutex section) ----- *
      *
@@ -2326,12 +2326,12 @@ void RTL8188EEIEEE80211::doAuthenticate()
     }
     if (chan) {
         setConnectedChandef(chan);
-        IOLog("rtw88: doAuthenticate: calling connect_hw_setup ch=%u\n",
+        IOLog("rtl8188ee: doAuthenticate: calling connect_hw_setup ch=%u\n",
               _targetBSS.channel);
         rtlwifi_connect_hw_setup(_hw, _vif, _targetBSS.bssid);
-        IOLog("rtw88: doAuthenticate: connect_hw_setup done\n");
+        IOLog("rtl8188ee: doAuthenticate: connect_hw_setup done\n");
     } else {
-        IOLog("rtw88: doAuthenticate: ch=%u not in band table — "
+        IOLog("rtl8188ee: doAuthenticate: ch=%u not in band table — "
               "skipping channel switch, sending auth anyway\n",
               _targetBSS.channel);
         /* Still set BSSID even if channel is unknown */
@@ -2347,13 +2347,13 @@ void RTL8188EEIEEE80211::doAuthenticate()
     bss->aid   = 0;
 
     /* ----- 2. Send Authentication frame ----- */
-    IOLog("rtw88: doAuthenticate: building auth frame\n");
+    IOLog("rtl8188ee: doAuthenticate: building auth frame\n");
     uint8_t auth[30] = {};
     uint32_t authlen = 0;
     buildAuthReq(auth, &authlen);
-    IOLog("rtw88: doAuthenticate: transmitting auth frame (%u bytes)\n", authlen);
+    IOLog("rtl8188ee: doAuthenticate: transmitting auth frame (%u bytes)\n", authlen);
     txMgmtFrame(auth, authlen);
-    IOLog("rtw88: doAuthenticate: auth frame sent — waiting for response\n");
+    IOLog("rtl8188ee: doAuthenticate: auth frame sent — waiting for response\n");
 
     _state = RTL8188EE_STATE_AUTHENTICATING;
     uint64_t d; clock_interval_to_deadline(3000, kMillisecondScale, &d);
@@ -2380,7 +2380,7 @@ void RTL8188EEIEEE80211::processAssocResponse(struct sk_buff *skb)
     /* Reject an assoc response that isn't from our target AP (see auth path). */
     struct ieee80211_hdr_3addr *h3 = (struct ieee80211_hdr_3addr *)skb->data;
     if (memcmp(h3->addr3, _targetBSS.bssid, 6) != 0) {
-        IOLog("rtw88: assoc resp from %02x:%02x:%02x:%02x:%02x:%02x "
+        IOLog("rtl8188ee: assoc resp from %02x:%02x:%02x:%02x:%02x:%02x "
               "!= target BSSID — ignoring\n",
               h3->addr3[0], h3->addr3[1], h3->addr3[2],
               h3->addr3[3], h3->addr3[4], h3->addr3[5]);
@@ -2393,7 +2393,7 @@ void RTL8188EEIEEE80211::processAssocResponse(struct sk_buff *skb)
     kfree_skb(skb);
 
     if (bodylen < 6) {
-        IOLog("rtw88: assoc-resp too short\n");
+        IOLog("rtl8188ee: assoc-resp too short\n");
         _state = RTL8188EE_STATE_IDLE;
         return;
     }
@@ -2401,11 +2401,11 @@ void RTL8188EEIEEE80211::processAssocResponse(struct sk_buff *skb)
     uint16_t aid    = (uint16_t)((body[4] | (body[5] << 8)) & 0x3FFF);
 
     if (status != 0) {
-        IOLog("rtw88: assoc failed status=%u\n", status);
+        IOLog("rtl8188ee: assoc failed status=%u\n", status);
         _state = RTL8188EE_STATE_IDLE;
         return;
     }
-    IOLog("rtw88: associated! AID=%u\n", aid);
+    IOLog("rtl8188ee: associated! AID=%u\n", aid);
     _assocAID = aid;
 
     /* ----- 1. Allocate and register peer STA ----- */
@@ -2470,7 +2470,7 @@ void RTL8188EEIEEE80211::processAssocResponse(struct sk_buff *skb)
 
     if (_wpa2) {
         _state = RTL8188EE_STATE_HANDSHAKING;
-        IOLog("rtw88: WPA2 — waiting for EAPOL M1\n");
+        IOLog("rtl8188ee: WPA2 — waiting for EAPOL M1\n");
         /* Derive PMK from passphrase now */
         derivePMK((uint8_t *)_password, (uint8_t *)_targetBSS.ssid,
                   _targetBSS.ssid_len, _pmk);
@@ -2632,7 +2632,7 @@ bool RTL8188EEIEEE80211::buildAssocReq(uint8_t *buf, uint32_t *len)
         body += 2 + 12;
     }
 
-    /* WME information element. We later notify rtw88 that QoS is enabled, so
+    /* WME information element. We later notify rtl8188ee that QoS is enabled, so
      * advertise WME to the AP as well, especially for stricter 5GHz networks. */
     static const uint8_t wme_info[] = {
         0xdd, 0x07, 0x00, 0x50, 0xf2, 0x02, 0x00, 0x01, 0x00
@@ -2645,7 +2645,7 @@ bool RTL8188EEIEEE80211::buildAssocReq(uint8_t *buf, uint32_t *len)
      * both pairwise ciphers; copying that raw IE can make the AP pick a path
      * we do not want. */
     if (_wpa2) {
-        uint16_t rsn_len = rtw88BuildSelectedRsnIe(body, _targetBSS.group_cipher);
+        uint16_t rsn_len = rtl8188eeBuildSelectedRsnIe(body, _targetBSS.group_cipher);
         body += rsn_len;
     }
 
@@ -2748,7 +2748,7 @@ void RTL8188EEIEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
     bool is_m3 = (key_info & 0x01c8) == 0x01c8;
     uint16_t key_data_len = (uint16_t)((data[97] << 8) | data[98]);
 
-    IOLog("rtw88: EAPOL key_info=0x%04x key_data_len=%u M1=%d M3=%d\n",
+    IOLog("rtl8188ee: EAPOL key_info=0x%04x key_data_len=%u M1=%d M3=%d\n",
           key_info, key_data_len, is_m1, is_m3);
 
     if (is_m1) {
@@ -2762,12 +2762,12 @@ void RTL8188EEIEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
         _timer->wakeAtTime(d);
     } else if (is_m3) {
         if (!eapol_mic_ok(_ptk, data, eapol_len)) {
-            IOLog("rtw88: EAPOL M3 MIC check failed\n");
+            IOLog("rtl8188ee: EAPOL M3 MIC check failed\n");
             return;
         }
 
         if (99 + key_data_len > eapol_len) {
-            IOLog("rtw88: EAPOL M3 key data truncated\n");
+            IOLog("rtl8188ee: EAPOL M3 key data truncated\n");
             return;
         }
 
@@ -2782,7 +2782,7 @@ void RTL8188EEIEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
             if (key_info & 0x1000) {
                 if (!aes_unwrap_128(_ptk + 16, key_data, key_data_len,
                                     unwrapped, &unwrapped_len)) {
-                    IOLog("rtw88: failed to unwrap GTK key data\n");
+                    IOLog("rtl8188ee: failed to unwrap GTK key data\n");
                     return;
                 }
                 key_data = unwrapped;
@@ -2791,7 +2791,7 @@ void RTL8188EEIEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
 
             if (!extract_gtk_from_kde(key_data, key_data_len,
                                       gtk, &gtk_len, &gtk_idx)) {
-                IOLog("rtw88: no GTK KDE found in M3 key data\n");
+                IOLog("rtl8188ee: no GTK KDE found in M3 key data\n");
             }
         }
 
@@ -2812,7 +2812,7 @@ void RTL8188EEIEEE80211::handleEAPOL(const uint8_t *data, uint32_t len)
         if (_parent)
             _parent->setLinkStatus(kIONetworkLinkActive | kIONetworkLinkValid);
         startTxAggregation();   /* keys are installed — negotiate uplink A-MPDU */
-        IOLog("rtw88: WPA2 connected! gtk_len=%u gtk_idx=%u\n", gtk_len, gtk_idx);
+        IOLog("rtl8188ee: WPA2 connected! gtk_len=%u gtk_idx=%u\n", gtk_len, gtk_idx);
     }
 }
 
@@ -2846,7 +2846,7 @@ void RTL8188EEIEEE80211::sendEAPOLKey(int step, const uint8_t *replay_counter,
 
     uint16_t key_data_len = 0;
     if (step == 2) {
-        key_data_len = rtw88BuildSelectedRsnIe(eapol + 99, _targetBSS.group_cipher);
+        key_data_len = rtl8188eeBuildSelectedRsnIe(eapol + 99, _targetBSS.group_cipher);
         if (99 + key_data_len > sizeof(frame) - 14)
             key_data_len = 0;
     }
@@ -2868,7 +2868,7 @@ void RTL8188EEIEEE80211::sendEAPOLKey(int step, const uint8_t *replay_counter,
     }
 
     uint32_t ethlen = 14 + eapol_total;
-    mbuf_t m = rtw88_make_packet_mbuf(frame, ethlen);
+    mbuf_t m = rtl8188ee_make_packet_mbuf(frame, ethlen);
     if (!m) return;
     txDataFrame(m);
 }
@@ -2907,7 +2907,7 @@ bool RTL8188EEIEEE80211::txMgmtFrame(const uint8_t *frame, uint32_t len)
 /*      ADDBA Response, tag our data frames with IEEE80211_TX_CTL_AMPDU. */
 /*    - RX (downlink) agg: we answer the AP's ADDBA Request; Realtek HW  */
 /*      then auto-generates the RX BlockAck and de-aggregates for us     */
-/*      (rtw88's ampdu_action is a no-op for RX_START/STOP).             */
+/*      (rtl8188ee's ampdu_action is a no-op for RX_START/STOP).             */
 /* ------------------------------------------------------------------ */
 
 void RTL8188EEIEEE80211::sendAddbaRequest(uint8_t tid)
@@ -2991,7 +2991,7 @@ void RTL8188EEIEEE80211::startTxAggregation()
     if (_txBaActive) return;
     if (!htAllowed()) return;
     if (!_sta || !_sta->deflink.ht_cap.ht_supported) return;
-    IOLog("rtw88: starting TX A-MPDU — sending ADDBA request (tid=%u)\n", _baTid);
+    IOLog("rtl8188ee: starting TX A-MPDU — sending ADDBA request (tid=%u)\n", _baTid);
     sendAddbaRequest(_baTid);
 }
 
@@ -3012,7 +3012,7 @@ void RTL8188EEIEEE80211::handleBackAction(const uint8_t *b, uint32_t len)
         uint16_t ssn       = (uint16_t)(ssc >> 4);
         rxBaSetup(tid, ssn, bufsz);
         sendAddbaResponse(tid, dialog, req_param, ba_to);
-        IOLog("rtw88: RX ADDBA request (tid=%u ssn=%u buf=%u) — accepted, "
+        IOLog("rtl8188ee: RX ADDBA request (tid=%u ssn=%u buf=%u) — accepted, "
               "downlink A-MPDU on\n", tid, ssn, bufsz);
         break;
     }
@@ -3024,9 +3024,9 @@ void RTL8188EEIEEE80211::handleBackAction(const uint8_t *b, uint32_t len)
         uint8_t  tid    = (uint8_t)((param >> 2) & 0xf);
         if (status == 0 && tid == _baTid) {
             _txBaActive = true;
-            IOLog("rtw88: TX ADDBA accepted (tid=%u) — uplink A-MPDU on\n", tid);
+            IOLog("rtl8188ee: TX ADDBA accepted (tid=%u) — uplink A-MPDU on\n", tid);
         } else {
-            IOLog("rtw88: TX ADDBA rejected status=%u tid=%u\n", status, tid);
+            IOLog("rtl8188ee: TX ADDBA rejected status=%u tid=%u\n", status, tid);
         }
         break;
     }
@@ -3042,7 +3042,7 @@ void RTL8188EEIEEE80211::handleBackAction(const uint8_t *b, uint32_t len)
             _txBaActive = false;
         if (initiator)
             rxBaTeardown(tid);
-        IOLog("rtw88: RX DELBA tid=%u initiator=%d\n", tid, initiator);
+        IOLog("rtl8188ee: RX DELBA tid=%u initiator=%d\n", tid, initiator);
         break;
     }
     default:
@@ -3136,7 +3136,7 @@ bool RTL8188EEIEEE80211::txDataFrame(mbuf_t m)
     }
 
     /* The mbuf is an Ethernet frame: [DA(6)][SA(6)][ethertype(2)][payload].
-     * The rtw88 driver's tx op expects an 802.11 frame, so we must
+     * The rtl8188ee driver's tx op expects an 802.11 frame, so we must
      * encapsulate: 802.11 data header (24) + LLC/SNAP (8) + IP payload.
      * mac80211 normally does this; we are bypassing mac80211's tx path. */
     size_t total = mbuf_pkthdr_len(m);
@@ -3174,7 +3174,7 @@ bool RTL8188EEIEEE80211::txDataFrame(mbuf_t m)
     memcpy(h->addr3, eh, 6);               /* DA = Ethernet destination  */
     /* Each data frame needs a unique sequence number.  QoS data uses a
      * dedicated per-TID space so the BlockAck window stays gap-free; non-QoS
-     * shares the mgmt counter (legacy behaviour).  rtw88 uses this header SN
+     * shares the mgmt counter (legacy behaviour).  rtl8188ee uses this header SN
      * for data frames (no hw-assigned SN on the data path). */
     h->seq_ctrl = cpu_to_le16((uint16_t)((qos ? _dataSeq++ : _txSeq++) & 0xFFF) << 4);
 
@@ -3232,7 +3232,7 @@ bool RTL8188EEIEEE80211::txDataFrame(mbuf_t m)
     memset(info, 0, sizeof(*info));
     info->flags = IEEE80211_TX_CTL_FIRST_FRAGMENT;
     /* Once the uplink BlockAck agreement is up, mark BE-TID frames for
-     * aggregation: rtw88 then sets the descriptor's AGG_EN bit and the hardware
+     * aggregation: rtl8188ee then sets the descriptor's AGG_EN bit and the hardware
      * builds A-MPDUs. (rtw_tx reads this flag directly; the txq/RTW_TXQ_AMPDU
      * path is unused by this port.) */
     if (qos && _txBaActive)
@@ -3253,7 +3253,7 @@ bool RTL8188EEIEEE80211::txDataFrame(mbuf_t m)
      * unconditionally per outbound data frame -- pings are low-rate
      * (~1/sec) so this can't flood the ring buffer the way earlier
      * unconditional diagnostics could have. Strip once root cause found. */
-    IOLog("rtw88: [txdatadiag] ethertype=0x%04x qos=%d protected=%d "
+    IOLog("rtl8188ee: [txdatadiag] ethertype=0x%04x qos=%d protected=%d "
           "hw_key=%p cipher=0x%x keyidx=%d framelen=%u paylen=%u "
           "sn=%u dst=%02x:%02x:%02x:%02x:%02x:%02x\n",
           ethertype, qos, protected_frame, (void *)info->control.hw_key,
@@ -3295,7 +3295,7 @@ bool RTL8188EEIEEE80211::txDataFrame(mbuf_t m)
  * we must NOT call mbuf_setlen() (which would wrongly set the first
  * segment's length to the whole-packet length).
  */
-static mbuf_t rtw88_make_packet_mbuf(const void *src, uint32_t len)
+static mbuf_t rtl8188ee_make_packet_mbuf(const void *src, uint32_t len)
 {
     mbuf_t m = nullptr;
     if (mbuf_allocpacket(MBUF_WAITOK, len, nullptr, &m) != 0)
@@ -3333,7 +3333,7 @@ struct sk_buff *RTL8188EEIEEE80211::mbufToSkb(mbuf_t m)
 
 mbuf_t RTL8188EEIEEE80211::skbToMbuf(struct sk_buff *skb)
 {
-    return rtw88_make_packet_mbuf(skb->data, skb->len);
+    return rtl8188ee_make_packet_mbuf(skb->data, skb->len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -3350,7 +3350,7 @@ void RTL8188EEIEEE80211::onTimer()
 {
     switch (_state) {
     case RTL8188EE_STATE_SCANNING:
-        IOLog("rtw88: scan timeout\n");
+        IOLog("rtl8188ee: scan timeout\n");
         if (_manualScanChannelCount) {
             _manualScanAbort = true;
             break;
@@ -3368,17 +3368,17 @@ void RTL8188EEIEEE80211::onTimer()
         break;
 
     case RTL8188EE_STATE_AUTHENTICATING:
-        IOLog("rtw88: auth timeout, retrying\n");
+        IOLog("rtl8188ee: auth timeout, retrying\n");
         doAuthenticate();
         break;
 
     case RTL8188EE_STATE_ASSOCIATING:
-        IOLog("rtw88: assoc timeout\n");
+        IOLog("rtl8188ee: assoc timeout\n");
         _state = RTL8188EE_STATE_IDLE;
         break;
 
     case RTL8188EE_STATE_HANDSHAKING:
-        IOLog("rtw88: 4-way handshake timeout\n");
+        IOLog("rtl8188ee: 4-way handshake timeout\n");
         doDisconnect();
         break;
 
@@ -3404,7 +3404,7 @@ IOReturn RTL8188EEIEEE80211::cmdGetState(struct RTL8188EEStateResult *result)
     memcpy(result->mac_addr, _macAddr, 6);
 
     rtlwifi_get_fw_version(&result->fw_version, &result->fw_sub_version);
-    /* No rtw88_get_chip_name() call here: wifi.h's struct rtl_priv/rtl_hal/
+    /* No rtl8188ee_get_chip_name() call here: wifi.h's struct rtl_priv/rtl_hal/
      * rtl_efuse carry no chip-name string anywhere (confirmed by direct
      * grep of the real vendored header — Bucket E, findings.md Section
      * 81.2/83.2/rtlwifi_compat.h comment above rtlwifi_get_fw_version()).
@@ -3445,7 +3445,7 @@ IOReturn RTL8188EEIEEE80211::cmdGetBSSList(uint8_t *buf, uint32_t *len)
          *             channel(1), cipher(4) */
         uint32_t entry_sz = 1 + b->ssid_len + 6 + 2 + 1 + 4;
         if (written + entry_sz > max) {
-            IOLog("rtw88: BSS entry skipped (buffer full: written=%u max=%u)\n", written, max);
+            IOLog("rtl8188ee: BSS entry skipped (buffer full: written=%u max=%u)\n", written, max);
             break;
         }
 

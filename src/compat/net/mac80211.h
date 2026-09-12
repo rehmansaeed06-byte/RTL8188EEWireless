@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
- * mac80211 API shims for rtw88 macOS port.
+ * mac80211 API shims for rtl8188ee macOS port.
  *
  * This replaces the Linux mac80211 subsystem.  On macOS the driver manages
  * its own 802.11 state machine; these structures keep the driver C code
@@ -864,7 +864,7 @@ struct ieee80211_sta {
  * (search "A-MPDU BlockAck negotiation"): TX aggregation is driven by
  * this driver's own MLME sending real ADDBA Request/Response frames
  * over the air, and RX aggregation is a hardware-automatic no-op
- * (rtw88's ampdu_action is a no-op for RX_START/STOP, per that same
+ * (rtl8188ee's ampdu_action is a no-op for RX_START/STOP, per that same
  * comment). Both real call sites (base.c:1797, rc.c:241) ignore the
  * return value / treat this as fire-and-forget, so a true no-op stub
  * is correct here, not a placeholder needing a follow-up TODO -- the
@@ -1549,13 +1549,13 @@ struct ieee80211_ampdu_params {
 /*  ieee80211_hw alloc / free                                           */
 /* ------------------------------------------------------------------ */
 
-/* rtw88_get_hw: external-linkage accessor for the static g_rtw88_hw pointer.
- * Use this instead of 'extern struct ieee80211_hw *g_rtw88_hw' — the variable
+/* rtl8188ee_get_hw: external-linkage accessor for the static g_rtl8188ee_hw pointer.
+ * Use this instead of 'extern struct ieee80211_hw *g_rtl8188ee_hw' — the variable
  * has internal linkage so a direct extern declaration is UB and resolves to an
  * arbitrary symbol, producing a garbage pointer and a kernel panic.
  * CRITICAL: declared here (not implicitly) so the compiler knows the return
  * type is a 64-bit pointer, not int. */
-struct ieee80211_hw *rtw88_get_hw(void);
+struct ieee80211_hw *rtl8188ee_get_hw(void);
 /* ieee80211_find_sta: real implementation in rtlwifi_compat.c, not a
  * stub -- every rcu_read_lock()/rcu_read_unlock() call site in the
  * compiled driver exists only to bracket a call to this. See that
@@ -1572,7 +1572,7 @@ struct ieee80211_hw *wiphy_to_ieee80211_hw(struct wiphy *wiphy);
 
 /* Real definition lives in src/compat/rtlwifi_compat.c — it uses
  * g_rtlwifi_hw / rtlwifi_get_hw() as its "belt: global fallback"
- * mechanism, not rtw88_register_hw() (which is declared but never
+ * mechanism, not rtl8188ee_register_hw() (which is declared but never
  * defined anywhere in this port; calling it here would fail at link
  * time). Kept as a declaration only so every other user of this
  * header still compiles against the same signature. */

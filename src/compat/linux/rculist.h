@@ -3,5 +3,5 @@
 #define _RTL8188EE_COMPAT_RCULIST_H
 /* rculist stubs — included from main compat header, listed separately
  * so that #include <linux/rculist.h> in driver code resolves correctly. */
-#include "../rtw88_compat.h"
+#include "../rtlwifi_compat.h"
 #endif

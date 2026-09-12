@@ -10,7 +10,7 @@ typedef unsigned int mmc_pm_flag_t;
 #define MMC_PM_KEEP_POWER    (1 << 0)
 #define MMC_PM_WAKE_SDIO_IRQ (1 << 1)
 
-/* MMC host — only max_req_size used by rtw88 */
+/* MMC host — only max_req_size used by rtl8188ee */
 struct mmc_host {
     unsigned int max_req_size;
     unsigned int caps;

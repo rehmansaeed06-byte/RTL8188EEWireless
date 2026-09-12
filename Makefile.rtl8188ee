@@ -1,16 +1,16 @@
 # Makefile.rtl8188ee for RTL8188EEWireless
 #
-# Structural mirror of Feixiao/Makefile (the real rtw88 build — confirmed
+# Structural mirror of Feixiao/Makefile (the real rtl8188ee build — confirmed
 # by direct read this session, NOT the Xcode project, which only tracks
 # the 8 hand-written compat/kext files; the actual "compile real upstream
 # Linux driver source" step happens entirely in that Makefile via
-# LINUX_SRC/DRIVER_SRCS/CHIP_SRCS + -include rtw88_compat.h). This file
+# LINUX_SRC/DRIVER_SRCS/CHIP_SRCS + -include rtl8188ee_compat.h). This file
 # reproduces that same mechanism against rtlwifi/rtl8188ee instead.
 #
 # IMPORTANT — this is a genuinely separate build, not a modification of
 # Feixiao's Makefile and not a second Xcode target. Every path below
 # (BUILD_DIR, OUT_DIR, output kext name/bundle ID) is kept distinct from
-# the rtw88 build on purpose: running `make -f Makefile.rtl8188ee` and
+# the rtl8188ee build on purpose: running `make -f Makefile.rtl8188ee` and
 # Feixiao's own `make` produce two separate object trees and two separate
 # linked kext binaries that never share a linker input. This is what
 # actually resolves the duplicate-symbol conflict (handover item 25/26,
@@ -23,7 +23,7 @@
 # future static linking) without being load-bearing.
 #
 # What this Makefile does NOT resolve, and what is still open:
-#   - RTW88PCIDevice.cpp/RTW88IEEE80211.cpp reuse (KEXT_SRCS below) —
+#   - RTL8188EEPCIDevice.cpp/RTL8188EEIEEE80211.cpp reuse (KEXT_SRCS below) —
 #     still unconfirmed against rtl_priv's real layout (handover item 2).
 #     Included here as a placeholder so the Makefile is runnable-in-
 #     principle, per the same caveat the original Makefile.rtl8188ee
@@ -116,7 +116,7 @@ KEXT_FLAGS   := -fno-exceptions -fno-rtti \
                 -I$(SDK)/System/Library/Frameworks/Kernel.framework/Headers
 
 # Compat include path overrides ALL linux/ and net/ headers so the real
-# rtlwifi driver C files find our shims instead of Feixiao's rtw88 ones.
+# rtlwifi driver C files find our shims instead of Feixiao's rtl8188ee ones.
 #
 # RESOLVED (findings.md Section 62): vendored a local copy of both
 # src/compat/linux/ (33 headers + mmc/ subdir) and src/compat/net/
@@ -233,7 +233,7 @@ COMPAT_SRCS := \
     $(COMPAT_DIR)/rtlwifi_compat.c
 
 # Firmware loader — compiled with system headers only (no Linux compat
-# headers), mirrors rtw88_firmware.c's isolation exactly. fw_blobs_
+# headers), mirrors rtl8188ee_firmware.c's isolation exactly. fw_blobs_
 # rtl8188ee.c is auto-generated from firmware/*.bin.
 FIRMWARE_SRCS := \
     $(COMPAT_DIR)/rtl8188ee_firmware.c \
@@ -245,7 +245,7 @@ FW_BLOBS_C := $(COMPAT_DIR)/fw_blobs_rtl8188ee.c
 #
 # RESOLVED: this WAS reused from Feixiao's kmod_info.c unmodified, and
 # that was a real bug, not a low-risk placeholder — Feixiao's file
-# hardcodes kmod_info.name = "com.rtw88.driver" / version "1.1.0",
+# hardcodes kmod_info.name = "com.rtl8188ee.driver" / version "1.1.0",
 # which doesn't match this project's Info.plist
 # (CFBundleIdentifier com.rtlwifi.rtl8188ee / CFBundleVersion 0.1.0).
 # That mismatch between the binary's self-declared identity and its
@@ -260,7 +260,7 @@ KMOD_SRCS := \
 
 # IOKit C++ wrapper — TODO, THE BIG OPEN ITEM (handover item 2 /
 # findings.md Section 55.7 item 6): reusing RTL8188EEPCIDevice.cpp/
-# RTW88IEEE80211.cpp from Feixiao UNMODIFIED and UNCONFIRMED. rtl_priv's
+# RTL8188EEIEEE80211.cpp from Feixiao UNMODIFIED and UNCONFIRMED. rtl_priv's
 # struct layout has not been checked against what these files assume
 # about hw->priv. This is a placeholder so the Makefile is runnable-in-
 # principle only — do NOT treat a successful compile of these two files
@@ -350,7 +350,7 @@ $(FW_BLOBS_C): $(wildcard $(FIRMWARE_DIR)/*.bin) tools/gen_fw_blobs_rtl8188ee.py
 	python3 $(PROJ_ROOT)/tools/gen_fw_blobs_rtl8188ee.py $(FIRMWARE_DIR) $@
 
 # Compile firmware loader + blobs (system headers only — no compat
-# header conflicts, same isolation as rtw88_firmware.c)
+# header conflicts, same isolation as rtl8188ee_firmware.c)
 FW_CFLAGS := $(KEXT_FLAGS) \
     -I$(MKSDK)/Headers \
     -I$(SDK)/System/Library/Frameworks/Kernel.framework/Headers \

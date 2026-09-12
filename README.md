@@ -1,5 +1,17 @@
 # RTL8188EEWireless
 
+> **Status: paused.** I've moved off the Hackintosh setup this was
+> built for and don't have a way to keep testing on real hardware
+> right now. The driver connects, authenticates, and passes traffic,
+> but there's a known RX-stability issue under sustained load (see
+> below) that was never fully confirmed fixed before I stepped away.
+>
+> If you have this chip and a Hackintosh setup, feel free to pull
+> this, pick up where it left off, or fork it and take it further —
+> I'd appreciate hearing if you get further than I did, but there's
+> no obligation to check in. Pull requests are welcome; I can't
+> promise a fast turnaround reviewing them right now.
+
 A native macOS kext port of the Realtek **RTL8188EE** PCIe Wi-Fi chip
 (PCI ID `10EC:8179`), for machines where no vendor driver exists for
 current macOS versions.
